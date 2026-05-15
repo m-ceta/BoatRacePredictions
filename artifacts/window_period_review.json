@@ -1,0 +1,77 @@
+{
+  "backtest_periods": {
+    "train_end_date": "2024-12-31",
+    "valid_period": [
+      "2025-01-01",
+      "2025-12-31"
+    ],
+    "test_period": [
+      "2026-01-01",
+      "2026-05-13"
+    ]
+  },
+  "lightgbm_window_sweep": [
+    {
+      "min_date": "all",
+      "test_top1": 0.6040945649524738,
+      "test_top3": 0.7185799008855309
+    },
+    {
+      "min_date": "2018-01-01",
+      "test_top1": 0.6046795028028272,
+      "test_top3": 0.7186611422536355
+    },
+    {
+      "min_date": "2020-01-01",
+      "test_top1": 0.6038508408481599,
+      "test_top3": 0.7178324802989683
+    },
+    {
+      "min_date": "2021-01-01",
+      "test_top1": 0.6047282476236899,
+      "test_top3": 0.7182224388658706
+    },
+    {
+      "min_date": "2022-01-01",
+      "test_top1": 0.6047769924445527,
+      "test_top3": 0.7177349906572427
+    },
+    {
+      "min_date": "2023-01-01",
+      "test_top1": 0.6050207165488667,
+      "test_top3": 0.7189373629051913
+    },
+    {
+      "min_date": "2024-01-01",
+      "test_top1": 0.604045820131611,
+      "test_top3": 0.7176212527418961
+    }
+  ],
+  "full_pipeline_check": [
+    {
+      "min_date": "2018-01-01",
+      "catboost_test_top1": 0.5879112844260297,
+      "lightgbm_test_top1": 0.6046795028028272,
+      "ensemble_test_top1": 0.6048744820862784,
+      "ensemble_test_top3": 0.7184011698757007,
+      "trifecta_test_top1_hit": 0.11065074335851816,
+      "trifecta_test_top5_hit": 0.3701194248111138,
+      "trifecta_test_log_loss": 3.721532402112251
+    },
+    {
+      "min_date": "2023-01-01",
+      "catboost_test_top1": 0.5892273945893249,
+      "lightgbm_test_top1": 0.6050207165488667,
+      "ensemble_test_top1": 0.6050207165488667,
+      "ensemble_test_top3": 0.7189373629051913,
+      "trifecta_test_top1_hit": 0.11055325371679259,
+      "trifecta_test_top5_hit": 0.37284913477942966,
+      "trifecta_test_log_loss": 3.7217134441083983
+    }
+  ],
+  "recommendation": {
+    "ranking": "2023-01-01 onward",
+    "trifecta_probabilities": "2018-01-01 onward marginally best on log_loss, but difference is negligible",
+    "practical_choice": "2023-01-01 onward"
+  }
+}

@@ -1,0 +1,25 @@
+data:
+  processed_dir: data/processed
+  training_table: data/processed/training_table.parquet
+  min_date: "2023-01-01"
+  max_date: "2026-05-13"
+
+split:
+  train_end_date: "2025-12-31"
+  valid_end_date: "2026-05-13"
+
+model:
+  iterations: 120
+  learning_rate: 0.03
+  depth: 6
+  loss_function: YetiRankPairwise
+  eval_metric: NDCG
+  random_seed: 42
+
+artifacts:
+  catboost_model_path: artifacts/catboost_ranker.cbm
+  lightgbm_model_path: artifacts/lightgbm_ranker.txt
+  features_path: artifacts/feature_columns.json
+  ensemble_weights_path: artifacts/ensemble_weights.json
+  trifecta_calibrator_path: artifacts/trifecta_isotonic.joblib
+  metrics_path: artifacts/metrics.json

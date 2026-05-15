@@ -1,0 +1,64 @@
+{
+  "catboost": {
+    "train": {
+      "race_count": 165930.0,
+      "top1_accuracy": 0.5817031278249865,
+      "avg_top3_overlap": 0.7030695674882983
+    },
+    "valid": {
+      "race_count": 20515.0,
+      "top1_accuracy": 0.5891299049475993,
+      "avg_top3_overlap": 0.7069136404257048
+    },
+    "test": {}
+  },
+  "lightgbm": {
+    "train": {
+      "race_count": 165930.0,
+      "top1_accuracy": 0.6074248176942084,
+      "avg_top3_overlap": 0.7166797243817673
+    },
+    "valid": {
+      "race_count": 20515.0,
+      "top1_accuracy": 0.6038995856690227,
+      "avg_top3_overlap": 0.7179949630351776
+    },
+    "test": {}
+  },
+  "ensemble": {
+    "train": {
+      "race_count": 165930.0,
+      "top1_accuracy": 0.6073042849394323,
+      "avg_top3_overlap": 0.7165250406798047
+    },
+    "valid": {
+      "race_count": 20515.0,
+      "top1_accuracy": 0.6039970753107482,
+      "avg_top3_overlap": 0.7178812251198311
+    },
+    "test": {}
+  },
+  "ensemble_weights": {
+    "catboost": 0.05,
+    "lightgbm": 0.95,
+    "validation_objective": 0.6757851978227313,
+    "validation_top1_accuracy": 0.6039970753107482,
+    "validation_avg_top3_overlap": 0.7178812251198311
+  },
+  "trifecta": {
+    "valid_raw": {
+      "race_count": 20515.0,
+      "top1_hit_rate": 0.10757981964416281,
+      "top5_hit_rate": 0.37245917621252744,
+      "log_loss": 3.7423771078812056
+    },
+    "valid_calibrated": {
+      "race_count": 20515.0,
+      "top1_hit_rate": 0.11104070192542043,
+      "top5_hit_rate": 0.3722641969290763,
+      "log_loss": 3.7167763429174427
+    },
+    "test_raw": {},
+    "test_calibrated": {}
+  }
+}
