@@ -16,10 +16,43 @@ model:
   eval_metric: NDCG
   random_seed: 42
 
+inference:
+  trifecta_rerank_top_n: 10
+
+phase3:
+  label_weights:
+    exact_full: 1.0
+    exact_top2: 0.75
+    exact_first_with_two: 0.6
+    exact_first: 0.5
+    top2_overlap: 0.35
+    top3_overlap: 0.2
+  regularization:
+    num_leaves: 31
+    min_data_in_leaf: 30
+    feature_fraction: 0.75
+    bagging_fraction: 0.8
+    bagging_freq: 1
+    lambda_l1: 0.0
+    lambda_l2: 2.0
+    num_boost_round: 120
+  rerank:
+    default_conservative_weight: 0.95
+    weight_grid: [0.95, 0.97, 0.98, 0.99]
+    top_n_grid: [10, 16, 24, 32]
+    rank_penalty_strength_grid: [0.0, 0.01, 0.02, 0.03]
+    default_rank_penalty_strength: 0.02
+    rank_penalty_start: 5
+  calibration:
+    window_days_options: [30, 60, 90]
+    default_window_days: 60
+
 artifacts:
   catboost_model_path: artifacts/catboost_ranker.cbm
   lightgbm_model_path: artifacts/lightgbm_ranker.txt
   features_path: artifacts/feature_columns.json
   ensemble_weights_path: artifacts/ensemble_weights.json
   trifecta_calibrator_path: artifacts/trifecta_isotonic.joblib
+  trifecta_v2_calibrator_path: artifacts/trifecta_v2_isotonic.joblib
+  trifecta_v3_calibrator_path: artifacts/trifecta_v3_isotonic.joblib
   metrics_path: artifacts/metrics.json

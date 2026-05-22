@@ -2,6 +2,7 @@
 
 from src.api import (
     BoatRaceModelBundle,
+    backfill_rowdata_files,
     build_dataset_from_rowdata,
     load_bundle,
     load_prediction_input,
@@ -13,6 +14,7 @@ from src.api import (
 
 __all__ = [
     "BoatRaceModelBundle",
+    "backfill_rowdata_files",
     "build_dataset_from_rowdata",
     "load_bundle",
     "load_prediction_input",

@@ -49,6 +49,14 @@ VENUE_SUFFIX_RE = re.compile(r"(?P<venue>[^\d\s]{1,6})\s*(?:競艇場|競走場|
 VENUE_RESULT_RE = re.compile(r"^(?P<venue>[^\d\s]{1,6})\s*［成績］")
 SECTION_CODE_RE = re.compile(r"^(?P<section_code>\d{2})[BK]BGN$")
 RACE_TIME_RE = re.compile(r"^\d+\.\d+\.\d+$")
+KNOWN_WINNING_STYLES = {
+    "逃げ",
+    "差し",
+    "まくり",
+    "まくり差し",
+    "抜き",
+    "恵まれ",
+}
 
 
 def load_shift_jis_lines(path: Path) -> list[str]:
@@ -209,6 +217,11 @@ def parse_result_lines(lines: list[str]) -> list[RaceResult]:
             current_winning_style = clean_text(style_match.group("style"))
             continue
 
+        table_style = parse_winning_style_from_result_table_header(normalized)
+        if table_style:
+            current_winning_style = table_style
+            continue
+
         if current_race_no is None:
             continue
 
@@ -336,6 +349,24 @@ def to_float(value: str | None) -> float | None:
     if not value:
         return None
     return float(value)
+
+
+def parse_winning_style_from_result_table_header(line: str) -> str | None:
+    normalized = clean_text(line)
+    marker = None
+    for candidate in ("レースタイム", "ﾚｰｽﾀｲﾑ"):
+        if normalized and candidate in normalized:
+            marker = candidate
+            break
+    if not normalized or marker is None:
+        return None
+    tail = normalized.split(marker, 1)[-1].strip()
+    if not tail:
+        return None
+    for style in sorted(KNOWN_WINNING_STYLES, key=len, reverse=True):
+        if tail.startswith(style):
+            return style
+    return None
 
 
 def split_meet_results(tail: str | None) -> tuple[str | None, int | None]:

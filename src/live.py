@@ -189,12 +189,25 @@ def predict_today_race(
         future_df=feature_frame,
         ensemble_weights=bundle.ensemble_weights,
     )
+    calibrator = bundle.trifecta_calibrator
+    phase_name = bundle.trifecta_v2_model.get("phase") if isinstance(bundle.trifecta_v2_model, dict) else None
+    if phase_name == "phase3_conditional" and getattr(bundle, "trifecta_v3_calibrator", None) is not None:
+        calibrator = bundle.trifecta_v3_calibrator
+    elif getattr(bundle, "trifecta_v2_calibrator", None) is not None:
+        calibrator = bundle.trifecta_v2_calibrator
+
     trifecta = predict_trifecta_probabilities(
         models=bundle.models,
         feature_columns=bundle.feature_columns,
         future_df=feature_frame,
         ensemble_weights=bundle.ensemble_weights,
-        trifecta_calibrator=bundle.trifecta_calibrator,
+        trifecta_calibrator=calibrator,
+        classifier_models=bundle.classifier_models,
+        flow_model=bundle.flow_model,
+        flow_classes=bundle.flow_classes,
+        staged_models=bundle.staged_models,
+        trifecta_v2_model=bundle.trifecta_v2_model,
+        rerank_top_n=bundle.rerank_top_n,
     )
     odds = fetch_boatrace_trifecta_odds(target_date, venue_code, int(race_no))
     odds_frame = None
@@ -409,14 +422,31 @@ def fetch_mbrace_program_text(target_date: date) -> str:
 
 
 def fetch_mbrace_program_archive(target_date: date) -> bytes:
+    return fetch_mbrace_daily_archive(target_date, kind="B")
+
+
+def fetch_mbrace_result_text(target_date: date) -> str:
+    archive_bytes = fetch_mbrace_result_archive(target_date)
+    return extract_lzh_text(archive_bytes)
+
+
+def fetch_mbrace_result_archive(target_date: date) -> bytes:
+    return fetch_mbrace_daily_archive(target_date, kind="K")
+
+
+def fetch_mbrace_daily_archive(target_date: date, kind: str) -> bytes:
+    kind = kind.upper()
+    if kind not in {"B", "K"}:
+        raise ValueError(f"Unsupported mbrace archive kind: {kind}")
     yyyy_mm = target_date.strftime("%Y%m")
     yy_mm_dd = target_date.strftime("%y%m%d")
-    url = f"https://www1.mbrace.or.jp/od2/B/{yyyy_mm}/b{yy_mm_dd}.lzh"
+    url = f"https://www1.mbrace.or.jp/od2/{kind}/{yyyy_mm}/{kind.lower()}{yy_mm_dd}.lzh"
     try:
-        return fetch_bytes(url, referer=f"https://www1.mbrace.or.jp/od2/B/{yyyy_mm}/mday.html")
+        return fetch_bytes(url, referer=f"https://www1.mbrace.or.jp/od2/{kind}/{yyyy_mm}/mday.html")
     except HTTPError as exc:
         if exc.code == 404:
-            raise ValueError(f"Schedule archive not found for {target_date.isoformat()}: {url}") from exc
+            label = "schedule" if kind == "B" else "result"
+            raise ValueError(f"Mbrace {label} archive not found for {target_date.isoformat()}: {url}") from exc
         raise
 
 
@@ -608,6 +638,38 @@ def extract_lzh_text(archive_bytes: bytes) -> str:
                     continue
                 return text
         return extracted[0].read_text(encoding="cp932", errors="ignore")
+
+
+def extract_lzh_first_file_bytes(archive_bytes: bytes) -> bytes:
+    seven_zip = find_seven_zip()
+    with tempfile.TemporaryDirectory(prefix="boatrace_lzh_") as tmpdir:
+        temp_dir = Path(tmpdir)
+        archive_path = temp_dir / "program.lzh"
+        archive_path.write_bytes(archive_bytes)
+        result = subprocess.run(
+            [seven_zip, "e", str(archive_path), f"-o{temp_dir}", "-y"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"Failed to extract LZH archive with 7-Zip: {result.stderr.strip()}")
+        extracted = sorted(path for path in temp_dir.iterdir() if path.is_file() and path.name != archive_path.name)
+        if not extracted:
+            raise RuntimeError("No file was extracted from the schedule archive.")
+        return extracted[0].read_bytes()
+
+
+def decode_rowdata_bytes(data: bytes) -> str:
+    for encoding in ("cp932", "shift_jis", "utf-8", "latin1"):
+        try:
+            text = data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        if "遶ｶ襍ｰ謌千ｸｾ" not in text and "逡ｪ邨・｡ｨ" not in text and "濶・" not in text:
+            continue
+        return text
+    return data.decode("cp932", errors="ignore")
 
 
 def find_seven_zip() -> str:

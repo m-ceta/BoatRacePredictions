@@ -1,0 +1,40 @@
+{
+  "start": "2026-01-01",
+  "end": "2026-01-07",
+  "v1": {
+    "race_count": 1391.0,
+    "top1_hit_rate": 0.10352264557872035,
+    "top3_hit_rate": 0.2616822429906542,
+    "top5_hit_rate": 0.3687994248741912,
+    "top10_hit_rate": 0.5478073328540618,
+    "log_loss": 2.8047888057880472,
+    "brier_score": 0.09026789098647174,
+    "mean_actual_probability": 0.0782993703333929,
+    "mean_top_probability": 0.1325221656681943,
+    "rerank_metrics": {
+      "coverage_races": 1391.0,
+      "rerank_top1_hit_rate": 0.10352264557872035,
+      "rerank_mrr": 0.25991441061534204,
+      "baseline_mrr": 0.25991441061534204,
+      "mean_rank_improvement": 0.0
+    }
+  },
+  "phase3": {
+    "race_count": 1391.0,
+    "top1_hit_rate": 0.07620416966211359,
+    "top3_hit_rate": 0.21998562185478074,
+    "top5_hit_rate": 0.3882099209202013,
+    "top10_hit_rate": 1.0,
+    "log_loss": 2.417430337030354,
+    "brier_score": 0.08734700660008438,
+    "mean_actual_probability": 0.09532422527323789,
+    "mean_top_probability": 0.10368568268255526,
+    "rerank_metrics": {
+      "coverage_races": 1391.0,
+      "rerank_top1_hit_rate": 0.07620416966211359,
+      "rerank_mrr": 0.2504741364554443,
+      "baseline_mrr": 0.2504741364554443,
+      "mean_rank_improvement": 0.0
+    }
+  }
+}

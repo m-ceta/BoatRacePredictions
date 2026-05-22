@@ -32,6 +32,7 @@ def build_training_table(entries: pd.DataFrame, results: pd.DataFrame) -> pd.Dat
     merged = merged.sort_values(["race_date", "race_no", "lane"]).reset_index(drop=True)
     merged["target_rank"] = 7 - merged["finish_position"]
     merged["is_win"] = (merged["finish_position"] == 1).astype(int)
+    merged["is_top2"] = (merged["finish_position"] <= 2).astype(int)
     merged["is_top3"] = (merged["finish_position"] <= 3).astype(int)
 
     merged = add_racer_history_features(merged)
@@ -192,9 +193,10 @@ def add_race_relative_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_current_meet_features(df: pd.DataFrame) -> pd.DataFrame:
-    parsed = df["current_meet_results"].fillna("").apply(parse_current_meet_results)
-    parsed_df = pd.DataFrame(parsed.tolist(), index=df.index).apply(pd.to_numeric, errors="coerce")
-    parsed_df = parsed_df.astype("float32")
+    parsed = [parse_current_meet_results(value) for value in df["current_meet_results"].fillna("")]
+    parsed_df = pd.DataFrame.from_records(parsed, index=df.index)
+    for column in parsed_df.columns:
+        parsed_df[column] = pd.to_numeric(parsed_df[column], errors="coerce").astype("float32")
 
     meet_digits = df["current_meet_results"].fillna("").str.replace(r"[^0-9]", "", regex=True)
     extras = pd.DataFrame(index=df.index)

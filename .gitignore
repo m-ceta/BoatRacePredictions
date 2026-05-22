@@ -1,6 +1,7 @@
 # Large local datasets
 rowdata/
 data/
+*.7z
 
 # Python
 __pycache__/
