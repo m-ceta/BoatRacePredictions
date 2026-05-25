@@ -13,6 +13,11 @@ from urllib.request import Request, urlopen
 import pandas as pd
 from bs4 import BeautifulSoup
 
+try:
+    import lhafile
+except ImportError:  # pragma: no cover - optional runtime dependency
+    lhafile = None
+
 from src.features.builder import add_current_meet_features, add_race_relative_features
 from src.models.ranker import predict_race_order, predict_trifecta_probabilities
 from src.parsers.bk_parser import parse_entry_text
@@ -681,6 +686,101 @@ def find_seven_zip() -> str:
         if candidate.exists():
             return str(candidate)
     raise RuntimeError("7-Zip is required to extract .lzh schedule files but was not found.")
+
+
+def extract_lzh_text(archive_bytes: bytes) -> str:
+    extracted = extract_lzh_entries(archive_bytes)
+    for _, data in extracted:
+        for encoding in ("cp932", "shift_jis", "utf-8", "latin1"):
+            try:
+                text = data.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+            if "遶ｶ襍ｰ謌千ｸｾ" not in text and "逡ｪ邨・｡ｨ" not in text and "濶・" not in text:
+                continue
+            return text
+    return decode_rowdata_bytes(extracted[0][1])
+
+
+def extract_lzh_first_file_bytes(archive_bytes: bytes) -> bytes:
+    return extract_lzh_entries(archive_bytes)[0][1]
+
+
+def extract_lzh_entries(archive_bytes: bytes) -> list[tuple[str, bytes]]:
+    extraction_errors: list[str] = []
+    try:
+        return extract_lzh_entries_with_lhafile(archive_bytes)
+    except Exception as exc:
+        extraction_errors.append(f"lhafile: {exc}")
+
+    seven_zip = find_seven_zip()
+    if seven_zip is not None:
+        try:
+            return extract_lzh_entries_with_seven_zip(archive_bytes, seven_zip)
+        except Exception as exc:
+            extraction_errors.append(f"7-Zip: {exc}")
+
+    detail = " / ".join(extraction_errors) if extraction_errors else "no extractor available"
+    raise RuntimeError(
+        "Failed to extract .lzh archive. Install the Python package 'lhafile' or 7-Zip. "
+        f"Details: {detail}"
+    )
+
+
+def extract_lzh_entries_with_lhafile(archive_bytes: bytes) -> list[tuple[str, bytes]]:
+    if lhafile is None:
+        raise RuntimeError("lhafile is not installed")
+    archive_class = getattr(lhafile, "Lhafile", None) or getattr(lhafile, "LhaFile", None)
+    if archive_class is None:
+        raise RuntimeError("lhafile does not expose Lhafile/LhaFile")
+
+    with tempfile.TemporaryDirectory(prefix="boatrace_lzh_") as tmpdir:
+        temp_dir = Path(tmpdir)
+        archive_path = temp_dir / "program.lzh"
+        archive_path.write_bytes(archive_bytes)
+        with archive_class(str(archive_path)) as archive:
+            if hasattr(archive, "namelist"):
+                names = list(archive.namelist())
+            elif hasattr(archive, "infolist"):
+                names = [
+                    getattr(info, "filename", getattr(info, "name", str(info)))
+                    for info in archive.infolist()
+                ]
+            else:
+                raise RuntimeError("lhafile archive object does not expose namelist/infolist")
+            if not names:
+                raise RuntimeError("No file was extracted from the schedule archive.")
+            return [(name, archive.read(name)) for name in names]
+
+
+def extract_lzh_entries_with_seven_zip(archive_bytes: bytes, seven_zip: str) -> list[tuple[str, bytes]]:
+    with tempfile.TemporaryDirectory(prefix="boatrace_lzh_") as tmpdir:
+        temp_dir = Path(tmpdir)
+        archive_path = temp_dir / "program.lzh"
+        archive_path.write_bytes(archive_bytes)
+        result = subprocess.run(
+            [seven_zip, "e", str(archive_path), f"-o{temp_dir}", "-y"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"Failed to extract LZH archive with 7-Zip: {result.stderr.strip()}")
+        extracted = sorted(path for path in temp_dir.iterdir() if path.is_file() and path.name != archive_path.name)
+        if not extracted:
+            raise RuntimeError("No file was extracted from the schedule archive.")
+        return [(path.name, path.read_bytes()) for path in extracted]
+
+
+def find_seven_zip() -> str | None:
+    candidates = [
+        Path(r"C:\Program Files\7-Zip\7z.exe"),
+        Path(r"C:\Program Files\7-Zip\7z.EXE"),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return None
 
 
 def fetch_text(url: str, referer: str | None = None) -> str:

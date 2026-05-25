@@ -24,6 +24,8 @@ from src.models.ranker import (
     predict_trifecta_probabilities,
     save_artifacts,
     train_ranker,
+    infer_latest_available_race_date,
+    with_latest_available_dates,
 )
 from src.parsers.bk_parser import parse_entry_file, parse_result_file
 from src.rowdata_sync import RowdataBackfillReport, backfill_rowdata
@@ -95,6 +97,7 @@ def train_from_config(config_path: str | Path) -> dict[str, Any]:
     config = load_config(Path(config_path))
     training_table = pd.read_parquet(config["data"]["training_table"])
     training_table["race_date"] = pd.to_datetime(training_table["race_date"])
+    config = with_latest_available_dates(config, infer_latest_available_race_date(training_table))
 
     (
         models,

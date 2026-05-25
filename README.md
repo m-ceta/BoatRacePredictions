@@ -1,47 +1,151 @@
 # BoatRacePredictions
 
-`rowdata` 配下の番組表 `B*.TXT` とレース結果 `K*.TXT` を使い、ボートレースの順位予測と三連単確率予測を行う Python パッケージです。
+ボートレースの過去 `B*.TXT` / `K*.TXT` から学習し、当日レースや将来レースに対して
 
-## 概要
+- 順位予測
+- 三連単確率
+- オッズ取得時の買い候補
 
-- 1レース6艇を `group` とするランキング学習を採用
-- 既存の `CatBoostRanker` / `LightGBM Ranker` / 加重アンサンブルを維持
-- 三連単確率は以下の2系統を出力
-  - `probability_v1`: 既存の Plackett-Luce ベース
-  - `probability_v2`: `win_prob` / `top2_prob` / `top3_prob` と ranking score を組み合わせた拡張版
-- `trifecta_isotonic` による三連単確率校正を維持
-- オッズがある場合は期待値列を追加できる
+を出力する Python プロジェクトです。
 
-## 順位予測と三連単予測の違い
+現在の主な構成は次です。
 
-- 順位予測:
-  - 各艇の強さをレース内で比較し、`predicted_rank` と `win_probability_like` を出力します。
-- 三連単確率:
-  - `1-2-3` のような 120 通りの並びごとに確率を出力します。
-  - `probability_v1` は既存方式、`probability_v2` は拡張方式です。
-- 期待値判定:
-  - オッズが与えられた場合のみ、`expected_value = probability * odds` を計算し、`is_value_bet` や `stake_fraction` を追加します。
+- 順位予測: `CatBoostRanker` + `LightGBM Ranker`
+- 補助モデル: `is_win / is_top2 / is_top3` classifier、`flow`、`staged`
+- 三連単予測: `v1` + `Phase3` rerank
+- 当日予測: mbrace / boatrace.jp から番組表・オッズを取得
+- Web UI: Streamlit
+
+`.lzh` 展開は Python の `lhafile` を優先して使うため、通常は 7-Zip 不要です。
 
 ## ディレクトリ
 
-- `src/parsers`: B/K テキストパーサ
-- `src/features`: 学習テーブル生成
-- `src/models`: ranker / classifier / flow model
-- `src/models/staged.py`: 1着 / 2着 / 3着 の段階モデル
-- `src/evaluation`: 三連単・期待値評価指標
-- `src/odds`: 期待値計算
-- `src/live`: 当日番組表取得と予測
-- `configs/train.yaml`: 学習設定
+- `rowdata/`
+  - 元データ `B*.TXT` / `K*.TXT`
+- `data/processed/`
+  - 中間生成物
+  - `training_table.parquet` など
+- `artifacts/`
+  - 学習済みモデル、特徴量定義、校正器、メトリクス
+- `configs/train.yaml`
+  - 学習・推論設定
+- `app/streamlit_app.py`
+  - Web UI
 
 ## セットアップ
+
+### 1. Conda 推奨
+
+```bat
+conda_setup.bat
+conda activate boatrace-predictions
+```
+
+既に環境がある場合も `conda_setup.bat` で更新できます。
+
+環境を有効化したコマンドプロンプトを直接開く場合:
+
+```bat
+open_conda_prompt.bat
+```
+
+### 2. pip で入れる場合
 
 ```bash
 pip install -e .
 ```
 
-## Web UI
+## 主なコマンド
 
-Streamlit ベースの Web UI を起動できます。
+### rowdata の不足分を補完
+
+最新既存日の翌日から当日までを補完:
+
+```bash
+boatrace-backfill-rowdata --rowdata rowdata
+```
+
+期間指定:
+
+```bash
+boatrace-backfill-rowdata --rowdata rowdata --start 2026-05-14 --end 2026-05-22
+```
+
+`B` のみ:
+
+```bash
+boatrace-backfill-rowdata --rowdata rowdata --start 2026-05-14 --end 2026-05-22 --kinds B
+```
+
+### 学習データを再生成
+
+```bash
+boatrace-build --rowdata rowdata --output data/processed
+```
+
+出力:
+
+- `data/processed/race_entries.parquet`
+- `data/processed/race_results.parquet`
+- `data/processed/training_table.parquet`
+
+### モデル再学習
+
+```bash
+boatrace-train --config configs/train.yaml
+```
+
+補足:
+
+- `boatrace-build` 後の `training_table.parquet` に入っている最新 `race_date` を見て、
+  学習側の `max_date` / `valid_end_date` は実行時に自動同期されます。
+- そのため、`rowdata` 更新後に毎回 `configs/train.yaml` の日付を手で直す必要はありません。
+
+### 三連単 `Phase3` 更新
+
+```bash
+boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 1000 --eval-rerank-top-n 10 --optimize-rerank
+```
+
+### 三連単 full valid 評価
+
+```bash
+boatrace-eval-trifecta-full --config configs/train.yaml
+```
+
+### 特徴量化済み CSV から予測
+
+順位予測:
+
+```bash
+boatrace-predict --config configs/train.yaml --features artifacts/feature_columns.json --input future_races.csv --output ranking_predictions.csv
+```
+
+三連単まで出力:
+
+```bash
+boatrace-predict --config configs/train.yaml --features artifacts/feature_columns.json --input future_races.csv --output ranking_predictions.csv --trifecta-output trifecta_predictions.csv
+```
+
+オッズ込み:
+
+```bash
+boatrace-predict --config configs/train.yaml --features artifacts/feature_columns.json --input future_races.csv --output ranking_predictions.csv --trifecta-output trifecta_predictions.csv --odds odds.csv
+```
+
+### 当日レース予測
+
+```bash
+boatrace-predict-today --config configs/train.yaml --venue 23 --race-no 1
+```
+
+補足:
+
+- `future_races.csv` は不要です
+- 内部で当日の番組表を取得し、`training_table.parquet` の履歴から特徴量を生成します
+- オッズが取得できた場合は、買い候補も出します
+
+### Web UI
 
 ```bash
 boatrace-webui
@@ -53,146 +157,134 @@ boatrace-webui
 streamlit run app/streamlit_app.py
 ```
 
-## データセット生成
+## 入力ファイル
 
-```bash
-boatrace-build --rowdata rowdata --output data/processed
-```
+### `future_races.csv`
 
-## rowdata 補完
+特徴量化済みの予測入力です。
 
-不足している `B*.TXT` / `K*.TXT` を mbrace の日次 `.lzh` から補完できます。
+- 1レースあたり 6 行
+- 1行 = 1艇
+- `race_id` 単位で 6 艇をまとめる
+- 学習時と同じ特徴量列を持つ
 
-最新既存日付の翌日から本日分までを補完:
+通常の当日予測では内部生成されるため、手で作る必要はありません。
 
-```bash
-boatrace-backfill-rowdata --rowdata rowdata
-```
+### `odds.csv`
 
-任意期間を補完:
-
-```bash
-boatrace-backfill-rowdata --rowdata rowdata --start 2026-05-14 --end 2026-05-22
-```
-
-番組表だけ補完:
-
-```bash
-boatrace-backfill-rowdata --rowdata rowdata --start 2026-05-14 --end 2026-05-22 --kinds B
-```
-
-生成物:
-
-- `data/processed/race_entries.parquet`
-- `data/processed/race_results.parquet`
-- `data/processed/training_table.parquet`
-
-## 学習
-
-```bash
-boatrace-train --config configs/train.yaml
-```
-
-生成物:
-
-- `artifacts/catboost_ranker.cbm`
-- `artifacts/lightgbm_ranker.txt`
-- `artifacts/classifiers/*.txt`
-- `artifacts/flow_lightgbm.txt`
-- `artifacts/flow_classes.json`
-- `artifacts/staged/*.txt`
-- `artifacts/trifecta_v2_logreg.joblib`
-- `artifacts/feature_columns.json`
-- `artifacts/ensemble_weights.json`
-- `artifacts/trifecta_isotonic.joblib`
-- `artifacts/metrics.json`
-
-## 予測
-
-順位予測のみ:
-
-```bash
-boatrace-predict --config configs/train.yaml --features artifacts/feature_columns.json --input future_races.csv --output ranking_predictions.csv
-```
-
-順位予測に加えて三連単確率を出力:
-
-```bash
-boatrace-predict --config configs/train.yaml --features artifacts/feature_columns.json --input future_races.csv --output ranking_predictions.csv --trifecta-output trifecta_predictions.csv
-```
-
-オッズ付き三連単確率を出力:
-
-```bash
-boatrace-predict --config configs/train.yaml --features artifacts/feature_columns.json --input future_races.csv --output ranking_predictions.csv --trifecta-output trifecta_predictions.csv --odds odds.csv
-```
-
-`odds.csv` の最低限の想定列:
+最小列は次です。
 
 - `race_id`
 - `trifecta`
 - `odds`
 
-`trifecta_predictions.csv` には以下の列が入ります。
+例:
 
-- `probability_v1`
-- `probability_v2`
-- `probability`
-- `odds` オッズ入力時のみ
-- `expected_value` オッズ入力時のみ
-- `market_rank` オッズ入力時のみ
-- `is_value_bet` オッズ入力時のみ
-- `stake_fraction` オッズ入力時のみ
-
-## trifecta v2 のみ再学習
-
-既存の ranker / classifier / calibrator を使い、`flow model`、`staged model`、`trifecta v2 combiner` だけを更新する軽量コマンドです。
-
-```bash
-boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 300
+```csv
+race_id,trifecta,odds
+20260522_24_01,1-2-3,18.4
+20260522_24_01,1-3-2,21.7
+20260522_24_01,2-1-3,35.9
 ```
 
-このコマンドは主に `v2` 改善実験用で、フルの `boatrace-train` より短いサイクルで回す用途を想定しています。
+## 当日予測の出力
 
-## 当日レース予測
+当日予測では、概ね次を表示します。
 
-```bash
-boatrace-predict-today --config configs/train.yaml --venue 24 --race-no 12
+- 予想着順
+- 各着の予想確率
+- 三連単本命
+- 三連単予想確率
+- 予想信頼度
+- オッズ取得時:
+  - オッズ評価上位
+  - 買い目安オッズ
+  - 判定
+  - 買い候補一覧
+
+## 主な出力ファイル
+
+### `artifacts/`
+
+- `catboost_ranker.cbm`
+- `lightgbm_ranker.txt`
+- `feature_columns.json`
+- `ensemble_weights.json`
+- `trifecta_isotonic.joblib`
+- `trifecta_v2_isotonic.joblib`
+- `trifecta_v3_isotonic.joblib`
+- `trifecta_v2_model.joblib`
+- `metrics.json`
+- `classifiers/*.txt`
+- `staged/*.txt`
+- `flow_lightgbm.txt`
+- `flow_classes.json`
+
+### 予測専用で別 PC に持っていく最小セット
+
+予測だけなら、概ね次をコピーすれば使えます。
+
+- `artifacts/`
+- `configs/`
+- `data/processed/training_table.parquet`
+- ソースコード一式
+
+## バッチ運用
+
+### 週次バッチ
+
+```bat
+weekly_update.bat
 ```
 
-## Python API
+実行内容:
 
-```python
-from src.api import backfill_rowdata_files, load_bundle, predict_ranking, predict_today, predict_trifecta
-import pandas as pd
+1. `rowdata` 補完
+2. `data/processed` 再生成
 
-backfill_report = backfill_rowdata_files("rowdata", start_date="2026-05-14", end_date="2026-05-22")
-print(backfill_report.to_dict())
+### 月次バッチ
 
-bundle = load_bundle("configs/train.yaml")
-future_df = pd.read_csv("future_races.csv")
-
-ranking = predict_ranking(bundle, future_df)
-trifecta = predict_trifecta(bundle, future_df, top_n=20)
-
-odds_df = pd.read_csv("odds.csv")
-trifecta_with_odds = predict_trifecta(bundle, future_df, top_n=20, odds_df=odds_df, use_v2=True)
-
-today = predict_today("24", 12, "configs/train.yaml")
-print(today.text)
+```bat
+monthly_update.bat
 ```
 
-## メトリクス
+実行内容:
 
-`artifacts/metrics.json` には以下を保存します。
+1. `rowdata` 補完
+2. `data/processed` 再生成
+3. ranker 再学習
+4. `Phase3` 更新
 
-- `ranker_metrics`
-- `trifecta_v1_metrics`
-- `trifecta_v2_metrics`
-- `classifier_metrics`
-- `flow_model_metrics`
-- `staged_model_metrics`
-- `expected_value_backtest_metrics`
+### PATH が通っていない環境について
+
+`weekly_update.bat` と `monthly_update.bat` は `boatrace-*` コマンドが `PATH` に無くても動きます。
+内部で次の順に Python を探して `src.cli` を直接呼び出します。
+
+1. `.venv\Scripts\python.exe`
+2. `venv\Scripts\python.exe`
+3. `py -3`
+4. `python`
+
+## 運用の考え方
+
+### 日次
+
+1. `boatrace-backfill-rowdata --rowdata rowdata`
+2. `boatrace-build --rowdata rowdata --output data/processed`
+3. 当日予測
+
+### 週次
+
+1. `rowdata` 補完
+2. `data/processed` 再生成
+
+### 月次
+
+1. `rowdata` 補完
+2. `data/processed` 再生成
+3. `boatrace-train`
+4. `boatrace-train-trifecta-v2`
+5. 必要に応じて評価
 
 ## テスト
 
@@ -202,31 +294,7 @@ python -m pytest -q
 
 ## 注意
 
-- 時系列リークを避けるため、特徴量は過去情報のみで作成します。
-- Web のオッズ取得やリアルタイム取得は別層で扱い、ローカル予測フローは `B*.TXT` / `K*.TXT` だけで完結する設計です。
-
-## Windows Batch Shortcuts
-
-Weekly batch:
-
-```bat
-weekly_update.bat
-```
-
-Runs:
-
-- `boatrace-backfill-rowdata --rowdata rowdata`
-- `boatrace-build --rowdata rowdata --output data/processed`
-
-Monthly batch:
-
-```bat
-monthly_update.bat
-```
-
-Runs:
-
-- `boatrace-backfill-rowdata --rowdata rowdata`
-- `boatrace-build --rowdata rowdata --output data/processed`
-- `boatrace-train --config configs/train.yaml`
-- `boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 1000 --eval-rerank-top-n 10 --optimize-rerank`
+- `artifacts/` は Git 管理対象外です
+- `rowdata/` と `data/` も Git 管理対象外です
+- 当日予測と `rowdata` 補完はネットワーク接続が必要です
+- 既存環境で `.lzh` 展開を Python 側へ切り替えるには、依存更新のため一度 `conda_setup.bat` または `pip install -e .` を再実行してください

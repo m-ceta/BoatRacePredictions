@@ -1,6 +1,7 @@
 # Large local datasets
 rowdata/
 data/
+artifacts/
 *.7z
 
 # Python

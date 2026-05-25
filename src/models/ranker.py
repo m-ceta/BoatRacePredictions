@@ -129,6 +129,31 @@ def get_phase3_settings(config: dict | None = None) -> dict[str, Any]:
     return settings
 
 
+def infer_latest_available_race_date(training_table: pd.DataFrame) -> pd.Timestamp | None:
+    if "race_date" not in training_table.columns or training_table.empty:
+        return None
+    race_dates = pd.to_datetime(training_table["race_date"], errors="coerce")
+    if race_dates.dropna().empty:
+        return None
+    return pd.Timestamp(race_dates.max()).normalize()
+
+
+def with_latest_available_dates(config: dict, latest_race_date: pd.Timestamp | str | None) -> dict:
+    if latest_race_date is None:
+        return config
+
+    synced = json.loads(json.dumps(config))
+    latest_ts = pd.Timestamp(latest_race_date).normalize()
+    latest_str = latest_ts.strftime("%Y-%m-%d")
+
+    synced.setdefault("data", {})
+    synced["data"]["max_date"] = latest_str
+
+    synced.setdefault("split", {})
+    synced["split"]["valid_end_date"] = latest_str
+    return synced
+
+
 def is_trifecta_v2_bundle(model: Any) -> bool:
     return isinstance(model, dict) and "model_type" in model
 

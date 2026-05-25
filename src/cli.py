@@ -38,6 +38,8 @@ from src.models.ranker import (
     with_rank_penalty_settings,
     infer_feature_columns,
     infer_categorical_columns,
+    infer_latest_available_race_date,
+    with_latest_available_dates,
 )
 from src.models.flow import evaluate_flow_model, train_flow_model
 from src.models.staged import evaluate_staged_models, train_staged_models
@@ -91,6 +93,7 @@ def train_main() -> None:
     config = load_config(args.config)
     training_table = pd.read_parquet(config["data"]["training_table"])
     training_table["race_date"] = pd.to_datetime(training_table["race_date"])
+    config = with_latest_available_dates(config, infer_latest_available_race_date(training_table))
 
     (
         models,
@@ -637,6 +640,8 @@ def evaluate_trifecta_in_chunks(
 
 
 def load_training_splits(training_table_path: Path, config: dict) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    latest_race_dates = pd.read_parquet(training_table_path, columns=["race_date"])
+    config = with_latest_available_dates(config, infer_latest_available_race_date(latest_race_dates))
     data_config = config.get("data", {})
     min_date = pd.Timestamp(data_config.get("min_date")) if data_config.get("min_date") else None
     max_date = pd.Timestamp(data_config.get("max_date")) if data_config.get("max_date") else None
