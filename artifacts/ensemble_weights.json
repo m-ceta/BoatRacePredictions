@@ -1,8 +1,0 @@
-{
-  "catboost": 0.05,
-  "lightgbm": 0.95,
-  "validation_objective": 0.6757851978227313,
-  "validation_top1_accuracy": 0.6039970753107482,
-  "validation_avg_top3_overlap": 0.7178812251198311,
-  "trifecta_v2_v1_weight": 1.0
-}
