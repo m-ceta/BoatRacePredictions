@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 from src.evaluation.metrics import compute_multiclass_classification_metrics
+from src.models.training_device import train_lightgbm_with_optional_gpu
 
 
 FLOW_STYLE_MAP = {
@@ -84,9 +85,10 @@ def train_flow_model(
         "verbosity": -1,
         "seed": config["model"]["random_seed"],
     }
-    model = lgb.train(
+    model = train_lightgbm_with_optional_gpu(
         params,
         train_dataset,
+        config,
         num_boost_round=config["model"]["iterations"],
         valid_sets=[valid_dataset],
         valid_names=["valid_flow"],

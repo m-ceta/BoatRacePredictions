@@ -8,15 +8,13 @@ from src import live
 class _FakeLhaArchive:
     def __init__(self, path: str) -> None:
         self.path = path
-
-    def __enter__(self) -> "_FakeLhaArchive":
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> None:
-        return None
+        self.closed = False
 
     def namelist(self) -> list[str]:
         return ["sample.txt"]
+
+    def close(self) -> None:
+        self.closed = True
 
     def read(self, name: str) -> bytes:
         assert name == "sample.txt"

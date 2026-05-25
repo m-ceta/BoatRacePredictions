@@ -738,7 +738,8 @@ def extract_lzh_entries_with_lhafile(archive_bytes: bytes) -> list[tuple[str, by
         temp_dir = Path(tmpdir)
         archive_path = temp_dir / "program.lzh"
         archive_path.write_bytes(archive_bytes)
-        with archive_class(str(archive_path)) as archive:
+        archive = archive_class(str(archive_path))
+        try:
             if hasattr(archive, "namelist"):
                 names = list(archive.namelist())
             elif hasattr(archive, "infolist"):
@@ -751,6 +752,10 @@ def extract_lzh_entries_with_lhafile(archive_bytes: bytes) -> list[tuple[str, by
             if not names:
                 raise RuntimeError("No file was extracted from the schedule archive.")
             return [(name, archive.read(name)) for name in names]
+        finally:
+            close_fn = getattr(archive, "close", None)
+            if callable(close_fn):
+                close_fn()
 
 
 def extract_lzh_entries_with_seven_zip(archive_bytes: bytes, seven_zip: str) -> list[tuple[str, bytes]]:

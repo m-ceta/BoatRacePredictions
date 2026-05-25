@@ -6,6 +6,7 @@ import lightgbm as lgb
 import pandas as pd
 
 from src.evaluation.metrics import compute_binary_classification_metrics
+from src.models.training_device import train_lightgbm_with_optional_gpu
 
 
 STAGED_TARGETS = {
@@ -78,9 +79,10 @@ def train_binary_finish_model(
         "verbosity": -1,
         "seed": config["model"]["random_seed"],
     }
-    return lgb.train(
+    return train_lightgbm_with_optional_gpu(
         params,
         train_dataset,
+        config,
         num_boost_round=config["model"]["iterations"],
         valid_sets=[valid_dataset],
         valid_names=[f"valid_{source_col}_{rank_value}"],

@@ -2,19 +2,24 @@ data:
   processed_dir: data/processed
   training_table: data/processed/training_table.parquet
   min_date: "2023-01-01"
-  max_date: "2026-05-13"
+  max_date: "2026-05-24"
 
 split:
   train_end_date: "2025-12-31"
-  valid_end_date: "2026-05-13"
+  valid_end_date: "2026-05-24"
 
 model:
+  training_device: "cpu"
   iterations: 120
   learning_rate: 0.03
   depth: 6
   loss_function: YetiRankPairwise
   eval_metric: NDCG
   random_seed: 42
+  gpu:
+    catboost: false
+    lightgbm: false
+    device_id: 0
 
 inference:
   trifecta_rerank_top_n: 10

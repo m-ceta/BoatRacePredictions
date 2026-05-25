@@ -10,7 +10,7 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 import yaml
-from catboost import CatBoostRanker, Pool
+from catboost import CatBoostError, CatBoostRanker, Pool
 from sklearn.isotonic import IsotonicRegression
 
 from src.evaluation.metrics import compute_trifecta_metrics, compute_trifecta_rerank_metrics
@@ -35,6 +35,7 @@ from src.models.staged import (
     save_staged_models,
     train_staged_models,
 )
+from src.models.training_device import catboost_training_kwargs, train_lightgbm_with_optional_gpu
 from src.odds.expected_value import attach_expected_value_columns
 
 
@@ -707,8 +708,24 @@ def train_catboost(
         eval_metric=config["model"]["eval_metric"],
         random_seed=config["model"]["random_seed"],
         verbose=100,
+        **catboost_training_kwargs(config),
     )
-    model.fit(train_pool, eval_set=valid_pool, use_best_model=True)
+    try:
+        model.fit(train_pool, eval_set=valid_pool, use_best_model=True)
+    except CatBoostError as exc:
+        if not catboost_training_kwargs(config):
+            raise
+        print(f"CatBoost GPU training failed; falling back to CPU. Reason: {exc}")
+        model = CatBoostRanker(
+            iterations=config["model"]["iterations"],
+            learning_rate=config["model"]["learning_rate"],
+            depth=config["model"]["depth"],
+            loss_function=config["model"]["loss_function"],
+            eval_metric=config["model"]["eval_metric"],
+            random_seed=config["model"]["random_seed"],
+            verbose=100,
+        )
+        model.fit(train_pool, eval_set=valid_pool, use_best_model=True)
     return model
 
 
@@ -777,9 +794,10 @@ def train_lightgbm(
         "seed": config["model"]["random_seed"],
         "ndcg_eval_at": [1, 3, 6],
     }
-    return lgb.train(
+    return train_lightgbm_with_optional_gpu(
         params,
         train_dataset,
+        config,
         num_boost_round=config["model"]["iterations"],
         valid_sets=[valid_dataset],
         valid_names=["valid"],
@@ -1745,6 +1763,7 @@ def optimize_trifecta_v2_blend_weight(
     classifier_models: dict[str, lgb.Booster] | None = None,
     flow_model: lgb.Booster | None = None,
     flow_classes: list[str] | None = None,
+    staged_models: dict[str, lgb.Booster] | None = None,
 ) -> float:
     if valid_df.empty or not classifier_models:
         return 1.0
@@ -1758,6 +1777,7 @@ def optimize_trifecta_v2_blend_weight(
         classifier_models=classifier_models,
         flow_model=flow_model,
         flow_classes=flow_classes,
+        staged_models=staged_models,
     )
 
     race_payloads: list[tuple[np.ndarray, np.ndarray, int]] = []
@@ -1893,7 +1913,13 @@ def train_trifecta_v2_model(
         "seed": 42,
         "label_gain": list(range(int(y_train.max()) + 2)),
     }
-    booster = lgb.train(params, train_set, num_boost_round=200, callbacks=[lgb.log_evaluation(100)])
+    booster = train_lightgbm_with_optional_gpu(
+        params,
+        train_set,
+        config,
+        num_boost_round=200,
+        callbacks=[lgb.log_evaluation(100)],
+    )
     return {
         "model_type": "lgbm_ranker",
         "phase": "phase2_reranker",
@@ -2059,8 +2085,20 @@ def train_phase3_conditional_trifecta_model(
         "seed": 42,
     }
     boost_round = int(regularization["num_boost_round"])
-    second_model = lgb.train(params, second_set, num_boost_round=boost_round, callbacks=[lgb.log_evaluation(100)])
-    third_model = lgb.train(params, third_set, num_boost_round=boost_round, callbacks=[lgb.log_evaluation(100)])
+    second_model = train_lightgbm_with_optional_gpu(
+        params,
+        second_set,
+        config,
+        num_boost_round=boost_round,
+        callbacks=[lgb.log_evaluation(100)],
+    )
+    third_model = train_lightgbm_with_optional_gpu(
+        params,
+        third_set,
+        config,
+        num_boost_round=boost_round,
+        callbacks=[lgb.log_evaluation(100)],
+    )
 
     bundle = dict(base_model) if is_trifecta_v2_bundle(base_model) else {
         "model_type": "lgbm_ranker",
