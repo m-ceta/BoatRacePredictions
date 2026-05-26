@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 from src.api import backfill_rowdata_files, load_bundle, load_prediction_input
+from src.drive_backup import DEFAULT_DRIVE_FOLDER_URL, package_and_upload_to_drive
 from src.evaluation.metrics import compute_trifecta_rerank_metrics
 from src.features.builder import build_training_table, save_processed_tables
 from src.live import predict_today_race
@@ -81,6 +82,27 @@ def backfill_rowdata_main() -> None:
         end_date=args.end,
         kinds=args.kinds,
         overwrite=args.overwrite,
+    )
+    print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+
+
+def package_and_upload_main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--project-root", type=Path, default=Path("."))
+    parser.add_argument("--drive-folder", type=str, default=DEFAULT_DRIVE_FOLDER_URL)
+    parser.add_argument("--credentials", type=Path, default=Path("google_drive_credentials.json"))
+    parser.add_argument("--token", type=Path, default=Path("artifacts/google-drive-token.json"))
+    parser.add_argument("--rowdata-zip-name", type=str, default="rowdata.zip")
+    parser.add_argument("--drp-zip-name", type=str, default="drp.zip")
+    args = parser.parse_args()
+
+    report = package_and_upload_to_drive(
+        project_root=args.project_root,
+        folder_url_or_id=args.drive_folder,
+        credentials_path=args.credentials,
+        token_path=args.token,
+        rowdata_zip_name=args.rowdata_zip_name,
+        drp_zip_name=args.drp_zip_name,
     )
     print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
 

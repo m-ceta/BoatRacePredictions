@@ -699,32 +699,36 @@ def train_catboost(
 ) -> CatBoostRanker:
     train_pool = build_catboost_pool(train_df, feature_columns, categorical_columns)
     valid_pool = build_catboost_pool(valid_df, feature_columns, categorical_columns)
+    gpu_kwargs = catboost_training_kwargs(config)
+    eval_metric = config["model"]["eval_metric"]
+    if gpu_kwargs and str(eval_metric).upper() == "NDCG":
+        print("CatBoost GPU training detected; omitting eval_metric=NDCG to avoid CPU-side metric evaluation.")
+        eval_metric = None
 
-    model = CatBoostRanker(
+    model_kwargs = dict(
         iterations=config["model"]["iterations"],
         learning_rate=config["model"]["learning_rate"],
         depth=config["model"]["depth"],
         loss_function=config["model"]["loss_function"],
-        eval_metric=config["model"]["eval_metric"],
         random_seed=config["model"]["random_seed"],
         verbose=100,
-        **catboost_training_kwargs(config),
     )
+    if eval_metric is not None:
+        model_kwargs["eval_metric"] = eval_metric
+    model_kwargs.update(gpu_kwargs)
+
+    model = CatBoostRanker(**model_kwargs)
     try:
         model.fit(train_pool, eval_set=valid_pool, use_best_model=True)
     except CatBoostError as exc:
-        if not catboost_training_kwargs(config):
+        if not gpu_kwargs:
             raise
         print(f"CatBoost GPU training failed; falling back to CPU. Reason: {exc}")
-        model = CatBoostRanker(
-            iterations=config["model"]["iterations"],
-            learning_rate=config["model"]["learning_rate"],
-            depth=config["model"]["depth"],
-            loss_function=config["model"]["loss_function"],
-            eval_metric=config["model"]["eval_metric"],
-            random_seed=config["model"]["random_seed"],
-            verbose=100,
-        )
+        fallback_kwargs = dict(model_kwargs)
+        fallback_kwargs.pop("task_type", None)
+        fallback_kwargs.pop("devices", None)
+        fallback_kwargs["eval_metric"] = config["model"]["eval_metric"]
+        model = CatBoostRanker(**fallback_kwargs)
         model.fit(train_pool, eval_set=valid_pool, use_best_model=True)
     return model
 

@@ -157,6 +157,48 @@ boatrace-webui
 streamlit run app/streamlit_app.py
 ```
 
+### URL を定期的に開く補助コマンド
+
+```bash
+boatrace-collabo https://example.com
+```
+
+回数と間隔を指定する場合:
+
+```bash
+boatrace-collabo https://example.com --repeat 3 --interval-seconds 60
+```
+
+### 学習成果物を zip 化して Google Drive へアップロード
+
+次を 1 回で実行します。
+
+1. `rowdata/` を `rowdata.zip` に固める
+2. `artifacts/`, `configs/`, `data/` を `drp.zip` に固める
+3. Google Drive の指定フォルダへ同名上書きアップロードする
+
+コマンド:
+
+```bash
+boatrace-package-upload
+```
+
+既定のアップロード先:
+
+- `https://drive.google.com/drive/folders/19HHxA5r4T_IqMrDyNqU3qRUoRkhT87OL?usp=drive_link`
+
+前提:
+
+- ルートに OAuth クライアント JSON を `google_drive_credentials.json` として置く
+- 初回実行時にブラウザ認証を行う
+- 認証後のトークンは `artifacts/google-drive-token.json` に保存される
+
+必要なら引数で変更できます。
+
+```bash
+boatrace-package-upload --project-root . --drive-folder https://drive.google.com/drive/folders/19HHxA5r4T_IqMrDyNqU3qRUoRkhT87OL?usp=drive_link --credentials google_drive_credentials.json --token artifacts/google-drive-token.json
+```
+
 ## 入力ファイル
 
 ### `future_races.csv`
