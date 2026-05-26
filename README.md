@@ -271,32 +271,6 @@ race_id,trifecta,odds
 - `data/processed/training_table.parquet`
 - ソースコード一式
 
-## バッチ運用
-
-### 週次バッチ
-
-```bat
-weekly_update.bat
-```
-
-実行内容:
-
-1. `rowdata` 補完
-2. `data/processed` 再生成
-
-### 月次バッチ
-
-```bat
-monthly_update.bat
-```
-
-実行内容:
-
-1. `rowdata` 補完
-2. `data/processed` 再生成
-3. ranker 再学習
-4. `Phase3` 更新
-
 ### PATH が通っていない環境について
 
 `weekly_update.bat` と `monthly_update.bat` は `boatrace-*` コマンドが `PATH` に無くても動きます。
@@ -340,3 +314,37 @@ python -m pytest -q
 - `rowdata/` と `data/` も Git 管理対象外です
 - 当日予測と `rowdata` 補完はネットワーク接続が必要です
 - 既存環境で `.lzh` 展開を Python 側へ切り替えるには、依存更新のため一度 `conda_setup.bat` または `pip install -e .` を再実行してください
+## Web UI で実行できる操作
+
+`boatrace-webui` または `streamlit run app/streamlit_app.py` で起動する Web UI から、次の操作を実行できます。
+
+- 当日レース予測
+- `rowdata` 補完
+- 学習データ更新
+- `boatrace-train`
+- `boatrace-train-trifecta-v2`
+- `boatrace-package-upload`
+
+### Web UI 上の学習系操作
+
+`boatrace-train` タブ:
+
+- `configs/train.yaml` を指定して ranker / classifier / flow / staged / Phase3 基本モデルを再学習します
+
+`boatrace-train-trifecta-v2` タブ:
+
+- `max-races`
+- `eval-max-races`
+- `eval-rerank-top-n`
+- `optimize-rerank`
+
+を指定して、三連単 `Phase3` rerank の追加最適化を実行します。
+
+`boatrace-package-upload` タブ:
+
+- `rowdata.zip`
+- `drp.zip`
+
+を作成し、Google Drive の指定フォルダへ同名上書きアップロードします。
+
+いずれの操作も Web UI 上で実行ログを確認できます。

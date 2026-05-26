@@ -2,6 +2,8 @@
 rowdata/
 data/
 artifacts/
+google_drive_credentials.json
+artifacts/google-drive-token.json
 *.7z
 
 # Python
