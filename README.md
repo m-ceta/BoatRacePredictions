@@ -160,13 +160,11 @@ streamlit run app/streamlit_app.py
 ### URL を定期的に開く補助コマンド
 
 ```bash
-boatrace-collabo https://example.com
 ```
 
 回数と間隔を指定する場合:
 
 ```bash
-boatrace-collabo https://example.com --repeat 3 --interval-seconds 60
 ```
 
 ### 学習成果物を zip 化して Google Drive へアップロード
@@ -330,6 +328,8 @@ python -m pytest -q
 `boatrace-train` タブ:
 
 - `configs/train.yaml` を指定して ranker / classifier / flow / staged / Phase3 基本モデルを再学習します
+- 学習デバイスは `CPU` / `GPU` を選択できます
+- Web UI の既定値は `CPU` です
 
 `boatrace-train-trifecta-v2` タブ:
 
@@ -337,6 +337,7 @@ python -m pytest -q
 - `eval-max-races`
 - `eval-rerank-top-n`
 - `optimize-rerank`
+- 学習デバイス `CPU` / `GPU`
 
 を指定して、三連単 `Phase3` rerank の追加最適化を実行します。
 

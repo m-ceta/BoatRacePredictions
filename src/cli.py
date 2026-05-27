@@ -42,6 +42,7 @@ from src.models.ranker import (
     infer_latest_available_race_date,
     with_latest_available_dates,
 )
+from src.models.training_device import with_training_device_override
 from src.models.flow import evaluate_flow_model, train_flow_model
 from src.models.staged import evaluate_staged_models, train_staged_models
 from src.parsers.bk_parser import parse_entry_file, parse_result_file
@@ -110,9 +111,11 @@ def package_and_upload_main() -> None:
 def train_main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--training-device", choices=["cpu", "gpu"], default=None)
     args = parser.parse_args()
 
     config = load_config(args.config)
+    config = with_training_device_override(config, args.training_device)
     training_table = pd.read_parquet(config["data"]["training_table"])
     training_table["race_date"] = pd.to_datetime(training_table["race_date"])
     config = with_latest_available_dates(config, infer_latest_available_race_date(training_table))
@@ -193,6 +196,7 @@ def predict_main() -> None:
 def train_trifecta_v2_main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--training-device", choices=["cpu", "gpu"], default=None)
     parser.add_argument("--max-races", type=int, default=1000)
     parser.add_argument("--eval-max-races", type=int, default=3000)
     parser.add_argument("--eval-rerank-top-n", type=int, default=24)
@@ -200,6 +204,7 @@ def train_trifecta_v2_main() -> None:
     args = parser.parse_args()
 
     config = load_config(args.config)
+    config = with_training_device_override(config, args.training_device)
     artifacts = get_artifact_paths(config)
     train_end = pd.Timestamp(config["split"]["train_end_date"])
     valid_end = pd.Timestamp(config["split"]["valid_end_date"])

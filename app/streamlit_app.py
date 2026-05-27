@@ -232,6 +232,12 @@ def render_train_tab() -> None:
 
     with st.form("train_form"):
         config_path = st.text_input("設定ファイル", value="configs/train.yaml", key="train_config")
+        training_device = st.selectbox(
+            "学習デバイス",
+            options=["cpu", "gpu"],
+            index=0,
+            help="WebUI から実行する学習ジョブのデバイスを選択します。既定は CPU です。",
+        )
         submitted = st.form_submit_button("モデル再学習を実行")
 
     if not submitted:
@@ -239,7 +245,14 @@ def render_train_tab() -> None:
 
     return_code, output_text = _run_python_cli(
         "モデル再学習",
-        ["-c", "from src.cli import train_main; train_main()", "--config", config_path],
+        [
+            "-c",
+            "from src.cli import train_main; train_main()",
+            "--config",
+            config_path,
+            "--training-device",
+            training_device,
+        ],
     )
     _render_command_result("モデル再学習", return_code, output_text)
 
@@ -250,6 +263,13 @@ def render_trifecta_train_tab() -> None:
 
     with st.form("trifecta_train_form"):
         config_path = st.text_input("設定ファイル", value="configs/train.yaml", key="trifecta_train_config")
+        training_device = st.selectbox(
+            "学習デバイス",
+            options=["cpu", "gpu"],
+            index=0,
+            key="trifecta_training_device",
+            help="WebUI から実行する学習ジョブのデバイスを選択します。既定は CPU です。",
+        )
         max_races = st.number_input("max-races", min_value=100, max_value=10000, value=1000, step=100)
         eval_max_races = st.number_input("eval-max-races", min_value=100, max_value=10000, value=1000, step=100)
         eval_rerank_top_n = st.number_input("eval-rerank-top-n", min_value=3, max_value=120, value=10, step=1)
@@ -264,6 +284,8 @@ def render_trifecta_train_tab() -> None:
         "from src.cli import train_trifecta_v2_main; train_trifecta_v2_main()",
         "--config",
         config_path,
+        "--training-device",
+        training_device,
         "--max-races",
         str(int(max_races)),
         "--eval-max-races",

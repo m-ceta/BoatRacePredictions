@@ -19,6 +19,28 @@ def get_gpu_settings(config: dict[str, Any] | None) -> dict[str, Any]:
     return settings
 
 
+def with_training_device_override(
+    config: dict[str, Any] | None,
+    training_device: str | None,
+) -> dict[str, Any] | None:
+    if config is None or training_device is None:
+        return config
+
+    normalized = str(training_device).strip().lower()
+    if normalized not in {"cpu", "gpu"}:
+        raise ValueError(f"Unsupported training device: {training_device}")
+
+    updated = dict(config)
+    model_config = dict(updated.get("model", {}))
+    gpu_settings = dict(model_config.get("gpu", {}))
+    model_config["training_device"] = normalized
+    gpu_settings["catboost"] = normalized == "gpu"
+    gpu_settings["lightgbm"] = normalized == "gpu"
+    model_config["gpu"] = gpu_settings
+    updated["model"] = model_config
+    return updated
+
+
 def catboost_training_kwargs(config: dict[str, Any] | None) -> dict[str, Any]:
     settings = get_gpu_settings(config)
     if not settings["catboost"]:
