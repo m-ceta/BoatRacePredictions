@@ -19,6 +19,61 @@ from src.parsers.bk_parser import parse_entry_file, parse_result_file
 
 ROWDATA_FILE_RE = re.compile(r"^[BK](?P<yy>\d{2})(?P<mm>\d{2})(?P<dd>\d{2})\.TXT$", re.IGNORECASE)
 
+ENTRY_PARQUET_SCHEMA = pa.schema(
+    [
+        ("race_id", pa.string()),
+        ("race_date", pa.date32()),
+        ("venue", pa.string()),
+        ("race_no", pa.int64()),
+        ("race_title", pa.string()),
+        ("leg_type", pa.string()),
+        ("distance_m", pa.int64()),
+        ("bet_type", pa.string()),
+        ("lane", pa.int64()),
+        ("racer_id", pa.int64()),
+        ("racer_name", pa.string()),
+        ("age", pa.int64()),
+        ("branch", pa.string()),
+        ("weight", pa.int64()),
+        ("class_name", pa.string()),
+        ("national_win_rate", pa.float64()),
+        ("national_place_rate", pa.float64()),
+        ("local_win_rate", pa.float64()),
+        ("local_place_rate", pa.float64()),
+        ("motor_no", pa.int64()),
+        ("motor_place_rate", pa.float64()),
+        ("boat_no", pa.int64()),
+        ("boat_place_rate", pa.float64()),
+        ("current_meet_results", pa.string()),
+        ("early_lane_hint", pa.int64()),
+    ]
+)
+
+RESULT_PARQUET_SCHEMA = pa.schema(
+    [
+        ("race_id", pa.string()),
+        ("race_date", pa.date32()),
+        ("venue", pa.string()),
+        ("race_no", pa.int64()),
+        ("lane", pa.int64()),
+        ("finish_position", pa.int64()),
+        ("finish_status", pa.string()),
+        ("racer_id", pa.int64()),
+        ("racer_name", pa.string()),
+        ("motor_no", pa.int64()),
+        ("boat_no", pa.int64()),
+        ("exhibition_time", pa.float64()),
+        ("course", pa.int64()),
+        ("start_timing", pa.float64()),
+        ("race_time", pa.float64()),
+        ("weather", pa.string()),
+        ("wind_direction", pa.string()),
+        ("wind_speed_m", pa.int64()),
+        ("wave_cm", pa.int64()),
+        ("winning_style", pa.string()),
+    ]
+)
+
 
 @dataclass(slots=True)
 class BuildSummary:
@@ -41,17 +96,22 @@ class BuildSummary:
 
 
 class IncrementalParquetWriter:
-    def __init__(self, output_path: Path) -> None:
+    def __init__(self, output_path: Path, schema: pa.Schema | None = None) -> None:
         self.output_path = output_path
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
+        self.schema = schema
         self._writer: pq.ParquetWriter | None = None
 
     def write(self, frame: pd.DataFrame) -> None:
         if frame.empty:
             return
-        table = pa.Table.from_pandas(frame, preserve_index=False)
+        if self.schema is not None:
+            frame = frame.reindex(columns=self.schema.names)
+            table = pa.Table.from_pandas(frame, schema=self.schema, preserve_index=False, safe=False)
+        else:
+            table = pa.Table.from_pandas(frame, preserve_index=False)
         if self._writer is None:
-            self._writer = pq.ParquetWriter(self.output_path, table.schema)
+            self._writer = pq.ParquetWriter(self.output_path, self.schema or table.schema)
         self._writer.write_table(table)
 
     def close(self) -> None:
@@ -381,8 +441,8 @@ def build_training_table_streaming(
     temp_dir = output_dir.parent / f"{output_dir.name}_streaming_tmp_{uuid4().hex[:8]}"
     temp_dir.mkdir(parents=True, exist_ok=True)
 
-    entries_writer = IncrementalParquetWriter(temp_dir / "race_entries.parquet")
-    results_writer = IncrementalParquetWriter(temp_dir / "race_results.parquet")
+    entries_writer = IncrementalParquetWriter(temp_dir / "race_entries.parquet", schema=ENTRY_PARQUET_SCHEMA)
+    results_writer = IncrementalParquetWriter(temp_dir / "race_results.parquet", schema=RESULT_PARQUET_SCHEMA)
     carryovers = HistoryCarryovers()
     bucket_dir = temp_dir / "base_buckets"
     bucket_dir.mkdir(parents=True, exist_ok=True)
