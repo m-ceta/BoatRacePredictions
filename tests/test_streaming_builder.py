@@ -50,3 +50,38 @@ def test_incremental_parquet_writer_preserves_explicit_string_schema(tmp_path) -
 
     assert pd.isna(result.loc[0, "winning_style"])
     assert result.loc[1, "winning_style"] == "逃げ"
+
+
+def test_incremental_parquet_writer_infers_string_for_all_null_object_column(tmp_path) -> None:
+    output_path = tmp_path / "base_bucket.parquet"
+    writer = IncrementalParquetWriter(output_path)
+
+    first_frame = pd.DataFrame(
+        [
+            {
+                "race_id": "20260501_01_01",
+                "race_date": pd.Timestamp("2026-05-01"),
+                "winning_style": None,
+                "target_rank": 6,
+            }
+        ]
+    )
+    second_frame = pd.DataFrame(
+        [
+            {
+                "race_id": "20260502_01_01",
+                "race_date": pd.Timestamp("2026-05-02"),
+                "winning_style": "逃げ",
+                "target_rank": 6,
+            }
+        ]
+    )
+
+    writer.write(first_frame)
+    writer.write(second_frame)
+    writer.close()
+
+    result = pd.read_parquet(output_path)
+
+    assert pd.isna(result.loc[0, "winning_style"])
+    assert result.loc[1, "winning_style"] == "逃げ"

@@ -105,6 +105,7 @@ class IncrementalParquetWriter:
     def write(self, frame: pd.DataFrame) -> None:
         if frame.empty:
             return
+        frame = _normalize_frame_for_arrow(frame)
         if self.schema is not None:
             frame = frame.reindex(columns=self.schema.names)
             table = pa.Table.from_pandas(frame, schema=self.schema, preserve_index=False, safe=False)
@@ -118,6 +119,18 @@ class IncrementalParquetWriter:
         if self._writer is not None:
             self._writer.close()
             self._writer = None
+
+
+def _normalize_frame_for_arrow(frame: pd.DataFrame) -> pd.DataFrame:
+    normalized = frame.copy()
+    for column in normalized.columns:
+        series = normalized[column]
+        if not pd.api.types.is_object_dtype(series):
+            continue
+        non_null = series.dropna()
+        if non_null.empty or non_null.map(lambda value: isinstance(value, str)).all():
+            normalized[column] = series.astype("string")
+    return normalized
 
 
 def parse_rowdata_file_date(path: Path) -> date | None:
