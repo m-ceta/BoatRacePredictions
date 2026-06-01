@@ -4,6 +4,8 @@ data/
 artifacts/
 google_drive_credentials.json
 artifacts/google-drive-token.json
+tmp_processed_subset*/
+tmp_rowdata_subset*/
 *.7z
 
 # Python
