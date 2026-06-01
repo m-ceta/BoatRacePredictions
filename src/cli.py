@@ -7,10 +7,16 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from src.api import backfill_rowdata_files, load_bundle, load_prediction_input
+from src.api import (
+    backfill_rowdata_files,
+    build_dataset_from_rowdata_streaming,
+    load_bundle,
+    load_prediction_input,
+)
 from src.drive_backup import DEFAULT_DRIVE_FOLDER_URL, package_and_upload_to_drive
 from src.evaluation.metrics import compute_trifecta_rerank_metrics
 from src.features.builder import build_training_table, save_processed_tables
+from src.features.streaming_builder import compare_processed_tables
 from src.live import predict_today_race
 from src.models.ranker import (
     evaluate_trifecta,
@@ -52,20 +58,25 @@ def build_dataset_main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--rowdata", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--max-date", type=str, default=None)
+    args = parser.parse_args()
+    summary = build_dataset_from_rowdata_streaming(
+        rowdata_dir=args.rowdata,
+        output_dir=args.output,
+        max_date=args.max_date,
+    )
+    print(json.dumps(summary.to_dict(), ensure_ascii=False, indent=2))
+
+
+def compare_processed_tables_main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--expected", type=Path, required=True)
+    parser.add_argument("--actual", type=Path, required=True)
+    parser.add_argument("--atol", type=float, default=1e-12)
     args = parser.parse_args()
 
-    entries = []
-    for path in sorted(args.rowdata.glob("B*.TXT")):
-        entries.extend(item.to_dict() for item in parse_entry_file(path))
-
-    results = []
-    for path in sorted(args.rowdata.glob("K*.TXT")):
-        results.extend(item.to_dict() for item in parse_result_file(path))
-
-    entries_df = pd.DataFrame(entries)
-    results_df = pd.DataFrame(results)
-    training_table = build_training_table(entries_df, results_df)
-    save_processed_tables(entries_df, results_df, training_table, args.output)
+    report = compare_processed_tables(args.expected, args.actual, atol=args.atol)
+    print(json.dumps(report, ensure_ascii=False, indent=2))
 
 
 def backfill_rowdata_main() -> None:

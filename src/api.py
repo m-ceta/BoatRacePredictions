@@ -7,6 +7,7 @@ from typing import Any
 import pandas as pd
 
 from src.features.builder import build_training_table, save_processed_tables
+from src.features.streaming_builder import BuildSummary, build_training_table_streaming
 from src.live import TodayRacePrediction, predict_today_race
 from src.models.ranker import (
     get_artifact_paths,
@@ -73,6 +74,19 @@ def build_dataset_from_rowdata(
         "results": results_df,
         "training_table": training_table,
     }
+
+
+def build_dataset_from_rowdata_streaming(
+    rowdata_dir: str | Path,
+    output_dir: str | Path,
+    max_date: Any | None = None,
+) -> BuildSummary:
+    normalized_max_date = pd.Timestamp(max_date).date() if max_date is not None else None
+    return build_training_table_streaming(
+        rowdata_dir=Path(rowdata_dir),
+        output_dir=Path(output_dir),
+        max_date=normalized_max_date,
+    )
 
 
 def backfill_rowdata_files(

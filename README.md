@@ -349,3 +349,27 @@ python -m pytest -q
 を作成し、Google Drive の指定フォルダへ同名上書きアップロードします。
 
 いずれの操作も Web UI 上で実行ログを確認できます。
+
+## Streaming build と比較
+
+`boatrace-build` は streaming build に切り替わっています。`rowdata` 全件を list / DataFrame へ一括展開せず、
+
+- `race_entries.parquet`
+- `race_results.parquet`
+- `training_table.parquet`
+
+を段階的に生成します。
+
+日付上限を指定して build したい場合:
+
+```bash
+boatrace-build --rowdata rowdata --output data/processed --max-date 2026-05-24
+```
+
+既存の処理済みデータと比較したい場合:
+
+```bash
+boatrace-compare-processed --expected data/processed_old --actual data/processed
+```
+
+数値列は微小な浮動小数誤差を許容して比較します。

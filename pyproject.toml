@@ -30,6 +30,7 @@ dev = [
 [project.scripts]
 boatrace-backfill-rowdata = "src.cli:backfill_rowdata_main"
 boatrace-build = "src.cli:build_dataset_main"
+boatrace-compare-processed = "src.cli:compare_processed_tables_main"
 boatrace-train = "src.cli:train_main"
 boatrace-train-trifecta-v2 = "src.cli:train_trifecta_v2_main"
 boatrace-eval-trifecta-full = "src.cli:evaluate_trifecta_full_valid_main"

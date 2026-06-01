@@ -9,7 +9,12 @@ from typing import Sequence
 import pandas as pd
 import streamlit as st
 
-from src.api import backfill_rowdata_files, build_dataset_from_rowdata, load_bundle, predict_today
+from src.api import (
+    backfill_rowdata_files,
+    build_dataset_from_rowdata_streaming,
+    load_bundle,
+    predict_today,
+)
 from src.drive_backup import DEFAULT_DRIVE_FOLDER_URL
 
 
@@ -204,6 +209,11 @@ def render_dataset_tab() -> None:
     with st.form("dataset_form"):
         rowdata_dir = st.text_input("rowdata フォルダ", value="rowdata", key="dataset_rowdata")
         output_dir = st.text_input("出力フォルダ", value="data/processed")
+        max_date = st.text_input(
+            "最大日付",
+            value="",
+            help="未入力なら rowdata に存在する最新日まで処理します。比較用に 2026-05-24 のように指定できます。",
+        )
         submitted = st.form_submit_button("学習データを再生成")
 
     if not submitted:
@@ -211,19 +221,16 @@ def render_dataset_tab() -> None:
 
     try:
         with st.spinner("学習データを再生成しています..."):
-            tables = build_dataset_from_rowdata(rowdata_dir=rowdata_dir, output_dir=output_dir)
+            summary = build_dataset_from_rowdata_streaming(
+                rowdata_dir=rowdata_dir,
+                output_dir=output_dir,
+                max_date=max_date.strip() or None,
+            )
     except Exception as exc:  # pragma: no cover - streamlit runtime path
         st.error(f"学習データ生成に失敗しました: {exc}")
         return
-
-    summary = {
-        "entries_rows": int(len(tables["entries"])),
-        "results_rows": int(len(tables["results"])),
-        "training_rows": int(len(tables["training_table"])),
-        "output_dir": str(Path(output_dir)),
-    }
     st.success("学習データ生成が完了しました。")
-    st.json(summary)
+    st.json(summary.to_dict())
 
 
 def render_train_tab() -> None:
