@@ -43,6 +43,20 @@ conda activate boatrace-predictions
 bat\open_conda_prompt.bat
 ```
 
+Linux / Bash 環境:
+
+```bash
+chmod +x sh/*.sh
+sh/conda_setup.sh
+conda activate boatrace-predictions
+```
+
+Conda 環境を有効化したシェルを開く場合:
+
+```bash
+sh/open_conda_shell.sh
+```
+
 ### pip
 
 ```bash
@@ -342,7 +356,23 @@ race_id,trifecta,odds
 2. `boatrace-build --rowdata rowdata --output data/processed`
 3. `boatrace-package-upload`
 
+### `sh/data_build.sh`
+
+実行内容:
+
+1. `boatrace-backfill-rowdata --rowdata rowdata`
+2. `boatrace-build --rowdata rowdata --output data/processed`
+3. `boatrace-package-upload`
+
 ### `bat\train.bat`
+
+実行内容:
+
+1. `boatrace-train --config configs/train.yaml`
+2. `boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 1000 --eval-rerank-top-n 10`
+3. `boatrace-package-upload`
+
+### `sh/train.sh`
 
 実行内容:
 
@@ -357,7 +387,20 @@ race_id,trifecta,odds
 1. `boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 1000 --eval-rerank-top-n 10 --optimize-rerank`
 2. `boatrace-package-upload`
 
+### `sh/opt.sh`
+
+実行内容:
+
+1. `boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 1000 --eval-rerank-top-n 10 --optimize-rerank`
+2. `boatrace-package-upload`
+
 ### `bat\eval.bat`
+
+実行内容:
+
+1. `boatrace-eval-trifecta-full --config configs/train.yaml`
+
+### `sh/eval.sh`
 
 実行内容:
 
@@ -369,7 +412,19 @@ race_id,trifecta,odds
 
 1. `boatrace-webui`
 
+### `sh/ui.sh`
+
+実行内容:
+
+1. `boatrace-webui`
+
 ### `bat\data_download.bat`
+
+実行内容:
+
+1. `boatrace-package-download`
+
+### `sh/data_download.sh`
 
 実行内容:
 
