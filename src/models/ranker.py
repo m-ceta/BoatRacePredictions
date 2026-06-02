@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import itertools
 import json
 from pathlib import Path
@@ -137,6 +138,59 @@ def infer_latest_available_race_date(training_table: pd.DataFrame) -> pd.Timesta
     if race_dates.dropna().empty:
         return None
     return pd.Timestamp(race_dates.max()).normalize()
+
+
+def collect_garbage() -> None:
+    gc.collect()
+
+
+def load_training_splits_from_parquet(
+    training_table_path: Path,
+    config: dict,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]:
+    latest_race_dates = pd.read_parquet(training_table_path, columns=["race_date"])
+    synced_config = with_latest_available_dates(config, infer_latest_available_race_date(latest_race_dates))
+    del latest_race_dates
+    collect_garbage()
+
+    data_config = synced_config.get("data", {})
+    min_date = pd.Timestamp(data_config.get("min_date")) if data_config.get("min_date") else None
+    max_date = pd.Timestamp(data_config.get("max_date")) if data_config.get("max_date") else None
+    train_end = pd.Timestamp(synced_config["split"]["train_end_date"])
+    valid_end = pd.Timestamp(synced_config["split"]["valid_end_date"])
+
+    train_start = min_date if min_date is not None else pd.Timestamp("1900-01-01")
+    train_stop = min(train_end, max_date) if max_date is not None else train_end
+    valid_start = max(train_end + pd.Timedelta(days=1), min_date) if min_date is not None else train_end + pd.Timedelta(days=1)
+    valid_stop = min(valid_end, max_date) if max_date is not None else valid_end
+    test_start = max(valid_end + pd.Timedelta(days=1), min_date) if min_date is not None else valid_end + pd.Timedelta(days=1)
+    test_stop = max_date
+
+    train_df = pd.read_parquet(
+        training_table_path,
+        filters=[("race_date", ">=", train_start), ("race_date", "<=", train_stop)],
+    )
+    valid_df = (
+        pd.read_parquet(
+            training_table_path,
+            filters=[("race_date", ">=", valid_start), ("race_date", "<=", valid_stop)],
+        )
+        if valid_start <= valid_stop
+        else pd.DataFrame()
+    )
+    if test_stop is not None and test_start <= test_stop:
+        test_df = pd.read_parquet(
+            training_table_path,
+            filters=[("race_date", ">=", test_start), ("race_date", "<=", test_stop)],
+        )
+    else:
+        test_df = pd.DataFrame()
+
+    train_df = prepare_training_table(train_df, synced_config)
+    valid_df = prepare_training_table(valid_df, synced_config) if not valid_df.empty else valid_df
+    test_df = prepare_training_table(test_df, synced_config) if not test_df.empty else test_df
+    collect_garbage()
+    return train_df, valid_df, test_df, synced_config
 
 
 def with_latest_available_dates(config: dict, latest_race_date: pd.Timestamp | str | None) -> dict:
@@ -314,8 +368,11 @@ def train_ranker(
     categorical_columns = infer_categorical_columns(training_table, feature_columns)
 
     catboost_model = train_catboost(train_df, valid_df, feature_columns, categorical_columns, config)
+    collect_garbage()
     lightgbm_model = train_lightgbm(train_df, valid_df, feature_columns, categorical_columns, config)
+    collect_garbage()
     classifier_models = train_classifiers(train_df, valid_df, feature_columns, categorical_columns, config)
+    collect_garbage()
     flow_model, flow_classes = train_flow_model(
         train_df,
         valid_df,
@@ -323,7 +380,9 @@ def train_ranker(
         categorical_columns,
         config,
     )
+    collect_garbage()
     staged_models = train_staged_models(train_df, valid_df, feature_columns, categorical_columns, config)
+    collect_garbage()
 
     models = {
         "catboost": catboost_model,
@@ -359,6 +418,7 @@ def train_ranker(
         staged_models=staged_models,
         config=config,
     )
+    collect_garbage()
     trifecta_phase3_model = train_phase3_conditional_trifecta_model(
         train_df,
         models=models,
@@ -372,6 +432,7 @@ def train_ranker(
         base_model=trifecta_v2_model,
         config=config,
     )
+    collect_garbage()
     trifecta_calibrator = fit_trifecta_calibrator(
         models,
         ensemble_weights,
@@ -379,6 +440,7 @@ def train_ranker(
         feature_columns,
         categorical_columns,
     )
+    collect_garbage()
 
     ranker_metrics = {
         "catboost": evaluate_model_bundle(
@@ -638,6 +700,377 @@ def train_ranker(
     )
 
 
+def train_ranker_from_splits(
+    train_df: pd.DataFrame,
+    valid_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    config: dict,
+) -> tuple[
+    dict[str, Any],
+    list[str],
+    dict[str, Any],
+    IsotonicRegression,
+    dict[str, lgb.Booster],
+    lgb.Booster | None,
+    list[str] | None,
+    dict[str, lgb.Booster],
+    Any | None,
+]:
+    schema_frames = [train_df.head(200)]
+    if not valid_df.empty:
+        schema_frames.append(valid_df.head(200))
+    if not test_df.empty:
+        schema_frames.append(test_df.head(200))
+    schema_df = pd.concat(schema_frames, ignore_index=True)
+    feature_columns = infer_feature_columns(schema_df)
+    categorical_columns = infer_categorical_columns(schema_df, feature_columns)
+    del schema_df, schema_frames
+    collect_garbage()
+
+    catboost_model = train_catboost(train_df, valid_df, feature_columns, categorical_columns, config)
+    catboost_metrics = evaluate_model_bundle(
+        catboost_model,
+        "catboost",
+        train_df,
+        valid_df,
+        test_df,
+        feature_columns,
+        categorical_columns,
+    )
+    collect_garbage()
+
+    lightgbm_model = train_lightgbm(train_df, valid_df, feature_columns, categorical_columns, config)
+    lightgbm_metrics = evaluate_model_bundle(
+        lightgbm_model,
+        "lightgbm",
+        train_df,
+        valid_df,
+        test_df,
+        feature_columns,
+        categorical_columns,
+    )
+    collect_garbage()
+
+    models = {
+        "catboost": catboost_model,
+        "lightgbm": lightgbm_model,
+    }
+    ensemble_weights = optimize_ensemble_weights(
+        models,
+        valid_df,
+        feature_columns,
+        categorical_columns,
+    )
+    ensemble_metrics = evaluate_ensemble(
+        models,
+        ensemble_weights,
+        train_df,
+        valid_df,
+        test_df,
+        feature_columns,
+        categorical_columns,
+    )
+    collect_garbage()
+
+    classifier_models = train_classifiers(train_df, valid_df, feature_columns, categorical_columns, config)
+    classifier_metrics = evaluate_classifier_models(
+        classifier_models,
+        train_df,
+        valid_df,
+        test_df,
+        feature_columns,
+        categorical_columns,
+    )
+    collect_garbage()
+
+    flow_model, flow_classes = train_flow_model(
+        train_df,
+        valid_df,
+        feature_columns,
+        categorical_columns,
+        config,
+    )
+    flow_metrics = evaluate_flow_model(
+        flow_model,
+        flow_classes,
+        train_df,
+        valid_df,
+        test_df,
+        feature_columns,
+        categorical_columns,
+    )
+    collect_garbage()
+
+    staged_models = train_staged_models(train_df, valid_df, feature_columns, categorical_columns, config)
+    staged_metrics = evaluate_staged_models(
+        staged_models,
+        train_df,
+        valid_df,
+        test_df,
+        feature_columns,
+        categorical_columns,
+    )
+    collect_garbage()
+
+    trifecta_v2_v1_weight = optimize_trifecta_v2_blend_weight(
+        models,
+        ensemble_weights,
+        valid_df,
+        feature_columns,
+        categorical_columns,
+        classifier_models=classifier_models,
+        flow_model=flow_model,
+        flow_classes=flow_classes,
+        staged_models=staged_models,
+    )
+    ensemble_weights["trifecta_v2_v1_weight"] = trifecta_v2_v1_weight
+    trifecta_v2_model = train_trifecta_v2_model(
+        train_df,
+        models=models,
+        ensemble_weights=ensemble_weights,
+        feature_columns=feature_columns,
+        categorical_columns=categorical_columns,
+        classifier_models=classifier_models,
+        flow_model=flow_model,
+        flow_classes=flow_classes,
+        staged_models=staged_models,
+        config=config,
+    )
+    collect_garbage()
+    trifecta_phase3_model = train_phase3_conditional_trifecta_model(
+        train_df,
+        models=models,
+        ensemble_weights=ensemble_weights,
+        feature_columns=feature_columns,
+        categorical_columns=categorical_columns,
+        classifier_models=classifier_models,
+        flow_model=flow_model,
+        flow_classes=flow_classes,
+        staged_models=staged_models,
+        base_model=trifecta_v2_model,
+        config=config,
+    )
+    collect_garbage()
+
+    trifecta_calibrator = fit_trifecta_calibrator(
+        models,
+        ensemble_weights,
+        valid_df,
+        feature_columns,
+        categorical_columns,
+    )
+    collect_garbage()
+
+    trifecta_v1_metrics = {
+        "valid_raw": evaluate_trifecta(
+            models,
+            ensemble_weights,
+            None,
+            valid_df,
+            feature_columns,
+            categorical_columns,
+            classifier_models=classifier_models,
+            flow_model=flow_model,
+            flow_classes=flow_classes,
+            staged_models=staged_models,
+            trifecta_v2_model=trifecta_v2_model,
+            use_v2=False,
+        ),
+        "valid_calibrated": evaluate_trifecta(
+            models,
+            ensemble_weights,
+            trifecta_calibrator,
+            valid_df,
+            feature_columns,
+            categorical_columns,
+            classifier_models=classifier_models,
+            flow_model=flow_model,
+            flow_classes=flow_classes,
+            staged_models=staged_models,
+            trifecta_v2_model=trifecta_v2_model,
+            use_v2=False,
+        ),
+        "test_raw": evaluate_trifecta(
+            models,
+            ensemble_weights,
+            None,
+            test_df,
+            feature_columns,
+            categorical_columns,
+            classifier_models=classifier_models,
+            flow_model=flow_model,
+            flow_classes=flow_classes,
+            staged_models=staged_models,
+            trifecta_v2_model=trifecta_v2_model,
+            use_v2=False,
+        ),
+        "test_calibrated": evaluate_trifecta(
+            models,
+            ensemble_weights,
+            trifecta_calibrator,
+            test_df,
+            feature_columns,
+            categorical_columns,
+            classifier_models=classifier_models,
+            flow_model=flow_model,
+            flow_classes=flow_classes,
+            staged_models=staged_models,
+            trifecta_v2_model=trifecta_v2_model,
+            use_v2=False,
+        ),
+    }
+    trifecta_v2_metrics = {
+        "valid_raw": evaluate_trifecta(
+            models,
+            ensemble_weights,
+            None,
+            valid_df,
+            feature_columns,
+            categorical_columns,
+            classifier_models=classifier_models,
+            flow_model=flow_model,
+            flow_classes=flow_classes,
+            staged_models=staged_models,
+            trifecta_v2_model=trifecta_v2_model,
+            use_v2=True,
+        ),
+        "valid_calibrated": evaluate_trifecta(
+            models,
+            ensemble_weights,
+            trifecta_calibrator,
+            valid_df,
+            feature_columns,
+            categorical_columns,
+            classifier_models=classifier_models,
+            flow_model=flow_model,
+            flow_classes=flow_classes,
+            staged_models=staged_models,
+            trifecta_v2_model=trifecta_v2_model,
+            use_v2=True,
+        ),
+        "test_raw": evaluate_trifecta(
+            models,
+            ensemble_weights,
+            None,
+            test_df,
+            feature_columns,
+            categorical_columns,
+            classifier_models=classifier_models,
+            flow_model=flow_model,
+            flow_classes=flow_classes,
+            staged_models=staged_models,
+            trifecta_v2_model=trifecta_v2_model,
+            use_v2=True,
+        ),
+        "test_calibrated": evaluate_trifecta(
+            models,
+            ensemble_weights,
+            trifecta_calibrator,
+            test_df,
+            feature_columns,
+            categorical_columns,
+            classifier_models=classifier_models,
+            flow_model=flow_model,
+            flow_classes=flow_classes,
+            staged_models=staged_models,
+            trifecta_v2_model=trifecta_v2_model,
+            use_v2=True,
+        ),
+    }
+    trifecta_v3_metrics = {
+        "valid_raw": evaluate_trifecta(
+            models,
+            ensemble_weights,
+            None,
+            valid_df,
+            feature_columns,
+            categorical_columns,
+            classifier_models=classifier_models,
+            flow_model=flow_model,
+            flow_classes=flow_classes,
+            staged_models=staged_models,
+            trifecta_v2_model=trifecta_phase3_model,
+            use_v2=True,
+        ),
+        "valid_calibrated": evaluate_trifecta(
+            models,
+            ensemble_weights,
+            trifecta_calibrator,
+            valid_df,
+            feature_columns,
+            categorical_columns,
+            classifier_models=classifier_models,
+            flow_model=flow_model,
+            flow_classes=flow_classes,
+            staged_models=staged_models,
+            trifecta_v2_model=trifecta_phase3_model,
+            use_v2=True,
+        ),
+        "test_raw": evaluate_trifecta(
+            models,
+            ensemble_weights,
+            None,
+            test_df,
+            feature_columns,
+            categorical_columns,
+            classifier_models=classifier_models,
+            flow_model=flow_model,
+            flow_classes=flow_classes,
+            staged_models=staged_models,
+            trifecta_v2_model=trifecta_phase3_model,
+            use_v2=True,
+        ),
+        "test_calibrated": evaluate_trifecta(
+            models,
+            ensemble_weights,
+            trifecta_calibrator,
+            test_df,
+            feature_columns,
+            categorical_columns,
+            classifier_models=classifier_models,
+            flow_model=flow_model,
+            flow_classes=flow_classes,
+            staged_models=staged_models,
+            trifecta_v2_model=trifecta_phase3_model,
+            use_v2=True,
+        ),
+    }
+    collect_garbage()
+
+    ranker_metrics = {
+        "catboost": catboost_metrics,
+        "lightgbm": lightgbm_metrics,
+        "ensemble": ensemble_metrics,
+    }
+    metrics = {
+        **ranker_metrics,
+        "ensemble_weights": ensemble_weights,
+        "trifecta": trifecta_v1_metrics,
+        "ranker_metrics": ranker_metrics,
+        "trifecta_v1_metrics": trifecta_v1_metrics,
+        "trifecta_v2_metrics": trifecta_v2_metrics,
+        "trifecta_v3_metrics": trifecta_v3_metrics,
+        "classifier_metrics": classifier_metrics,
+        "flow_model_metrics": flow_metrics,
+        "staged_model_metrics": staged_metrics,
+        "expected_value_backtest_metrics": trifecta_v3_metrics.get("test_calibrated", {}).get(
+            "expected_value_backtest",
+            {},
+        ),
+    }
+    return (
+        models,
+        feature_columns,
+        metrics,
+        trifecta_calibrator,
+        classifier_models,
+        flow_model,
+        flow_classes,
+        staged_models,
+        trifecta_phase3_model,
+    )
+
+
 def prepare_training_table(training_table: pd.DataFrame, config: dict) -> pd.DataFrame:
     frame = training_table.copy()
     frame["race_date"] = pd.to_datetime(frame["race_date"])
@@ -719,18 +1152,22 @@ def train_catboost(
 
     model = CatBoostRanker(**model_kwargs)
     try:
-        model.fit(train_pool, eval_set=valid_pool, use_best_model=True)
-    except CatBoostError as exc:
-        if not gpu_kwargs:
-            raise
-        print(f"CatBoost GPU training failed; falling back to CPU. Reason: {exc}")
-        fallback_kwargs = dict(model_kwargs)
-        fallback_kwargs.pop("task_type", None)
-        fallback_kwargs.pop("devices", None)
-        fallback_kwargs["eval_metric"] = config["model"]["eval_metric"]
-        model = CatBoostRanker(**fallback_kwargs)
-        model.fit(train_pool, eval_set=valid_pool, use_best_model=True)
-    return model
+        try:
+            model.fit(train_pool, eval_set=valid_pool, use_best_model=True)
+        except CatBoostError as exc:
+            if not gpu_kwargs:
+                raise
+            print(f"CatBoost GPU training failed; falling back to CPU. Reason: {exc}")
+            fallback_kwargs = dict(model_kwargs)
+            fallback_kwargs.pop("task_type", None)
+            fallback_kwargs.pop("devices", None)
+            fallback_kwargs["eval_metric"] = config["model"]["eval_metric"]
+            model = CatBoostRanker(**fallback_kwargs)
+            model.fit(train_pool, eval_set=valid_pool, use_best_model=True)
+        return model
+    finally:
+        del train_pool, valid_pool
+        collect_garbage()
 
 
 def build_catboost_pool(
@@ -798,15 +1235,19 @@ def train_lightgbm(
         "seed": config["model"]["random_seed"],
         "ndcg_eval_at": [1, 3, 6],
     }
-    return train_lightgbm_with_optional_gpu(
-        params,
-        train_dataset,
-        config,
-        num_boost_round=config["model"]["iterations"],
-        valid_sets=[valid_dataset],
-        valid_names=["valid"],
-        callbacks=[lgb.log_evaluation(100)],
-    )
+    try:
+        return train_lightgbm_with_optional_gpu(
+            params,
+            train_dataset,
+            config,
+            num_boost_round=config["model"]["iterations"],
+            valid_sets=[valid_dataset],
+            valid_names=["valid"],
+            callbacks=[lgb.log_evaluation(100)],
+        )
+    finally:
+        del train_lgb, valid_lgb, train_dataset, valid_dataset, train_group, valid_group
+        collect_garbage()
 
 
 def build_lightgbm_frame(

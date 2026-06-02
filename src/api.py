@@ -10,6 +10,7 @@ from src.features.builder import build_training_table, save_processed_tables
 from src.features.streaming_builder import BuildSummary, build_training_table_streaming
 from src.live import TodayRacePrediction, predict_today_race
 from src.models.ranker import (
+    collect_garbage,
     get_artifact_paths,
     load_config,
     load_classifier_artifacts,
@@ -24,9 +25,9 @@ from src.models.ranker import (
     predict_race_order,
     predict_trifecta_probabilities,
     save_artifacts,
+    load_training_splits_from_parquet,
     train_ranker,
-    infer_latest_available_race_date,
-    with_latest_available_dates,
+    train_ranker_from_splits,
 )
 from src.parsers.bk_parser import parse_entry_file, parse_result_file
 from src.rowdata_sync import RowdataBackfillReport, backfill_rowdata
@@ -109,9 +110,10 @@ def backfill_rowdata_files(
 
 def train_from_config(config_path: str | Path) -> dict[str, Any]:
     config = load_config(Path(config_path))
-    training_table = pd.read_parquet(config["data"]["training_table"])
-    training_table["race_date"] = pd.to_datetime(training_table["race_date"])
-    config = with_latest_available_dates(config, infer_latest_available_race_date(training_table))
+    train_df, valid_df, test_df, config = load_training_splits_from_parquet(
+        Path(config["data"]["training_table"]),
+        config,
+    )
 
     (
         models,
@@ -123,7 +125,9 @@ def train_from_config(config_path: str | Path) -> dict[str, Any]:
         flow_classes,
         staged_models,
         trifecta_v2_model,
-    ) = train_ranker(training_table, config)
+    ) = train_ranker_from_splits(train_df, valid_df, test_df, config)
+    del train_df, valid_df, test_df
+    collect_garbage()
     artifacts = get_artifact_paths(config)
     save_artifacts(
         models=models,

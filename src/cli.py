@@ -19,6 +19,7 @@ from src.features.builder import build_training_table, save_processed_tables
 from src.features.streaming_builder import compare_processed_tables
 from src.live import predict_today_race
 from src.models.ranker import (
+    collect_garbage,
     evaluate_trifecta,
     fit_model_trifecta_calibrator,
     get_artifact_paths,
@@ -46,6 +47,8 @@ from src.models.ranker import (
     infer_feature_columns,
     infer_categorical_columns,
     infer_latest_available_race_date,
+    load_training_splits_from_parquet,
+    train_ranker_from_splits,
     with_latest_available_dates,
 )
 from src.models.training_device import with_training_device_override
@@ -127,9 +130,10 @@ def train_main() -> None:
 
     config = load_config(args.config)
     config = with_training_device_override(config, args.training_device)
-    training_table = pd.read_parquet(config["data"]["training_table"])
-    training_table["race_date"] = pd.to_datetime(training_table["race_date"])
-    config = with_latest_available_dates(config, infer_latest_available_race_date(training_table))
+    train_df, valid_df, test_df, config = load_training_splits_from_parquet(
+        Path(config["data"]["training_table"]),
+        config,
+    )
 
     (
         models,
@@ -141,7 +145,9 @@ def train_main() -> None:
         flow_classes,
         staged_models,
         trifecta_v2_model,
-    ) = train_ranker(training_table, config)
+    ) = train_ranker_from_splits(train_df, valid_df, test_df, config)
+    del train_df, valid_df, test_df
+    collect_garbage()
     artifacts = get_artifact_paths(config)
     save_artifacts(
         models=models,
@@ -229,13 +235,17 @@ def train_trifecta_v2_main() -> None:
     )
     feature_columns = infer_feature_columns(schema_df)
     categorical_columns = infer_categorical_columns(schema_df, feature_columns)
+    del schema_df
+    collect_garbage()
     models = load_models(config)
     classifier_models = load_classifier_artifacts(config)
     ensemble_weights = load_ensemble_weights(artifacts["ensemble_weights_path"])
     trifecta_calibrator = load_trifecta_calibrator(artifacts["trifecta_calibrator_path"])
 
     flow_model, flow_classes = train_flow_model(train_df, valid_df, feature_columns, categorical_columns, config)
+    collect_garbage()
     staged_models = train_staged_models(train_df, valid_df, feature_columns, categorical_columns, config)
+    collect_garbage()
     trifecta_v2_model = train_trifecta_v2_model(
         train_df,
         models=models,
@@ -249,6 +259,7 @@ def train_trifecta_v2_main() -> None:
         max_races=args.max_races,
         config=config,
     )
+    collect_garbage()
     trifecta_v3_model = train_phase3_conditional_trifecta_model(
         train_df,
         models=models,
@@ -263,6 +274,7 @@ def train_trifecta_v2_main() -> None:
         max_races=args.max_races,
         config=config,
     )
+    collect_garbage()
     rerank_optimization = {}
     if args.optimize_rerank and not eval_valid_df.empty:
         rerank_optimization = optimize_rerank_inference_settings(
