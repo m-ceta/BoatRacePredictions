@@ -337,6 +337,12 @@ race_id,trifecta,odds
 
 1. `boatrace-eval-trifecta-full --config configs/train.yaml`
 
+### `bat\ui.bat`
+
+実行内容:
+
+1. `boatrace-webui`
+
 ### タスクスケジューラ設定のポイント
 
 - `プログラム/スクリプト`
