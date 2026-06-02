@@ -9,7 +9,7 @@ split:
   valid_end_date: "2026-05-24"
 
 model:
-  training_device: "gpu"
+  training_device: "cpu"
   iterations: 120
   learning_rate: 0.03
   depth: 6
@@ -17,8 +17,8 @@ model:
   eval_metric: NDCG
   random_seed: 42
   gpu:
-    catboost: true
-    lightgbm: true
+    catboost: false
+    lightgbm: false
     device_id: 0
 
 inference:
