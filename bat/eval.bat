@@ -1,7 +1,7 @@
 @echo off
 setlocal
 
-cd /d "%~dp0"
+cd /d "%~dp0.."
 
 set "ENV_NAME=boatrace-predictions"
 set "CONDA_BAT="
@@ -17,7 +17,6 @@ for /f "delims=" %%I in ('where conda 2^>nul') do (
 )
 
 echo Conda was not found on PATH.
-echo Open an Anaconda Prompt or initialize conda for this shell first.
 exit /b 1
 
 :found_conda
@@ -30,12 +29,12 @@ if not exist "%CONDA_BAT%" (
 call "%CONDA_BAT%" activate %ENV_NAME%
 if errorlevel 1 (
     echo Failed to activate conda environment "%ENV_NAME%".
-    echo Run conda_setup.bat first if the environment has not been created yet.
     exit /b 1
 )
 
-title BoatRacePredictions - %ENV_NAME%
-echo Activated conda environment "%ENV_NAME%".
-echo Project root: %CD%
-echo boatrace-* commands are available in this prompt.
-cmd /k "cd /d %CD%"
+echo [1/1] boatrace-eval-trifecta-full --config configs/train.yaml
+call boatrace-eval-trifecta-full --config configs/train.yaml
+if errorlevel 1 exit /b %errorlevel%
+
+echo eval.bat completed successfully.
+exit /b 0
