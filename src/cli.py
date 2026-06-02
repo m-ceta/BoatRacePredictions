@@ -14,6 +14,11 @@ from src.api import (
     load_prediction_input,
 )
 from src.drive_backup import DEFAULT_DRIVE_FOLDER_URL, package_and_upload_to_drive
+from src.drive_restore import (
+    DEFAULT_BRP_DRIVE_FILE_URL,
+    DEFAULT_ROWDATA_DRIVE_FILE_URL,
+    download_and_restore_packages,
+)
 from src.evaluation.metrics import compute_trifecta_rerank_metrics
 from src.features.builder import build_training_table, save_processed_tables
 from src.features.streaming_builder import compare_processed_tables
@@ -118,6 +123,25 @@ def package_and_upload_main() -> None:
         token_path=args.token,
         rowdata_zip_name=args.rowdata_zip_name,
         drp_zip_name=args.drp_zip_name,
+    )
+    print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+
+
+def package_download_main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--project-root", type=Path, default=Path("."))
+    parser.add_argument("--brp-url", type=str, default=DEFAULT_BRP_DRIVE_FILE_URL)
+    parser.add_argument("--rowdata-url", type=str, default=DEFAULT_ROWDATA_DRIVE_FILE_URL)
+    parser.add_argument("--brp-zip-name", type=str, default="brp.zip")
+    parser.add_argument("--rowdata-zip-name", type=str, default="rowdata.zip")
+    args = parser.parse_args()
+
+    report = download_and_restore_packages(
+        project_root=args.project_root,
+        brp_drive_file_url=args.brp_url,
+        rowdata_drive_file_url=args.rowdata_url,
+        brp_zip_name=args.brp_zip_name,
+        rowdata_zip_name=args.rowdata_zip_name,
     )
     print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
 

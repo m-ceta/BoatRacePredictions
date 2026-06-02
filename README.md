@@ -226,6 +226,32 @@ boatrace-package-upload
 boatrace-package-upload --project-root . --drive-folder https://drive.google.com/drive/folders/19HHxA5r4T_IqMrDyNqU3qRUoRkhT87OL?usp=drive_link --credentials google_drive_credentials.json --token artifacts/google-drive-token.json
 ```
 
+### 11. パッケージダウンロードと復元
+
+```bash
+boatrace-package-download
+```
+
+このコマンドで次を行います。
+
+1. Google Drive 共有リンクから `rowdata.zip` をダウンロード
+2. Google Drive 共有リンクから `brp.zip` をダウンロード
+3. `rowdata.zip` から `rowdata/` を上書き復元
+4. `brp.zip` から `data/` と `artifacts/` を上書き復元
+
+既定の共有リンク:
+
+- `brp.zip`
+  - `https://drive.google.com/file/d/14w8W6xqi-NmnePs7waYhrUrxYD378YHq/view?usp=drive_link`
+- `rowdata.zip`
+  - `https://drive.google.com/file/d/1mtjumyk9k43UlGa7c2URfAZmUFgt_9En/view?usp=drive_link`
+
+必要に応じて URL を上書きできます。
+
+```bash
+boatrace-package-download --brp-url https://drive.google.com/file/d/.../view?usp=drive_link --rowdata-url https://drive.google.com/file/d/.../view?usp=drive_link
+```
+
 ## 入力ファイル
 
 ### `future_races.csv`
@@ -342,6 +368,12 @@ race_id,trifecta,odds
 実行内容:
 
 1. `boatrace-webui`
+
+### `bat\data_download.bat`
+
+実行内容:
+
+1. `boatrace-package-download`
 
 ### タスクスケジューラ設定のポイント
 
