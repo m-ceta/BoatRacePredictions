@@ -24,6 +24,7 @@ from src.features.builder import build_training_table, save_processed_tables
 from src.features.streaming_builder import compare_processed_tables
 from src.live import predict_today_race
 from src.models.ranker import (
+    cleanup_processed_intermediate_dirs,
     collect_garbage,
     evaluate_trifecta,
     fit_model_trifecta_calibrator,
@@ -195,6 +196,7 @@ def train_main() -> None:
         trifecta_v2_model=trifecta_v2_model,
         trifecta_v2_model_path=artifacts["trifecta_v2_model_path"],
     )
+    cleanup_processed_intermediate_dirs(config)
 
 
 def predict_main() -> None:
@@ -514,6 +516,7 @@ def train_trifecta_v2_main() -> None:
         ),
     }
     artifacts["metrics_path"].write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
+    cleanup_processed_intermediate_dirs(config)
 
 
 def json_load_or_empty(path: Path) -> dict:

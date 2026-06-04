@@ -3,6 +3,7 @@ from __future__ import annotations
 import gc
 import itertools
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -119,6 +120,24 @@ def get_artifact_paths(config: dict) -> dict[str, Path]:
         name: Path(artifacts.get(name, default_path))
         for name, default_path in DEFAULT_ARTIFACT_PATHS.items()
     }
+
+
+def cleanup_processed_intermediate_dirs(config: dict) -> list[Path]:
+    data_config = config.get("data", {})
+    processed_dir_value = data_config.get("processed_dir")
+    if processed_dir_value:
+        processed_dir = Path(processed_dir_value)
+    else:
+        training_table = data_config.get("training_table")
+        processed_dir = Path(training_table).parent if training_table else Path("data/processed")
+
+    removed: list[Path] = []
+    for folder_name in ("base_buckets", "history_months"):
+        target = processed_dir / folder_name
+        if target.exists() and target.is_dir():
+            shutil.rmtree(target)
+            removed.append(target)
+    return removed
 
 
 def get_phase3_settings(config: dict | None = None) -> dict[str, Any]:

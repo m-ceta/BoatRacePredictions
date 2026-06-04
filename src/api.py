@@ -10,6 +10,7 @@ from src.features.builder import build_training_table, save_processed_tables
 from src.features.streaming_builder import BuildSummary, build_training_table_streaming
 from src.live import TodayRacePrediction, predict_today_race
 from src.models.ranker import (
+    cleanup_processed_intermediate_dirs,
     collect_garbage,
     get_artifact_paths,
     load_config,
@@ -151,6 +152,7 @@ def train_from_config(config_path: str | Path) -> dict[str, Any]:
         trifecta_v2_model=trifecta_v2_model,
         trifecta_v2_model_path=artifacts["trifecta_v2_model_path"],
     )
+    cleanup_processed_intermediate_dirs(config)
     return metrics
 
 
