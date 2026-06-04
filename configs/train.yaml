@@ -3,10 +3,12 @@ data:
   training_table: data/processed/training_table.parquet
   min_date: "2023-01-01"
   max_date: "2026-05-24"
+  rolling_years: 3
 
 split:
   train_end_date: "2025-12-31"
   valid_end_date: "2026-05-24"
+  valid_months: 4
 
 model:
   training_device: "cpu"

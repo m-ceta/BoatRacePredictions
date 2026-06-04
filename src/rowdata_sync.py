@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from src.live import extract_lzh_first_file_bytes, fetch_mbrace_daily_archive
@@ -79,14 +79,21 @@ def existing_rowdata_dates(rowdata_dir: str | Path, kind: str) -> set[date]:
     return dates
 
 
+def infer_default_backfill_end_date(current_dt: datetime | None = None) -> date:
+    now = current_dt or datetime.now()
+    # During daytime race operations, only backfill through yesterday by default.
+    if 7 <= now.hour < 21:
+        return now.date() - timedelta(days=1)
+    return now.date()
+
+
 def infer_backfill_range(
     rowdata_dir: str | Path,
     kinds: tuple[str, ...],
     start_date: date | None = None,
     end_date: date | None = None,
 ) -> tuple[date, date]:
-    today = date.today()
-    resolved_end = end_date or today
+    resolved_end = end_date or infer_default_backfill_end_date()
     if start_date is not None:
         return start_date, resolved_end
 

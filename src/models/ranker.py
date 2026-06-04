@@ -140,6 +140,16 @@ def infer_latest_available_race_date(training_table: pd.DataFrame) -> pd.Timesta
     return pd.Timestamp(race_dates.max()).normalize()
 
 
+def _parse_positive_window_int(value: Any) -> int | None:
+    if value in (None, "", 0, "0"):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
 def collect_garbage() -> None:
     gc.collect()
 
@@ -204,8 +214,20 @@ def with_latest_available_dates(config: dict, latest_race_date: pd.Timestamp | s
     synced.setdefault("data", {})
     synced["data"]["max_date"] = latest_str
 
+    rolling_years = _parse_positive_window_int(synced["data"].get("rolling_years"))
+    if rolling_years is not None:
+        min_ts = (latest_ts - pd.DateOffset(years=rolling_years) + pd.Timedelta(days=1)).normalize()
+        synced["data"]["min_date"] = min_ts.strftime("%Y-%m-%d")
+
     synced.setdefault("split", {})
     synced["split"]["valid_end_date"] = latest_str
+    valid_months = _parse_positive_window_int(synced["split"].get("valid_months"))
+    if valid_months is not None:
+        train_end_ts = (latest_ts - pd.DateOffset(months=valid_months)).normalize()
+        min_date = synced["data"].get("min_date")
+        if min_date:
+            train_end_ts = max(train_end_ts, pd.Timestamp(min_date))
+        synced["split"]["train_end_date"] = train_end_ts.strftime("%Y-%m-%d")
     return synced
 
 
@@ -353,6 +375,7 @@ def train_ranker(
     dict[str, lgb.Booster],
     Any | None,
 ]:
+    config = with_latest_available_dates(config, infer_latest_available_race_date(training_table))
     training_table = prepare_training_table(training_table, config)
 
     train_end = pd.Timestamp(config["split"]["train_end_date"])
