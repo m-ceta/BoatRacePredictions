@@ -104,6 +104,26 @@ def clear_prediction_caches() -> None:
     predict_today_cached.clear()
 
 
+def bootstrap_shared_data_from_secrets() -> None:
+    data_url = default_secret("data_drive_file_url", DEFAULT_DATA_DRIVE_FILE_URL).strip()
+    artifacts_url = default_secret("artifacts_drive_file_url", DEFAULT_ARTIFACTS_DRIVE_FILE_URL).strip()
+    if not data_url or not artifacts_url:
+        return
+
+    state_key = f"community_bootstrap_done::{data_url}::{artifacts_url}"
+    if st.session_state.get(state_key):
+        return
+
+    st.session_state["community_data_drive_url"] = data_url
+    st.session_state["community_artifacts_drive_url"] = artifacts_url
+
+    with st.spinner("共有データを初期化しています..."):
+        report = ensure_shared_data(data_url, artifacts_url)
+
+    st.session_state["community_bootstrap_report"] = report
+    st.session_state[state_key] = True
+
+
 def render_data_setup_tab() -> None:
     st.subheader("共有データ取得")
     st.caption(
@@ -112,6 +132,10 @@ def render_data_setup_tab() -> None:
     )
 
     default_data_url, default_artifacts_url = get_shared_data_urls()
+
+    bootstrap_report = st.session_state.get("community_bootstrap_report")
+    if bootstrap_report:
+        st.info("Secrets に設定された共有リンクから初期データを読み込み済みです。")
 
     with st.form("community_data_download_form"):
         data_url = st.text_input("data.zip URL", value=default_data_url)
@@ -143,6 +167,7 @@ def render_data_setup_tab() -> None:
         with st.spinner("共有データをダウンロードして展開しています..."):
             report = ensure_shared_data(data_url.strip(), artifacts_url.strip())
         clear_prediction_caches()
+        st.session_state["community_bootstrap_report"] = report
     except Exception as exc:  # pragma: no cover
         st.error(f"共有データ取得に失敗しました: {exc}")
         return
@@ -211,6 +236,11 @@ def main() -> None:
     st.set_page_config(page_title="BoatRace Today", page_icon="🚤", layout="wide")
     st.title("BoatRace Today")
     st.caption("Streamlit Community Cloud 向けの当日予測専用アプリです。")
+
+    try:
+        bootstrap_shared_data_from_secrets()
+    except Exception as exc:  # pragma: no cover
+        st.warning(f"起動時の共有データ初期化に失敗しました: {exc}")
 
     tabs = st.tabs(["当日レース予測", "共有データ取得"])
     with tabs[0]:
