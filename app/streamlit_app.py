@@ -9,6 +9,10 @@ from typing import Sequence
 import pandas as pd
 import streamlit as st
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from src.api import (
     backfill_rowdata_files,
     build_dataset_from_rowdata_streaming,
