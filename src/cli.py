@@ -13,9 +13,9 @@ from src.api import (
     load_bundle,
     load_prediction_input,
 )
-from src.drive_backup import DEFAULT_DRIVE_FOLDER_URL, package_and_upload_to_drive
 from src.drive_restore import (
-    DEFAULT_BRP_DRIVE_FILE_URL,
+    DEFAULT_ARTIFACTS_DRIVE_FILE_URL,
+    DEFAULT_DATA_DRIVE_FILE_URL,
     DEFAULT_ROWDATA_DRIVE_FILE_URL,
     download_and_restore_packages,
 )
@@ -107,42 +107,31 @@ def backfill_rowdata_main() -> None:
     print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
 
 
-def package_and_upload_main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--project-root", type=Path, default=Path("."))
-    parser.add_argument("--drive-folder", type=str, default=DEFAULT_DRIVE_FOLDER_URL)
-    parser.add_argument("--credentials", type=Path, default=Path("google_drive_credentials.json"))
-    parser.add_argument("--token", type=Path, default=Path("artifacts/google-drive-token.json"))
-    parser.add_argument("--rowdata-zip-name", type=str, default="rowdata.zip")
-    parser.add_argument("--drp-zip-name", type=str, default="drp.zip")
-    args = parser.parse_args()
-
-    report = package_and_upload_to_drive(
-        project_root=args.project_root,
-        folder_url_or_id=args.drive_folder,
-        credentials_path=args.credentials,
-        token_path=args.token,
-        rowdata_zip_name=args.rowdata_zip_name,
-        drp_zip_name=args.drp_zip_name,
-    )
-    print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
-
-
 def package_download_main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--project-root", type=Path, default=Path("."))
-    parser.add_argument("--brp-url", type=str, default=DEFAULT_BRP_DRIVE_FILE_URL)
     parser.add_argument("--rowdata-url", type=str, default=DEFAULT_ROWDATA_DRIVE_FILE_URL)
-    parser.add_argument("--brp-zip-name", type=str, default="brp.zip")
+    parser.add_argument("--data-url", type=str, default=DEFAULT_DATA_DRIVE_FILE_URL)
+    parser.add_argument("--artifacts-url", type=str, default=DEFAULT_ARTIFACTS_DRIVE_FILE_URL)
     parser.add_argument("--rowdata-zip-name", type=str, default="rowdata.zip")
+    parser.add_argument("--data-zip-name", type=str, default="data.zip")
+    parser.add_argument("--artifacts-zip-name", type=str, default="artifacts.zip")
+    parser.add_argument("--skip-rowdata", action="store_true")
+    parser.add_argument("--skip-data", action="store_true")
+    parser.add_argument("--skip-artifacts", action="store_true")
     args = parser.parse_args()
 
     report = download_and_restore_packages(
         project_root=args.project_root,
-        brp_drive_file_url=args.brp_url,
         rowdata_drive_file_url=args.rowdata_url,
-        brp_zip_name=args.brp_zip_name,
+        data_drive_file_url=args.data_url,
+        artifacts_drive_file_url=args.artifacts_url,
         rowdata_zip_name=args.rowdata_zip_name,
+        data_zip_name=args.data_zip_name,
+        artifacts_zip_name=args.artifacts_zip_name,
+        restore_rowdata=not args.skip_rowdata,
+        restore_data=not args.skip_data,
+        restore_artifacts=not args.skip_artifacts,
     )
     print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
 

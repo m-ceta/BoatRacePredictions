@@ -15,7 +15,12 @@ from src.api import (
     load_bundle,
     predict_today,
 )
-from src.drive_backup import DEFAULT_DRIVE_FOLDER_URL
+from src.drive_restore import (
+    DEFAULT_ARTIFACTS_DRIVE_FILE_URL,
+    DEFAULT_DATA_DRIVE_FILE_URL,
+    DEFAULT_ROWDATA_DRIVE_FILE_URL,
+    download_and_restore_packages,
+)
 
 
 VENUES = {
@@ -46,6 +51,10 @@ VENUES = {
 }
 
 
+def repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
 @st.cache_resource(show_spinner=False)
 def load_cached_bundle(config_path: str):
     return load_bundle(config_path)
@@ -59,7 +68,7 @@ def _run_python_cli(command_label: str, args: Sequence[str]) -> tuple[int, str]:
     with st.spinner(f"{command_label} を実行しています..."):
         process = subprocess.Popen(
             full_command,
-            cwd=Path(__file__).resolve().parents[1],
+            cwd=repo_root(),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -91,7 +100,7 @@ def _render_command_result(command_label: str, return_code: int, output_text: st
 
 def render_prediction_tab() -> None:
     st.subheader("当日レース予測")
-    st.caption("対象レースを指定して、順位予測・三連単候補・オッズ評価を表示します。")
+    st.caption("指定したレースの順位予測、三連単候補、オッズ評価を表示します。")
 
     with st.form("prediction_form"):
         config_path = st.text_input("設定ファイル", value="configs/train.yaml")
@@ -109,14 +118,14 @@ def render_prediction_tab() -> None:
 
     try:
         load_cached_bundle.clear()
-        with st.spinner("当日データを取得して予測しています..."):
+        with st.spinner("予測を実行しています..."):
             prediction = predict_today(
                 venue=selected,
                 race_no=int(race_no),
                 config_path=config_path,
                 race_date=race_date,
             )
-    except Exception as exc:  # pragma: no cover - streamlit runtime path
+    except Exception as exc:  # pragma: no cover
         st.error(f"予測に失敗しました: {exc}")
         return
 
@@ -140,16 +149,52 @@ def render_prediction_tab() -> None:
         st.dataframe(prediction.buy_candidates, use_container_width=True, hide_index=True)
 
 
+def render_download_tab() -> None:
+    st.subheader("共有データ取得")
+    st.caption("Google Drive 共有リンクから rowdata / data / artifacts を復元します。")
+
+    with st.form("download_form"):
+        project_root_value = st.text_input("project-root", value=".")
+        rowdata_url = st.text_input("rowdata.zip URL", value=DEFAULT_ROWDATA_DRIVE_FILE_URL)
+        data_url = st.text_input("data.zip URL", value=DEFAULT_DATA_DRIVE_FILE_URL)
+        artifacts_url = st.text_input("artifacts.zip URL", value=DEFAULT_ARTIFACTS_DRIVE_FILE_URL)
+        restore_rowdata = st.checkbox("rowdata を復元", value=True)
+        restore_data = st.checkbox("data を復元", value=True)
+        restore_artifacts = st.checkbox("artifacts を復元", value=True)
+        submitted = st.form_submit_button("ダウンロードして復元")
+
+    if not submitted:
+        return
+
+    try:
+        with st.spinner("ダウンロードして復元しています..."):
+            report = download_and_restore_packages(
+                project_root=Path(project_root_value),
+                rowdata_drive_file_url=rowdata_url,
+                data_drive_file_url=data_url,
+                artifacts_drive_file_url=artifacts_url,
+                restore_rowdata=restore_rowdata,
+                restore_data=restore_data,
+                restore_artifacts=restore_artifacts,
+            )
+    except Exception as exc:  # pragma: no cover
+        st.error(f"復元に失敗しました: {exc}")
+        return
+
+    st.success("復元が完了しました。")
+    st.json(report.to_dict())
+
+
 def render_backfill_tab() -> None:
-    st.subheader("rowdata 補完")
-    st.caption("mbrace から不足する B/K テキストを取得します。")
+    st.subheader("rowdata 更新")
+    st.caption("mbrace から不足している B/K テキストを取得します。")
 
     with st.form("backfill_form"):
         rowdata_dir = st.text_input("rowdata フォルダ", value="rowdata")
         start_date_text = st.text_input(
             "開始日",
             value="",
-            help="未入力なら既存ファイルの最新日の翌日から補完します。例: 2026-05-14",
+            help="未入力なら既存ファイルの最新日の翌日から更新します。例: 2026-05-14",
         )
         end_date = st.date_input("終了日", value=date.today())
         kinds = st.multiselect(
@@ -159,18 +204,17 @@ def render_backfill_tab() -> None:
             help="B は番組表、K はレース結果です。",
         )
         overwrite = st.checkbox("既存ファイルを上書きする", value=False)
-        submitted = st.form_submit_button("補完を実行")
+        submitted = st.form_submit_button("更新を実行")
 
     if not submitted:
         return
-
     if not kinds:
-        st.warning("少なくとも B または K を選択してください。")
+        st.warning("B または K を選択してください。")
         return
 
     try:
         normalized_start = start_date_text.strip() or None
-        with st.spinner("rowdata を補完しています..."):
+        with st.spinner("rowdata を更新しています..."):
             report = backfill_rowdata_files(
                 rowdata_dir=rowdata_dir,
                 start_date=normalized_start,
@@ -178,33 +222,17 @@ def render_backfill_tab() -> None:
                 kinds=kinds,
                 overwrite=overwrite,
             )
-    except Exception as exc:  # pragma: no cover - streamlit runtime path
-        st.error(f"補完に失敗しました: {exc}")
+    except Exception as exc:  # pragma: no cover
+        st.error(f"更新に失敗しました: {exc}")
         return
 
-    st.success("補完が完了しました。")
+    st.success("更新が完了しました。")
     st.json(report.to_dict())
-
-    if report.downloaded_files:
-        st.markdown("**取得ファイル**")
-        st.dataframe(
-            pd.DataFrame({"path": [str(path) for path in report.downloaded_files]}),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-    if report.unavailable_files:
-        st.markdown("**未取得ファイル**")
-        st.dataframe(
-            pd.DataFrame({"file": report.unavailable_files}),
-            use_container_width=True,
-            hide_index=True,
-        )
 
 
 def render_dataset_tab() -> None:
     st.subheader("学習データ更新")
-    st.caption("rowdata から race_entries / race_results / training_table を再生成します。")
+    st.caption("rowdata から race_entries / race_results / training_table を生成します。")
 
     with st.form("dataset_form"):
         rowdata_dir = st.text_input("rowdata フォルダ", value="rowdata", key="dataset_rowdata")
@@ -212,23 +240,24 @@ def render_dataset_tab() -> None:
         max_date = st.text_input(
             "最大日付",
             value="",
-            help="未入力なら rowdata に存在する最新日まで処理します。比較用に 2026-05-24 のように指定できます。",
+            help="未入力なら rowdata に存在する最新日まで処理します。例: 2026-05-24",
         )
-        submitted = st.form_submit_button("学習データを再生成")
+        submitted = st.form_submit_button("学習データを生成")
 
     if not submitted:
         return
 
     try:
-        with st.spinner("学習データを再生成しています..."):
+        with st.spinner("学習データを生成しています..."):
             summary = build_dataset_from_rowdata_streaming(
                 rowdata_dir=rowdata_dir,
                 output_dir=output_dir,
                 max_date=max_date.strip() or None,
             )
-    except Exception as exc:  # pragma: no cover - streamlit runtime path
+    except Exception as exc:  # pragma: no cover
         st.error(f"学習データ生成に失敗しました: {exc}")
         return
+
     st.success("学習データ生成が完了しました。")
     st.json(summary.to_dict())
 
@@ -243,7 +272,7 @@ def render_train_tab() -> None:
             "学習デバイス",
             options=["cpu", "gpu"],
             index=0,
-            help="WebUI から実行する学習ジョブのデバイスを選択します。既定は CPU です。",
+            help="WebUI から実行する学習ジョブのデバイスを選択します。既定値は CPU です。",
         )
         submitted = st.form_submit_button("モデル再学習を実行")
 
@@ -266,7 +295,7 @@ def render_train_tab() -> None:
 
 def render_trifecta_train_tab() -> None:
     st.subheader("三連単最適化学習")
-    st.caption("三連単 Phase3 rerank の追加最適化と専用評価を実行します。")
+    st.caption("三連単 Phase3 rerank の追加学習と評価を実行します。")
 
     with st.form("trifecta_train_form"):
         config_path = st.text_input("設定ファイル", value="configs/train.yaml", key="trifecta_train_config")
@@ -275,7 +304,7 @@ def render_trifecta_train_tab() -> None:
             options=["cpu", "gpu"],
             index=0,
             key="trifecta_training_device",
-            help="WebUI から実行する学習ジョブのデバイスを選択します。既定は CPU です。",
+            help="WebUI から実行する学習ジョブのデバイスを選択します。既定値は CPU です。",
         )
         max_races = st.number_input("max-races", min_value=100, max_value=10000, value=1000, step=100)
         eval_max_races = st.number_input("eval-max-races", min_value=100, max_value=10000, value=1000, step=100)
@@ -307,71 +336,33 @@ def render_trifecta_train_tab() -> None:
     _render_command_result("三連単最適化学習", return_code, output_text)
 
 
-def render_upload_tab() -> None:
-    st.subheader("学習成果物アップロード")
-    st.caption("rowdata.zip と drp.zip を作成し、Google Drive に同名上書きアップロードします。")
-
-    with st.form("package_upload_form"):
-        project_root = st.text_input("project-root", value=".")
-        drive_folder = st.text_input("drive-folder", value=DEFAULT_DRIVE_FOLDER_URL)
-        credentials = st.text_input("credentials", value="google_drive_credentials.json")
-        token = st.text_input("token", value="artifacts/google-drive-token.json")
-        rowdata_zip_name = st.text_input("rowdata-zip-name", value="rowdata.zip")
-        drp_zip_name = st.text_input("drp-zip-name", value="drp.zip")
-        submitted = st.form_submit_button("学習成果物アップロードを実行")
-
-    if not submitted:
-        return
-
-    args = [
-        "-c",
-        "from src.cli import package_and_upload_main; package_and_upload_main()",
-        "--project-root",
-        project_root,
-        "--drive-folder",
-        drive_folder,
-        "--credentials",
-        credentials,
-        "--token",
-        token,
-        "--rowdata-zip-name",
-        rowdata_zip_name,
-        "--drp-zip-name",
-        drp_zip_name,
-    ]
-    return_code, output_text = _run_python_cli("学習成果物アップロード", args)
-    _render_command_result("学習成果物アップロード", return_code, output_text)
-
-
 def main() -> None:
     st.set_page_config(page_title="BoatRace Predictions", page_icon="🚤", layout="wide")
     st.title("BoatRace Predictions")
-    st.caption(
-        "当日予測、rowdata 補完、学習データ更新、モデル再学習、Google Drive への成果物アップロードをブラウザから実行できます。"
-    )
+    st.caption("当日予測、rowdata 更新、学習データ生成、モデル再学習をブラウザから実行できます。")
 
     tabs = st.tabs(
         [
             "当日予測",
-            "rowdata補完",
+            "共有データ取得",
+            "rowdata更新",
             "学習データ更新",
             "モデル再学習",
             "三連単最適化学習",
-            "学習成果物アップロード",
         ]
     )
     with tabs[0]:
         render_prediction_tab()
     with tabs[1]:
-        render_backfill_tab()
+        render_download_tab()
     with tabs[2]:
-        render_dataset_tab()
+        render_backfill_tab()
     with tabs[3]:
-        render_train_tab()
+        render_dataset_tab()
     with tabs[4]:
-        render_trifecta_train_tab()
+        render_train_tab()
     with tabs[5]:
-        render_upload_tab()
+        render_trifecta_train_tab()
 
 
 if __name__ == "__main__":

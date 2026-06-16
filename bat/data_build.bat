@@ -32,16 +32,12 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [1/3] boatrace-backfill-rowdata --rowdata rowdata
+echo [1/2] boatrace-backfill-rowdata --rowdata rowdata
 call boatrace-backfill-rowdata --rowdata rowdata
 if errorlevel 1 exit /b %errorlevel%
 
-echo [2/3] boatrace-build --rowdata rowdata --output data/processed
+echo [2/2] boatrace-build --rowdata rowdata --output data/processed
 call boatrace-build --rowdata rowdata --output data/processed
-if errorlevel 1 exit /b %errorlevel%
-
-echo [3/3] boatrace-package-upload
-call boatrace-package-upload
 if errorlevel 1 exit /b %errorlevel%
 
 echo data_build.bat completed successfully.

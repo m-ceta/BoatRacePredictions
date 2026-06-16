@@ -25,17 +25,20 @@ def test_download_and_restore_packages_replaces_target_directories(tmp_path, mon
     source_root = tmp_path / "source_archives"
     source_root.mkdir()
     rowdata_zip = source_root / "rowdata.zip"
-    brp_zip = source_root / "brp.zip"
+    data_zip = source_root / "data.zip"
+    artifacts_zip = source_root / "artifacts.zip"
 
     with zipfile.ZipFile(rowdata_zip, "w") as zf:
         zf.writestr("rowdata/new_row.txt", "row")
-    with zipfile.ZipFile(brp_zip, "w") as zf:
+    with zipfile.ZipFile(data_zip, "w") as zf:
         zf.writestr("data/new_data.txt", "data")
+    with zipfile.ZipFile(artifacts_zip, "w") as zf:
         zf.writestr("artifacts/new_artifact.txt", "artifact")
 
     mapping = {
         "row-file-id": rowdata_zip,
-        "brp-file-id": brp_zip,
+        "data-file-id": data_zip,
+        "artifacts-file-id": artifacts_zip,
     }
 
     def fake_download(file_id: str, output_path: Path) -> Path:
@@ -46,8 +49,9 @@ def test_download_and_restore_packages_replaces_target_directories(tmp_path, mon
 
     report = drive_restore.download_and_restore_packages(
         project_root=project_root,
-        brp_drive_file_url="brp-file-id",
         rowdata_drive_file_url="row-file-id",
+        data_drive_file_url="data-file-id",
+        artifacts_drive_file_url="artifacts-file-id",
     )
 
     assert report.restored_targets == ["rowdata", "data", "artifacts"]
@@ -57,3 +61,35 @@ def test_download_and_restore_packages_replaces_target_directories(tmp_path, mon
     assert not (project_root / "rowdata" / "old.txt").exists()
     assert not (project_root / "data" / "old.txt").exists()
     assert not (project_root / "artifacts" / "old.txt").exists()
+
+
+def test_download_and_restore_packages_can_skip_targets(tmp_path, monkeypatch) -> None:
+    project_root = tmp_path
+    (project_root / "data").mkdir()
+    (project_root / "artifacts").mkdir()
+    (project_root / "data" / "keep.txt").write_text("keep", encoding="utf-8")
+
+    source_root = tmp_path / "source_archives"
+    source_root.mkdir()
+    artifacts_zip = source_root / "artifacts.zip"
+    with zipfile.ZipFile(artifacts_zip, "w") as zf:
+        zf.writestr("artifacts/new_artifact.txt", "artifact")
+
+    def fake_download(file_id: str, output_path: Path) -> Path:
+        output_path.write_bytes(artifacts_zip.read_bytes())
+        return output_path
+
+    monkeypatch.setattr(drive_restore, "_download_drive_file", fake_download)
+
+    report = drive_restore.download_and_restore_packages(
+        project_root=project_root,
+        data_drive_file_url="",
+        artifacts_drive_file_url="artifacts-file-id",
+        restore_rowdata=False,
+        restore_data=False,
+        restore_artifacts=True,
+    )
+
+    assert report.restored_targets == ["artifacts"]
+    assert (project_root / "data" / "keep.txt").read_text(encoding="utf-8") == "keep"
+    assert (project_root / "artifacts" / "new_artifact.txt").read_text(encoding="utf-8") == "artifact"

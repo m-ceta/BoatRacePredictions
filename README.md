@@ -1,60 +1,50 @@
 # BoatRacePredictions
 
-ボートレースの過去 `B*.TXT` / `K*.TXT` を学習データに使い、当日レースの順位予測と三連単予測を行う Python プロジェクトです。
+ボートレースの過去 `B*.TXT` / `K*.TXT` を学習データとして使い、当日レースの順位予測と三連単候補を出力するプロジェクトです。
 
-主な機能:
+## 主な機能
 
 - `rowdata` の不足分補完
-- 学習データ生成
-- 順位予測モデル再学習
-- 三連単 `Phase3` 最適化学習
-- 三連単評価
+- `training_table.parquet` の生成
+- ranker / classifier / flow / staged / Phase3 の学習
 - 当日レース予測
 - Streamlit Web UI
-- 学習成果物の zip 化と Google Drive へのアップロード
+- Google Drive 共有リンクからの `rowdata / data / artifacts` 復元
 
-## 構成
+## ディレクトリ
 
 - `rowdata/`
-  - 過去の `B*.TXT` / `K*.TXT`
+  - 元データ `B*.TXT` / `K*.TXT`
 - `data/processed/`
   - `race_entries.parquet`
   - `race_results.parquet`
   - `training_table.parquet`
 - `artifacts/`
-  - 学習済みモデル、校正器、メトリクス
+  - 学習済みモデル、校正器、特徴量定義、メトリクス
 - `configs/train.yaml`
-  - 学習・評価・推論設定
+  - 学習・評価設定
 - `app/streamlit_app.py`
-  - Web UI
+  - フル機能 Web UI
+- `app/community_today_app.py`
+  - Streamlit Community Cloud 用の当日予測専用アプリ
 
 ## セットアップ
 
 ### Conda
+
+Windows:
 
 ```bat
 bat\conda_setup.bat
 conda activate boatrace-predictions
 ```
 
-環境を有効化したコマンドプロンプトを開く場合:
-
-```bat
-bat\open_conda_prompt.bat
-```
-
-Linux / Bash 環境:
+Linux / Bash:
 
 ```bash
 chmod +x sh/*.sh
 sh/conda_setup.sh
 conda activate boatrace-predictions
-```
-
-Conda 環境を有効化したシェルを開く場合:
-
-```bash
-sh/open_conda_shell.sh
 ```
 
 ### pip
@@ -65,13 +55,17 @@ pip install -e .
 
 ## 主なコマンド
 
-### 1. `rowdata` 補完
-
-最新既存日付の翌日から当日まで補完:
+### rowdata 補完
 
 ```bash
 boatrace-backfill-rowdata --rowdata rowdata
 ```
+
+補足:
+
+- `--end` 省略時は時間帯で既定終了日が変わります
+- `07:00` から `20:59` は前日分まで
+- `21:00` から `06:59` は当日分まで
 
 期間指定:
 
@@ -79,73 +73,57 @@ boatrace-backfill-rowdata --rowdata rowdata
 boatrace-backfill-rowdata --rowdata rowdata --start 2026-05-01 --end 2026-05-31
 ```
 
-`B` のみ:
-
-```bash
-boatrace-backfill-rowdata --rowdata rowdata --start 2026-05-01 --end 2026-05-31 --kinds B
-```
-
-### 2. 学習データ生成
+### 学習データ生成
 
 ```bash
 boatrace-build --rowdata rowdata --output data/processed
 ```
 
-日付上限付き:
+日付上限を切る場合:
 
 ```bash
 boatrace-build --rowdata rowdata --output data/processed --max-date 2026-05-24
 ```
 
-補足:
+生成される最終成果物:
 
-- `boatrace-build` は streaming build です
-- 全件を一度に Python list / DataFrame へ積み上げず、中間 parquet を使って処理します
+- `data/processed/race_entries.parquet`
+- `data/processed/race_results.parquet`
+- `data/processed/training_table.parquet`
 
-### 3. ビルド結果比較
+`base_buckets/` と `history_months/` は build 中間ファイルです。学習や予測には不要で、学習完了時に自動削除されます。
 
-```bash
-boatrace-compare-processed --expected data/processed_old --actual data/processed
-```
-
-### 4. モデル再学習
+### モデル再学習
 
 ```bash
 boatrace-train --config configs/train.yaml
 ```
 
-補足:
-
-- `training_table.parquet` の最新 `race_date` を見て、学習上限日は実行時に自動調整されます
-- `configs/train.yaml` を毎回手で更新しなくても、`rowdata` 補完後の最新日まで追従します
-
-### 5. 三連単 `Phase3` 学習
+### 三連単最適化学習
 
 ```bash
 boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 1000 --eval-rerank-top-n 10
 ```
 
-rerank 最適化込み:
+rerank 最適化付き:
 
 ```bash
 boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 1000 --eval-rerank-top-n 10 --optimize-rerank
 ```
 
-`--optimize-rerank` の意味:
-
-- 付けない:
-  - `Phase3` モデルを学習する
-- 付ける:
-  - `Phase3` 学習に加えて rerank 設定の探索も行う
-  - その分かなり重くなる
-
-### 6. 三連単 full valid 評価
+### full valid 再評価
 
 ```bash
 boatrace-eval-trifecta-full --config configs/train.yaml
 ```
 
-### 7. CSV から予測
+### 当日レース予測
+
+```bash
+boatrace-predict-today --config configs/train.yaml --venue 23 --race-no 1
+```
+
+### CSV 入力予測
 
 順位予測:
 
@@ -153,31 +131,58 @@ boatrace-eval-trifecta-full --config configs/train.yaml
 boatrace-predict --config configs/train.yaml --features artifacts/feature_columns.json --input future_races.csv --output ranking_predictions.csv
 ```
 
-三連単まで出力:
+三連単候補も出力:
 
 ```bash
 boatrace-predict --config configs/train.yaml --features artifacts/feature_columns.json --input future_races.csv --output ranking_predictions.csv --trifecta-output trifecta_predictions.csv
 ```
 
-オッズ込み:
+## Google Drive 共有リンクからの復元
+
+### `boatrace-package-download`
 
 ```bash
-boatrace-predict --config configs/train.yaml --features artifacts/feature_columns.json --input future_races.csv --output ranking_predictions.csv --trifecta-output trifecta_predictions.csv --odds odds.csv
+boatrace-package-download
 ```
 
-### 8. 当日レース予測
+このコマンドは次の3つを扱います。
+
+- `rowdata.zip` -> `rowdata/`
+- `data.zip` -> `data/`
+- `artifacts.zip` -> `artifacts/`
+
+指定例:
 
 ```bash
-boatrace-predict-today --config configs/train.yaml --venue 23 --race-no 1
+boatrace-package-download \
+  --rowdata-url "https://drive.google.com/file/d/..." \
+  --data-url "https://drive.google.com/file/d/..." \
+  --artifacts-url "https://drive.google.com/file/d/..."
+```
+
+一部だけ復元する例:
+
+```bash
+boatrace-package-download --skip-rowdata
+boatrace-package-download --skip-data
+boatrace-package-download --skip-artifacts
 ```
 
 補足:
 
-- `future_races.csv` を手で作る必要はありません
-- 内部で番組表取得と特徴量生成を行います
-- オッズ取得に成功した場合は買い候補も表示します
+- `data.zip` と `artifacts.zip` の URL が同じ場合でも、内部では 1 回だけダウンロードして再利用します
+- 次の環境変数があれば既定値として使います
+  - `BOATRACE_ROWDATA_DRIVE_FILE_URL`
+  - `BOATRACE_DATA_DRIVE_FILE_URL`
+  - `BOATRACE_ARTIFACTS_DRIVE_FILE_URL`
 
-### 9. Web UI
+### セキュリティ
+
+Google Drive へのアップロード処理は削除しています。現在はダウンロード復元のみです。
+
+## Streamlit Web UI
+
+### フル機能 UI
 
 ```bash
 boatrace-webui
@@ -189,288 +194,141 @@ boatrace-webui
 streamlit run app/streamlit_app.py
 ```
 
-既定 URL:
-
-- `http://localhost:8501`
-- `http://127.0.0.1:8501`
-
-Web UI でできること:
+機能:
 
 - 当日レース予測
-- `rowdata` 補完
+- 共有データ取得
+- rowdata 更新
 - 学習データ更新
 - モデル再学習
 - 三連単最適化学習
-- 学習成果物アップロード
 
-学習系 UI の補足:
+### Streamlit Community Cloud 用アプリ
 
-- `モデル再学習`
+エントリポイント:
+
+```bash
+streamlit run app/community_today_app.py
+```
+
+またはローカル用ラッパー:
+
+```bash
+boatrace-webui-today
+```
+
+用途:
+
+- 当日予測専用
+- Community Cloud 上で `data.zip` / `artifacts.zip` を取得してから予測実行
+- `rowdata` の復元や学習系の UI は含みません
+
+### Streamlit Community Cloud へのデプロイ
+
+Community Cloud では `requirements.txt` を使って依存ライブラリを自動インストールします。
+
+必要ファイル:
+
+- `requirements.txt`
+- `app/community_today_app.py`
+- `src/`
+- `configs/train.yaml`
+
+Secrets の例:
+
+```toml
+data_drive_file_url = "https://drive.google.com/file/d/your-data-file-id/view?usp=drive_link"
+artifacts_drive_file_url = "https://drive.google.com/file/d/your-artifacts-file-id/view?usp=drive_link"
+```
+
+雛形:
+
+- `.streamlit/secrets.toml.example`
+
+デプロイ手順:
+
+1. このリポジトリを GitHub に push
+2. Streamlit Community Cloud で新しい app を作成
+3. Main file path に `app/community_today_app.py` を指定
+4. 必要なら `data_drive_file_url` と `artifacts_drive_file_url` を Secrets に設定
+5. Deploy
+
+補足:
+
+- Community Cloud 用アプリは予測専用です
+- `rowdata.zip` は不要です
+- `data.zip` と `artifacts.zip` は公開共有リンクで取得できる必要があります
+
+## バッチ / シェル
+
+### Windows
+
+- `bat\data_build.bat`
+  - `boatrace-backfill-rowdata`
+  - `boatrace-build`
+- `bat\train.bat`
   - `boatrace-train`
-- `三連単最適化学習`
   - `boatrace-train-trifecta-v2`
-- どちらも `CPU` / `GPU` を選択可能
-- 既定値は `CPU`
+- `bat\opt.bat`
+  - `boatrace-train-trifecta-v2 --optimize-rerank`
+- `bat\eval.bat`
+  - `boatrace-eval-trifecta-full`
+- `bat\data_download.bat`
+  - `boatrace-package-download`
+- `bat\ui.bat`
+  - `boatrace-webui`
 
-### 10. 学習成果物の zip 化と Google Drive アップロード
+### Linux / Bash
 
-```bash
-boatrace-package-upload
-```
+- `sh/data_build.sh`
+- `sh/train.sh`
+- `sh/opt.sh`
+- `sh/eval.sh`
+- `sh/data_download.sh`
+- `sh/ui.sh`
 
-このコマンドで次を行います。
+## 学習期間ルール
 
-1. `rowdata/` を `rowdata.zip` に圧縮
-2. `artifacts/`, `configs/`, `data/` を `drp.zip` に圧縮
-3. Google Drive の指定フォルダへ同名上書きアップロード
+`configs/train.yaml` では相対窓を使っています。
 
-既定のアップロード先:
+- `data.rolling_years: 3`
+- `split.valid_months: 4`
 
-- `https://drive.google.com/drive/folders/19HHxA5r4T_IqMrDyNqU3qRUoRkhT87OL?usp=drive_link`
+最新 `race_date` を基準に、実行時に自動で
 
-認証:
+- 学習対象: 直近 3 年
+- valid: 直近 4 か月
 
-- `google_drive_credentials.json` をルートへ配置
-- 初回実行時にブラウザ認証
-- トークンは `artifacts/google-drive-token.json` に保存
+へ追従します。
 
-明示指定例:
+## 必要メモリの目安
 
-```bash
-boatrace-package-upload --project-root . --drive-folder https://drive.google.com/drive/folders/19HHxA5r4T_IqMrDyNqU3qRUoRkhT87OL?usp=drive_link --credentials google_drive_credentials.json --token artifacts/google-drive-token.json
-```
+### 当日予測
 
-### 11. パッケージダウンロードと復元
-
-```bash
-boatrace-package-download
-```
-
-このコマンドで次を行います。
-
-1. Google Drive 共有リンクから `rowdata.zip` をダウンロード
-2. Google Drive 共有リンクから `brp.zip` をダウンロード
-3. `rowdata.zip` から `rowdata/` を上書き復元
-4. `brp.zip` から `data/` と `artifacts/` を上書き復元
-
-既定の共有リンク:
-
-- `brp.zip`
-  - `https://drive.google.com/file/d/14w8W6xqi-NmnePs7waYhrUrxYD378YHq/view?usp=drive_link`
-- `rowdata.zip`
-  - `https://drive.google.com/file/d/1mtjumyk9k43UlGa7c2URfAZmUFgt_9En/view?usp=drive_link`
-
-必要に応じて URL を上書きできます。
-
-```bash
-boatrace-package-download --brp-url https://drive.google.com/file/d/.../view?usp=drive_link --rowdata-url https://drive.google.com/file/d/.../view?usp=drive_link
-```
-
-## 入力ファイル
-
-### `future_races.csv`
-
-CSV 予測用の入力です。
-
-- 1レースあたり 6 行
-- 1行 = 1艇
-- `race_id` は同一レースで共通
-- 学習時と同じ特徴量列を持つ
-
-通常の当日予測では内部生成されるため、手作成は不要です。
-
-### `odds.csv`
-
-最小列:
-
-- `race_id`
-- `trifecta`
-- `odds`
-
-例:
-
-```csv
-race_id,trifecta,odds
-20260522_24_01,1-2-3,18.4
-20260522_24_01,1-3-2,21.7
-20260522_24_01,2-1-3,35.9
-```
-
-## 学習済み成果物
-
-主な `artifacts/`:
-
-- `catboost_ranker.cbm`
-- `lightgbm_ranker.txt`
-- `feature_columns.json`
-- `ensemble_weights.json`
-- `trifecta_isotonic.joblib`
-- `trifecta_v2_isotonic.joblib`
-- `trifecta_v3_isotonic.joblib`
-- `trifecta_v2_model.joblib`
-- `metrics.json`
-- `classifiers/*.txt`
-- `staged/*.txt`
-- `flow_lightgbm.txt`
-- `flow_classes.json`
-
-## 別 PC へ持っていく最小セット
-
-予測だけなら次で十分です。
-
-- `artifacts/`
-- `configs/`
-- `data/processed/training_table.parquet`
-- ソースコード一式
-
-## 日次・週次・月次運用
-
-### 日次
-
-1. `boatrace-backfill-rowdata --rowdata rowdata`
-2. `boatrace-build --rowdata rowdata --output data/processed`
-3. 当日予測
-
-### 週次
-
-1. `rowdata` 補完
-2. `data/processed` 更新
-
-### 月次
-
-1. `rowdata` 補完
-2. `data/processed` 更新
-3. `boatrace-train`
-4. `boatrace-train-trifecta-v2`
-5. 必要に応じて `boatrace-eval-trifecta-full`
-
-## タスクスケジューラ用バッチ
-
-タスクスケジューラから定期実行する前提で、Conda 仮想環境 `boatrace-predictions` を有効化してから処理を流すバッチを用意しています。
-
-### `bat\data_build.bat`
-
-実行内容:
-
-1. `boatrace-backfill-rowdata --rowdata rowdata`
-2. `boatrace-build --rowdata rowdata --output data/processed`
-3. `boatrace-package-upload`
-
-### `sh/data_build.sh`
-
-実行内容:
-
-1. `boatrace-backfill-rowdata --rowdata rowdata`
-2. `boatrace-build --rowdata rowdata --output data/processed`
-3. `boatrace-package-upload`
-
-### `bat\train.bat`
-
-実行内容:
-
-1. `boatrace-train --config configs/train.yaml`
-2. `boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 1000 --eval-rerank-top-n 10`
-3. `boatrace-package-upload`
-
-### `sh/train.sh`
-
-実行内容:
-
-1. `boatrace-train --config configs/train.yaml`
-2. `boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 1000 --eval-rerank-top-n 10`
-3. `boatrace-package-upload`
-
-### `bat\opt.bat`
-
-実行内容:
-
-1. `boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 1000 --eval-rerank-top-n 10 --optimize-rerank`
-2. `boatrace-package-upload`
-
-### `sh/opt.sh`
-
-実行内容:
-
-1. `boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 1000 --eval-rerank-top-n 10 --optimize-rerank`
-2. `boatrace-package-upload`
-
-### `bat\eval.bat`
-
-実行内容:
-
-1. `boatrace-eval-trifecta-full --config configs/train.yaml`
-
-### `sh/eval.sh`
-
-実行内容:
-
-1. `boatrace-eval-trifecta-full --config configs/train.yaml`
-
-### `bat\ui.bat`
-
-実行内容:
-
-1. `boatrace-webui`
-
-### `sh/ui.sh`
-
-実行内容:
-
-1. `boatrace-webui`
-
-### `bat\data_download.bat`
-
-実行内容:
-
-1. `boatrace-package-download`
-
-### `sh/data_download.sh`
-
-実行内容:
-
-1. `boatrace-package-download`
-
-### タスクスケジューラ設定のポイント
-
-- `プログラム/スクリプト`
-  - `bat\*.bat` を指定
-- `開始`
-  - `bat` フォルダ、またはリポジトリルート
-- 実行ユーザーの環境で `conda.bat` が見つかること
-
-## メモリと処理負荷の目安
+- 最低ライン: `2GB`
+- 現実的な下限: `4GB`
+- 安心目安: `8GB`
 
 ### `boatrace-build`
 
-- streaming build に変更済み
-- 旧一括 build より OOM しにくい
+- 最低ライン: `8GB`
+- 現実的な下限: `12GB`
+- 安心目安: `16GB`
 
 ### `boatrace-train`
 
-- 目安: `24GB` 以上推奨
-- `16GB` でも条件次第では可能
+- 最低目安: `16GB`
+- 安全目安: `24GB`
+- 推奨: `32GB`
 
 ### `boatrace-train-trifecta-v2`
 
-- 目安: `32GB` 以上推奨
-- `16GB` ではかなり厳しい
+- 最低目安: `24GB`
+- 安全目安: `32GB`
+- 推奨: `48GB`
 
-### GPU
+## 補足
 
-- 学習時のみ GPU 指定可能
-- 推論は CPU
-- `CatBoost` は GPU 時に `NDCG` 評価を外す実装
-- `LightGBM` だけ GPU にする運用も可能
-
-## 注意
-
-- `artifacts/`, `rowdata/`, `data/` は Git 管理対象外です
-- `google_drive_credentials.json` と `artifacts/google-drive-token.json` は Git 管理対象外です
-- `.lzh` 展開は `lhafile` を優先し、必要に応じて 7-Zip へフォールバックします
-- 初回セットアップ後に依存を更新した場合は、`bat\conda_setup.bat` または `pip install -e .` を再実行してください
-
-## テスト
-
-```bash
-python -m pytest -q
-```
+- `boatrace-build` は streaming build 化されており、一括 build よりメモリを抑えています
+- 学習完了時には `data/processed/base_buckets` と `data/processed/history_months` を自動削除します
+- 予測専用で別 PC に持っていく場合は、最低限 `configs/`, `artifacts/`, `data/processed/training_table.parquet` が必要です

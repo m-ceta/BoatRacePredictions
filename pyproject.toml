@@ -13,9 +13,6 @@ dependencies = [
   "beautifulsoup4>=4.12.0",
   "requests>=2.32.0",
   "lhafile>=0.3.0",
-  "google-api-python-client>=2.170.0",
-  "google-auth-oauthlib>=1.2.0",
-  "google-auth-httplib2>=0.2.0",
   "catboost>=1.2.5",
   "lightgbm>=4.5.0",
   "scikit-learn>=1.5.0",
@@ -38,7 +35,7 @@ boatrace-eval-trifecta-full = "src.cli:evaluate_trifecta_full_valid_main"
 boatrace-predict = "src.cli:predict_main"
 boatrace-predict-today = "src.cli:predict_today_main"
 boatrace-webui = "src.webui:main"
-boatrace-package-upload = "src.cli:package_and_upload_main"
+boatrace-webui-today = "src.webui_today:main"
 boatrace-package-download = "src.cli:package_download_main"
 
 [build-system]
