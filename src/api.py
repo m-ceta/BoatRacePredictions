@@ -2,13 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 
 from src.features.builder import build_training_table, save_processed_tables
 from src.features.streaming_builder import BuildSummary, build_training_table_streaming
-from src.live import TodayRacePrediction, predict_today_race
 from src.models.ranker import (
     cleanup_processed_intermediate_dirs,
     collect_garbage,
@@ -32,6 +31,9 @@ from src.models.ranker import (
 )
 from src.parsers.bk_parser import parse_entry_file, parse_result_file
 from src.rowdata_sync import RowdataBackfillReport, backfill_rowdata
+
+if TYPE_CHECKING:
+    from src.live import TodayRacePrediction
 
 
 @dataclass(slots=True)
@@ -239,6 +241,8 @@ def predict_today(
     race_no: int,
     config_path: str | Path = Path("configs/train.yaml"),
     race_date: Any | None = None,
-) -> TodayRacePrediction:
+) -> "TodayRacePrediction":
+    from src.live import predict_today_race
+
     bundle = load_bundle(config_path)
     return predict_today_race(bundle=bundle, venue=venue, race_no=race_no, race_date=race_date)

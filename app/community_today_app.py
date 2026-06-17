@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 import streamlit as st
 
@@ -10,13 +11,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.api import load_bundle
+from src.api import load_bundle, predict_today
 from src.drive_restore import (
     DEFAULT_ARTIFACTS_DRIVE_FILE_URL,
     DEFAULT_DATA_DRIVE_FILE_URL,
     download_and_restore_packages,
 )
-from src.live import TodayRacePrediction, predict_today_race
 
 
 VENUES = {
@@ -94,12 +94,11 @@ def predict_today_cached(
     venue: str,
     race_no: int,
     race_date: date,
-) -> TodayRacePrediction:
-    bundle = load_cached_bundle(config_path)
-    return predict_today_race(
-        bundle=bundle,
+) -> Any:
+    return predict_today(
         venue=venue,
         race_no=race_no,
+        config_path=config_path,
         race_date=race_date,
     )
 
