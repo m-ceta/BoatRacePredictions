@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from datetime import date
 from pathlib import Path
 from typing import Sequence
 
@@ -19,6 +18,7 @@ from src.api import (
     load_bundle,
     predict_today,
 )
+from src.live import choose_default_today_race_no, choose_default_today_venue, fetch_daily_race_schedule
 from src.drive_restore import (
     DEFAULT_ARTIFACTS_DRIVE_FILE_URL,
     DEFAULT_DATA_DRIVE_FILE_URL,
@@ -64,6 +64,24 @@ def load_cached_bundle(config_path: str):
     return load_bundle(config_path)
 
 
+@st.cache_data(show_spinner=False, ttl=300)
+def load_today_schedule():
+    return fetch_daily_race_schedule()
+
+
+def _prediction_venue_key() -> str:
+    return "prediction_selected_venue"
+
+
+def _prediction_race_key() -> str:
+    return "prediction_selected_race_no"
+
+
+def _set_default_prediction_race(schedule: dict[str, dict[int, object]]) -> None:
+    venue = st.session_state.get(_prediction_venue_key(), "15")
+    st.session_state[_prediction_race_key()] = choose_default_today_race_no(schedule, venue)
+
+
 def _run_python_cli(command_label: str, args: Sequence[str]) -> tuple[int, str]:
     placeholder = st.empty()
     lines: list[str] = []
@@ -104,18 +122,43 @@ def _render_command_result(command_label: str, return_code: int, output_text: st
 
 def render_prediction_tab() -> None:
     st.subheader("当日レース予測")
-    st.caption("指定したレースの順位予測、三連単候補、オッズ評価を表示します。")
+    st.caption("本日の開催レースから予測対象を選び、順位予測、三連単候補、オッズ評価を表示します。")
 
-    with st.form("prediction_form"):
-        config_path = st.text_input("設定ファイル", value="configs/train.yaml")
-        selected = st.selectbox(
-            "レース場",
-            options=list(VENUES.keys()),
-            format_func=lambda code: f"{code} {VENUES[code]}",
-        )
-        race_no = st.number_input("レースNo", min_value=1, max_value=12, value=12, step=1)
-        race_date = st.date_input("日付", value=date.today())
-        submitted = st.form_submit_button("予測を実行")
+    try:
+        schedule = load_today_schedule()
+    except Exception as exc:  # pragma: no cover
+        schedule = {}
+        st.warning(f"本日の開催情報の取得に失敗したため、手動選択に切り替えます: {exc}")
+
+    venue_options = sorted(schedule.keys()) if schedule else list(VENUES.keys())
+    venue_key = _prediction_venue_key()
+    race_key = _prediction_race_key()
+    if st.session_state.get(venue_key) not in venue_options:
+        st.session_state[venue_key] = choose_default_today_venue(schedule)
+
+    config_path = st.text_input("設定ファイル", value="configs/train.yaml")
+    selected = st.selectbox(
+        "レース場",
+        options=venue_options,
+        format_func=lambda code: f"{code} {VENUES.get(code, code)}",
+        key=venue_key,
+        on_change=_set_default_prediction_race,
+        args=(schedule,),
+    )
+
+    race_options = sorted(schedule.get(selected, {}).keys()) if schedule else list(range(1, 13))
+    if st.session_state.get(race_key) not in race_options:
+        st.session_state[race_key] = choose_default_today_race_no(schedule, selected)
+        if st.session_state[race_key] not in race_options:
+            st.session_state[race_key] = race_options[-1]
+
+    race_no = st.selectbox(
+        "レースNo",
+        options=race_options,
+        format_func=lambda value: f"{int(value)}R",
+        key=race_key,
+    )
+    submitted = st.button("予測を実行")
 
     if not submitted:
         return
@@ -127,7 +170,6 @@ def render_prediction_tab() -> None:
                 venue=selected,
                 race_no=int(race_no),
                 config_path=config_path,
-                race_date=race_date,
             )
     except Exception as exc:  # pragma: no cover
         st.error(f"予測に失敗しました: {exc}")

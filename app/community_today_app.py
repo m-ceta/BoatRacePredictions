@@ -30,6 +30,7 @@ from src.drive_restore import (
     DEFAULT_DATA_DRIVE_FILE_URL,
     download_and_restore_packages,
 )
+from src.live import choose_default_today_race_no, choose_default_today_venue, fetch_daily_race_schedule
 
 
 VENUES = {
@@ -97,6 +98,11 @@ def ensure_shared_data(data_url: str, artifacts_url: str) -> dict[str, object]:
 
 
 @st.cache_data(show_spinner=False, ttl=300)
+def load_today_schedule():
+    return fetch_daily_race_schedule()
+
+
+@st.cache_data(show_spinner=False, ttl=300)
 def predict_today_cached(
     config_path: str,
     venue: str,
@@ -115,6 +121,19 @@ def predict_today_cached(
 
 def clear_prediction_caches() -> None:
     predict_today_cached.clear()
+
+
+def _prediction_venue_key() -> str:
+    return "community_prediction_selected_venue"
+
+
+def _prediction_race_key() -> str:
+    return "community_prediction_selected_race_no"
+
+
+def _set_default_prediction_race(schedule: dict[str, dict[int, object]]) -> None:
+    venue = st.session_state.get(_prediction_venue_key(), "15")
+    st.session_state[_prediction_race_key()] = choose_default_today_race_no(schedule, venue)
 
 
 def bootstrap_shared_data_from_secrets() -> None:
@@ -199,16 +218,41 @@ def render_prediction_tab() -> None:
         "同じ条件での再実行時の通信量を抑えます。"
     )
 
-    with st.form("community_prediction_form"):
-        config_path = st.text_input("設定ファイル", value="configs/train.yaml")
-        selected = st.selectbox(
-            "レース場",
-            options=list(VENUES.keys()),
-            format_func=lambda code: f"{code} {VENUES[code]}",
-        )
-        race_no = st.number_input("レースNo", min_value=1, max_value=12, value=12, step=1)
-        race_date = st.date_input("日付", value=date.today())
-        submitted = st.form_submit_button("予測する")
+    try:
+        schedule = load_today_schedule()
+    except Exception as exc:  # pragma: no cover
+        schedule = {}
+        st.warning(f"本日の開催情報の取得に失敗したため、手動選択に切り替えます: {exc}")
+
+    venue_options = sorted(schedule.keys()) if schedule else list(VENUES.keys())
+    venue_key = _prediction_venue_key()
+    race_key = _prediction_race_key()
+    if st.session_state.get(venue_key) not in venue_options:
+        st.session_state[venue_key] = choose_default_today_venue(schedule)
+
+    config_path = st.text_input("設定ファイル", value="configs/train.yaml")
+    selected = st.selectbox(
+        "レース場",
+        options=venue_options,
+        format_func=lambda code: f"{code} {VENUES.get(code, code)}",
+        key=venue_key,
+        on_change=_set_default_prediction_race,
+        args=(schedule,),
+    )
+
+    race_options = sorted(schedule.get(selected, {}).keys()) if schedule else list(range(1, 13))
+    if st.session_state.get(race_key) not in race_options:
+        st.session_state[race_key] = choose_default_today_race_no(schedule, selected)
+        if st.session_state[race_key] not in race_options:
+            st.session_state[race_key] = race_options[-1]
+
+    race_no = st.selectbox(
+        "レースNo",
+        options=race_options,
+        format_func=lambda value: f"{int(value)}R",
+        key=race_key,
+    )
+    submitted = st.button("予測する")
 
     if not submitted:
         return
@@ -226,17 +270,17 @@ def render_prediction_tab() -> None:
                 config_path=config_path,
                 venue=selected,
                 race_no=int(race_no),
-                race_date=race_date,
+                race_date=date.today(),
             )
     except Exception as exc:  # pragma: no cover
         log_exception_to_stderr(
-            f"Prediction failed in Community Cloud app (venue={selected}, race_no={int(race_no)}, race_date={race_date})"
+            f"Prediction failed in Community Cloud app (venue={selected}, race_no={int(race_no)}, race_date={date.today()})"
         )
         LOGGER.exception(
             "Prediction failed in Community Cloud app (venue=%s, race_no=%s, race_date=%s)",
             selected,
             int(race_no),
-            race_date,
+            date.today(),
         )
         st.error(f"予測に失敗しました: {exc}")
         render_exception_details(exc)

@@ -538,10 +538,12 @@ def evaluate_trifecta_full_valid_main() -> None:
     train_df, valid_df, test_df = load_training_splits(Path(config["data"]["training_table"]), config)
     if args.date_from is not None:
         valid_df = valid_df[valid_df["race_date"] >= pd.Timestamp(args.date_from)].copy()
-        test_df = test_df[test_df["race_date"] >= pd.Timestamp(args.date_from)].copy()
+        if not test_df.empty and "race_date" in test_df.columns:
+            test_df = test_df[test_df["race_date"] >= pd.Timestamp(args.date_from)].copy()
     if args.date_to is not None:
         valid_df = valid_df[valid_df["race_date"] <= pd.Timestamp(args.date_to)].copy()
-        test_df = test_df[test_df["race_date"] <= pd.Timestamp(args.date_to)].copy()
+        if not test_df.empty and "race_date" in test_df.columns:
+            test_df = test_df[test_df["race_date"] <= pd.Timestamp(args.date_to)].copy()
     schema_df = pd.concat([train_df.head(200), valid_df.head(200), test_df.head(200)], ignore_index=True)
     feature_columns = infer_feature_columns(schema_df)
     categorical_columns = infer_categorical_columns(schema_df, feature_columns)
