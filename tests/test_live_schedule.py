@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, time
 
-from src.live import (
+from src.today_schedule import (
     choose_default_today_race_no,
     choose_default_today_venue,
     parse_program_race_schedule,

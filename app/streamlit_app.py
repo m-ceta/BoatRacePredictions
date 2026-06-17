@@ -18,7 +18,7 @@ from src.api import (
     load_bundle,
     predict_today,
 )
-from src.live import choose_default_today_race_no, choose_default_today_venue, fetch_daily_race_schedule
+from src.today_schedule import choose_default_today_race_no, choose_default_today_venue, fetch_daily_race_schedule
 from src.drive_restore import (
     DEFAULT_ARTIFACTS_DRIVE_FILE_URL,
     DEFAULT_DATA_DRIVE_FILE_URL,

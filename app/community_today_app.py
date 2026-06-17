@@ -30,6 +30,7 @@ from src.drive_restore import (
     DEFAULT_DATA_DRIVE_FILE_URL,
     download_and_restore_packages,
 )
+from src.today_schedule import choose_default_today_race_no, choose_default_today_venue, fetch_daily_race_schedule
 
 
 VENUES = {
@@ -98,8 +99,6 @@ def ensure_shared_data(data_url: str, artifacts_url: str) -> dict[str, object]:
 
 @st.cache_data(show_spinner=False, ttl=300)
 def load_today_schedule():
-    from src.live import fetch_daily_race_schedule
-
     return fetch_daily_race_schedule()
 
 
@@ -133,8 +132,6 @@ def _prediction_race_key() -> str:
 
 
 def _set_default_prediction_race(schedule: dict[str, dict[int, object]]) -> None:
-    from src.live import choose_default_today_race_no
-
     venue = st.session_state.get(_prediction_venue_key(), "15")
     st.session_state[_prediction_race_key()] = choose_default_today_race_no(schedule, venue)
 
@@ -231,8 +228,6 @@ def render_prediction_tab() -> None:
     venue_key = _prediction_venue_key()
     race_key = _prediction_race_key()
     if st.session_state.get(venue_key) not in venue_options:
-        from src.live import choose_default_today_venue
-
         st.session_state[venue_key] = choose_default_today_venue(schedule)
 
     config_path = st.text_input("設定ファイル", value="configs/train.yaml")
@@ -247,8 +242,6 @@ def render_prediction_tab() -> None:
 
     race_options = sorted(schedule.get(selected, {}).keys()) if schedule else list(range(1, 13))
     if st.session_state.get(race_key) not in race_options:
-        from src.live import choose_default_today_race_no
-
         st.session_state[race_key] = choose_default_today_race_no(schedule, selected)
         if st.session_state[race_key] not in race_options:
             st.session_state[race_key] = race_options[-1]
