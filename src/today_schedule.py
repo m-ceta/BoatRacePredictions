@@ -80,6 +80,23 @@ def choose_default_today_race_no(
     return sorted(race_schedule.keys())[-1]
 
 
+def filter_future_schedule(
+    schedule: dict[str, dict[int, time]],
+    now: datetime | None = None,
+) -> dict[str, dict[int, time]]:
+    now_time = (now or datetime.now()).time()
+    filtered: dict[str, dict[int, time]] = {}
+    for venue_code, race_map in schedule.items():
+        future_races = {
+            race_no: deadline
+            for race_no, deadline in race_map.items()
+            if deadline >= now_time
+        }
+        if future_races:
+            filtered[venue_code] = future_races
+    return filtered
+
+
 def fetch_mbrace_program_text(target_date: date) -> str:
     archive_bytes = fetch_mbrace_daily_archive(target_date, kind="B")
     return extract_lzh_text(archive_bytes)

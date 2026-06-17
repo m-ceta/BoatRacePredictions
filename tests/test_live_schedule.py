@@ -5,6 +5,7 @@ from datetime import datetime, time
 from src.today_schedule import (
     choose_default_today_race_no,
     choose_default_today_venue,
+    filter_future_schedule,
     parse_program_race_schedule,
 )
 
@@ -38,3 +39,16 @@ def test_choose_default_today_race_no_prefers_nearest_future() -> None:
 
     assert choose_default_today_race_no(schedule, "15", now=datetime(2026, 6, 17, 11, 0)) == 2
     assert choose_default_today_race_no(schedule, "15", now=datetime(2026, 6, 17, 17, 0)) == 12
+
+
+def test_filter_future_schedule_removes_finished_venues_and_races() -> None:
+    schedule = {
+        "15": {1: time(10, 57), 2: time(11, 19), 12: time(16, 7)},
+        "18": {1: time(9, 30)},
+    }
+
+    filtered = filter_future_schedule(schedule, now=datetime(2026, 6, 17, 11, 0))
+
+    assert filtered == {
+        "15": {2: time(11, 19), 12: time(16, 7)},
+    }

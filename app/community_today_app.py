@@ -30,7 +30,12 @@ from src.drive_restore import (
     DEFAULT_DATA_DRIVE_FILE_URL,
     download_and_restore_packages,
 )
-from src.today_schedule import choose_default_today_race_no, choose_default_today_venue, fetch_daily_race_schedule
+from src.today_schedule import (
+    choose_default_today_race_no,
+    choose_default_today_venue,
+    fetch_daily_race_schedule,
+    filter_future_schedule,
+)
 
 
 VENUES = {
@@ -219,12 +224,16 @@ def render_prediction_tab() -> None:
     )
 
     try:
-        schedule = load_today_schedule()
+        schedule = filter_future_schedule(load_today_schedule())
     except Exception as exc:  # pragma: no cover
         schedule = {}
         st.warning(f"本日の開催情報の取得に失敗したため、手動選択に切り替えます: {exc}")
 
-    venue_options = sorted(schedule.keys()) if schedule else list(VENUES.keys())
+    if not schedule:
+        st.info("現在時刻以降に本日開催予定のレースはありません。")
+        return
+
+    venue_options = sorted(schedule.keys())
     venue_key = _prediction_venue_key()
     race_key = _prediction_race_key()
     if st.session_state.get(venue_key) not in venue_options:
@@ -240,7 +249,7 @@ def render_prediction_tab() -> None:
         args=(schedule,),
     )
 
-    race_options = sorted(schedule.get(selected, {}).keys()) if schedule else list(range(1, 13))
+    race_options = sorted(schedule.get(selected, {}).keys())
     if st.session_state.get(race_key) not in race_options:
         st.session_state[race_key] = choose_default_today_race_no(schedule, selected)
         if st.session_state[race_key] not in race_options:
