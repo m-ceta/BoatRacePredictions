@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import logging
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,8 @@ import streamlit as st
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+LOGGER = logging.getLogger(__name__)
 
 from src.drive_restore import (
     DEFAULT_ARTIFACTS_DRIVE_FILE_URL,
@@ -168,6 +171,7 @@ def render_data_setup_tab() -> None:
         clear_prediction_caches()
         st.session_state["community_bootstrap_report"] = report
     except Exception as exc:  # pragma: no cover
+        LOGGER.exception("Failed to restore shared data in Community Cloud app")
         st.error(f"共有データ取得に失敗しました: {exc}")
         return
 
@@ -212,6 +216,12 @@ def render_prediction_tab() -> None:
                 race_date=race_date,
             )
     except Exception as exc:  # pragma: no cover
+        LOGGER.exception(
+            "Prediction failed in Community Cloud app (venue=%s, race_no=%s, race_date=%s)",
+            selected,
+            int(race_no),
+            race_date,
+        )
         st.error(f"予測に失敗しました: {exc}")
         return
 
@@ -239,6 +249,7 @@ def main() -> None:
     try:
         bootstrap_shared_data_from_secrets()
     except Exception as exc:  # pragma: no cover
+        LOGGER.exception("Startup shared data bootstrap failed in Community Cloud app")
         st.warning(f"起動時の共有データ初期化に失敗しました: {exc}")
 
     tabs = st.tabs(["当日レース予測", "共有データ取得"])
