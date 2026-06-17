@@ -217,6 +217,13 @@ streamlit run app/community_today_app.py
 boatrace-webui-today
 ```
 
+## Streamlit Community Cloud note
+
+- Community Cloud deploys `app/community_today_app.py`.
+- Put Cloud-only Python dependencies in `app/requirements.txt`.
+- Keep `environment.yml` for local Conda setup.
+- Because Community Cloud searches the entrypoint directory before the repo root, `app/requirements.txt` will be used instead of the root `environment.yml`.
+
 用途:
 
 - 当日予測専用

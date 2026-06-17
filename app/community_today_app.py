@@ -11,7 +11,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.api import load_bundle, predict_today
 from src.drive_restore import (
     DEFAULT_ARTIFACTS_DRIVE_FILE_URL,
     DEFAULT_DATA_DRIVE_FILE_URL,
@@ -83,11 +82,6 @@ def ensure_shared_data(data_url: str, artifacts_url: str) -> dict[str, object]:
     return report.to_dict()
 
 
-@st.cache_resource(show_spinner=False)
-def load_cached_bundle(config_path: str):
-    return load_bundle(config_path)
-
-
 @st.cache_data(show_spinner=False, ttl=300)
 def predict_today_cached(
     config_path: str,
@@ -95,6 +89,8 @@ def predict_today_cached(
     race_no: int,
     race_date: date,
 ) -> Any:
+    from src.api import predict_today
+
     return predict_today(
         venue=venue,
         race_no=race_no,
@@ -104,7 +100,6 @@ def predict_today_cached(
 
 
 def clear_prediction_caches() -> None:
-    load_cached_bundle.clear()
     predict_today_cached.clear()
 
 
