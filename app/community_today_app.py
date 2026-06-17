@@ -20,6 +20,11 @@ def log_exception_to_stderr(context: str) -> None:
     print(f"[community_today_app] {context}", file=sys.stderr, flush=True)
     print(traceback.format_exc(), file=sys.stderr, flush=True)
 
+
+def render_exception_details(exc: Exception) -> None:
+    with st.expander("詳細エラー", expanded=False):
+        st.exception(exc)
+
 from src.drive_restore import (
     DEFAULT_ARTIFACTS_DRIVE_FILE_URL,
     DEFAULT_DATA_DRIVE_FILE_URL,
@@ -180,6 +185,7 @@ def render_data_setup_tab() -> None:
         log_exception_to_stderr("Failed to restore shared data in Community Cloud app")
         LOGGER.exception("Failed to restore shared data in Community Cloud app")
         st.error(f"共有データ取得に失敗しました: {exc}")
+        render_exception_details(exc)
         return
 
     st.success("共有データの取得が完了しました。")
@@ -233,6 +239,7 @@ def render_prediction_tab() -> None:
             race_date,
         )
         st.error(f"予測に失敗しました: {exc}")
+        render_exception_details(exc)
         return
 
     st.success("予測が完了しました。")
@@ -262,6 +269,7 @@ def main() -> None:
         log_exception_to_stderr("Startup shared data bootstrap failed in Community Cloud app")
         LOGGER.exception("Startup shared data bootstrap failed in Community Cloud app")
         st.warning(f"起動時の共有データ初期化に失敗しました: {exc}")
+        render_exception_details(exc)
 
     tabs = st.tabs(["当日レース予測", "共有データ取得"])
     with tabs[0]:
