@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 import requests
 
@@ -26,6 +27,15 @@ DEFAULT_ARTIFACTS_DRIVE_FILE_URL = os.environ.get(
 LEGACY_BRP_DRIVE_FILE_URL = os.environ.get(
     "BOATRACE_BRP_DRIVE_FILE_URL",
     "https://drive.google.com/file/d/14w8W6xqi-NmnePs7waYhrUrxYD378YHq/view?usp=drive_link",
+)
+
+_HTML_FORM_ACTION_RE = re.compile(
+    r"""<form[^>]+id=["']download-form["'][^>]+action=["']([^"']+)["']""",
+    re.IGNORECASE,
+)
+_HTML_INPUT_RE = re.compile(
+    r"""<input[^>]+type=["']hidden["'][^>]+name=["']([^"']+)["'][^>]+value=["']([^"']*)["']""",
+    re.IGNORECASE,
 )
 
 
@@ -56,6 +66,41 @@ def extract_drive_file_id(value: str) -> str:
     return value.strip()
 
 
+def _extract_confirm_form(html: str, base_url: str) -> tuple[str, dict[str, str]] | None:
+    action_match = _HTML_FORM_ACTION_RE.search(html)
+    if not action_match:
+        return None
+    action_url = urljoin(base_url, action_match.group(1))
+    params = {name: value for name, value in _HTML_INPUT_RE.findall(html)}
+    return action_url, params
+
+
+def _read_response_text(response: requests.Response) -> str:
+    response.encoding = response.encoding or "utf-8"
+    return response.text
+
+
+def _validate_zip_file(zip_path: Path) -> None:
+    if zipfile.is_zipfile(zip_path):
+        return
+    snippet = zip_path.read_bytes()[:512].decode("utf-8", errors="replace")
+    raise RuntimeError(
+        "Downloaded file is not a zip archive. "
+        "Google Drive may have returned an HTML page instead of the file. "
+        "Check that the file is shared publicly and downloadable without login. "
+        f"Downloaded content starts with: {snippet[:200]!r}"
+    )
+
+
+def _stream_response_to_file(response: requests.Response, output_path: Path) -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("wb") as fh:
+        for chunk in response.iter_content(chunk_size=1024 * 1024):
+            if chunk:
+                fh.write(chunk)
+    return output_path
+
+
 def _download_drive_file(file_id: str, output_path: Path) -> Path:
     session = requests.Session()
     base_url = "https://drive.google.com/uc"
@@ -78,12 +123,24 @@ def _download_drive_file(file_id: str, output_path: Path) -> Path:
         )
         response.raise_for_status()
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("wb") as fh:
-        for chunk in response.iter_content(chunk_size=1024 * 1024):
-            if chunk:
-                fh.write(chunk)
+    content_type = response.headers.get("Content-Type", "")
+    if "text/html" in content_type.lower():
+        html = _read_response_text(response)
+        response.close()
+        confirm_form = _extract_confirm_form(html, base_url)
+        if confirm_form is not None:
+            action_url, form_params = confirm_form
+            response = session.get(action_url, params=form_params, stream=True, timeout=120)
+            response.raise_for_status()
+        else:
+            raise RuntimeError(
+                "Google Drive returned an HTML page instead of the requested zip file. "
+                "The file may require login, may not be shared publicly, or may be rate-limited."
+            )
+
+    _stream_response_to_file(response, output_path)
     response.close()
+    _validate_zip_file(output_path)
     return output_path
 
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 import zipfile
 from pathlib import Path
 
+import pytest
+
 from src import drive_restore
 
 
@@ -93,3 +95,82 @@ def test_download_and_restore_packages_can_skip_targets(tmp_path, monkeypatch) -
     assert report.restored_targets == ["artifacts"]
     assert (project_root / "data" / "keep.txt").read_text(encoding="utf-8") == "keep"
     assert (project_root / "artifacts" / "new_artifact.txt").read_text(encoding="utf-8") == "artifact"
+
+
+class _FakeResponse:
+    def __init__(
+        self,
+        body: bytes,
+        *,
+        content_type: str = "application/octet-stream",
+        cookies: dict[str, str] | None = None,
+        status_code: int = 200,
+    ) -> None:
+        self._body = body
+        self.headers = {"Content-Type": content_type}
+        self.cookies = cookies or {}
+        self.status_code = status_code
+        self.encoding = "utf-8"
+
+    @property
+    def text(self) -> str:
+        return self._body.decode(self.encoding, errors="replace")
+
+    def iter_content(self, chunk_size: int = 1024 * 1024):
+        for index in range(0, len(self._body), chunk_size):
+            yield self._body[index : index + chunk_size]
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+    def close(self) -> None:
+        return None
+
+
+class _FakeSession:
+    def __init__(self, responses: list[_FakeResponse]) -> None:
+        self._responses = responses
+
+    def get(self, *args, **kwargs):
+        if not self._responses:
+            raise AssertionError("No more fake responses configured")
+        return self._responses.pop(0)
+
+
+def test_download_drive_file_follows_html_confirm_form(tmp_path, monkeypatch) -> None:
+    zip_path = tmp_path / "payload.zip"
+    zip_bytes_path = tmp_path / "source.zip"
+    with zipfile.ZipFile(zip_bytes_path, "w") as zf:
+        zf.writestr("data/file.txt", "ok")
+    zip_bytes = zip_bytes_path.read_bytes()
+    html = b"""
+    <html><body>
+      <form id="download-form" action="https://drive.usercontent.google.com/download">
+        <input type="hidden" name="id" value="file-id">
+        <input type="hidden" name="confirm" value="token123">
+      </form>
+    </body></html>
+    """
+    session = _FakeSession(
+        [
+            _FakeResponse(html, content_type="text/html; charset=utf-8"),
+            _FakeResponse(zip_bytes),
+        ]
+    )
+    monkeypatch.setattr(drive_restore.requests, "Session", lambda: session)
+
+    result = drive_restore._download_drive_file("file-id", zip_path)
+
+    assert result == zip_path
+    assert zipfile.is_zipfile(zip_path)
+
+
+def test_download_drive_file_raises_helpful_error_for_html_page(tmp_path, monkeypatch) -> None:
+    zip_path = tmp_path / "payload.zip"
+    html = b"<html><body>Sign in required</body></html>"
+    session = _FakeSession([_FakeResponse(html, content_type="text/html; charset=utf-8")])
+    monkeypatch.setattr(drive_restore.requests, "Session", lambda: session)
+
+    with pytest.raises(RuntimeError, match="Google Drive returned an HTML page"):
+        drive_restore._download_drive_file("file-id", zip_path)
