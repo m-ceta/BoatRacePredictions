@@ -162,26 +162,7 @@ def predict_today_race(
 
     history = history_df
     if history is None:
-        history_columns = [
-            "race_date",
-            "race_no",
-            "racer_id",
-            "venue",
-            "lane",
-            "course",
-            "motor_no",
-            "boat_no",
-            "is_win",
-            "is_top3",
-            "finish_position",
-            "start_timing",
-            "exhibition_time",
-        ]
-        history = pd.read_parquet(
-            bundle.config["data"]["training_table"],
-            columns=history_columns,
-        )
-        history["race_date"] = pd.to_datetime(history["race_date"])
+        history = load_live_history_frame(bundle.config, target_date)
 
     feature_frame = build_live_feature_frame(
         race_entries,
@@ -234,6 +215,68 @@ def predict_today_race(
         confidence_label=label_prediction_confidence(confidence_score),
         buy_candidates=buy_candidates,
     )
+
+
+def load_live_history_frame(config: dict[str, Any], target_date: date) -> pd.DataFrame:
+    processed_dir = Path(config["data"].get("processed_dir", "data/processed"))
+    race_results_path = processed_dir / "race_results.parquet"
+    rolling_years = int(config.get("data", {}).get("rolling_years", 3) or 3)
+    min_history_date = (pd.Timestamp(target_date) - pd.DateOffset(years=rolling_years)).date()
+
+    if race_results_path.exists():
+        history_columns = [
+            "race_date",
+            "race_no",
+            "racer_id",
+            "venue",
+            "lane",
+            "course",
+            "motor_no",
+            "boat_no",
+            "finish_position",
+            "start_timing",
+            "exhibition_time",
+        ]
+        history = pd.read_parquet(
+            race_results_path,
+            columns=history_columns,
+            filters=[
+                ("race_date", ">=", min_history_date),
+                ("race_date", "<", target_date),
+            ],
+        )
+        history["is_win"] = (pd.to_numeric(history["finish_position"], errors="coerce") == 1).astype(int)
+        history["is_top3"] = (
+            pd.to_numeric(history["finish_position"], errors="coerce").fillna(999).astype(int) <= 3
+        ).astype(int)
+        history["race_date"] = pd.to_datetime(history["race_date"])
+        return history
+
+    history_columns = [
+        "race_date",
+        "race_no",
+        "racer_id",
+        "venue",
+        "lane",
+        "course",
+        "motor_no",
+        "boat_no",
+        "is_win",
+        "is_top3",
+        "finish_position",
+        "start_timing",
+        "exhibition_time",
+    ]
+    history = pd.read_parquet(
+        config["data"]["training_table"],
+        columns=history_columns,
+        filters=[
+            ("race_date", ">=", min_history_date),
+            ("race_date", "<", target_date),
+        ],
+    )
+    history["race_date"] = pd.to_datetime(history["race_date"])
+    return history
 
 
 def build_live_feature_frame(
