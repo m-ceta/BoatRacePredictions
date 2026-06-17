@@ -439,6 +439,11 @@ def recent_group_agg(
     group_cols: list[str],
     spec: dict[str, list[tuple[str, int, str]]],
 ) -> pd.DataFrame:
+    output_columns = [out_col for targets in spec.values() for out_col, _, _ in targets]
+    empty_columns = [*group_cols, *output_columns]
+    if hist.empty:
+        return pd.DataFrame(columns=empty_columns)
+
     rows = []
     for key, group in hist.sort_values(["race_date", "race_no"]).groupby(group_cols, sort=False):
         if not isinstance(key, tuple):
@@ -461,7 +466,9 @@ def recent_group_agg(
                 else:
                     raise ValueError(f"Unsupported aggregation: {agg}")
         rows.append(row)
-    return pd.DataFrame(rows)
+    if not rows:
+        return pd.DataFrame(columns=empty_columns)
+    return pd.DataFrame(rows, columns=empty_columns)
 
 
 def fetch_mbrace_program_text(target_date: date) -> str:
