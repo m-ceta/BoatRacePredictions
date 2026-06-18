@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 from bs4 import BeautifulSoup
@@ -80,6 +81,7 @@ ENTRY_DEADLINE_RE = re.compile(
     r"^\s*(?P<race_no>[0-9０-９]{1,2})\s*R?.*?電話投票締切予定時刻\s*(?P<hour>[0-9０-９]{1,2})[:：](?P<minute>[0-9０-９]{2})"
 )
 FULLWIDTH_DIGIT_TRANS = str.maketrans("０１２３４５６７８９：", "0123456789:")
+LIVE_JST = ZoneInfo("Asia/Tokyo")
 
 
 @dataclass(slots=True)
@@ -939,7 +941,7 @@ def normalize_venue_code(venue: str) -> str:
 
 def normalize_target_date(value: date | str | None) -> date:
     if value is None:
-        return date.today()
+        return datetime.now(LIVE_JST).date()
     if isinstance(value, date):
         return value
     return pd.Timestamp(value).date()

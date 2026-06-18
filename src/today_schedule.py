@@ -23,8 +23,16 @@ FULLWIDTH_DIGIT_TRANS = str.maketrans("０１２３４５６７８９：", "0123
 JST = ZoneInfo("Asia/Tokyo")
 
 
+def current_jst_datetime() -> datetime:
+    return datetime.now(JST)
+
+
+def current_jst_date() -> date:
+    return current_jst_datetime().date()
+
+
 def fetch_daily_race_schedule(target_date: date | None = None) -> dict[str, dict[int, time]]:
-    schedule_date = target_date or date.today()
+    schedule_date = target_date or current_jst_date()
     program_text = fetch_mbrace_program_text(schedule_date)
     return parse_program_race_schedule(program_text)
 
@@ -101,7 +109,7 @@ def filter_future_schedule(
 
 def _normalize_now(now: datetime | None) -> datetime:
     if now is None:
-        return datetime.now(JST)
+        return current_jst_datetime()
     if now.tzinfo is None:
         return now.replace(tzinfo=JST)
     return now.astimezone(JST)

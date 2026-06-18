@@ -136,10 +136,10 @@ def render_prediction_tab() -> None:
         st.warning(f"本日の開催情報の取得に失敗したため、手動選択に切り替えます: {exc}")
 
     if not schedule:
-        st.info("現在時刻以降に本日開催予定のレースはありません。")
-        return
-
-    venue_options = sorted(schedule.keys())
+        st.info("現在時刻以降に本日開催予定のレースはありません。手動選択に切り替えます。")
+        venue_options = list(VENUES.keys())
+    else:
+        venue_options = sorted(schedule.keys())
     venue_key = _prediction_venue_key()
     race_key = _prediction_race_key()
     if st.session_state.get(venue_key) not in venue_options:
@@ -155,7 +155,7 @@ def render_prediction_tab() -> None:
         args=(schedule,),
     )
 
-    race_options = sorted(schedule.get(selected, {}).keys())
+    race_options = sorted(schedule.get(selected, {}).keys()) if schedule else list(range(1, 13))
     if st.session_state.get(race_key) not in race_options:
         st.session_state[race_key] = choose_default_today_race_no(schedule, selected)
         if st.session_state[race_key] not in race_options:
