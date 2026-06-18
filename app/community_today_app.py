@@ -120,10 +120,6 @@ def predict_today_cached(
     )
 
 
-def clear_prediction_caches() -> None:
-    predict_today_cached.clear()
-
-
 def _prediction_venue_key() -> str:
     return "community_prediction_selected_venue"
 
@@ -227,65 +223,9 @@ def bootstrap_shared_data_from_secrets() -> None:
     st.session_state["community_artifacts_drive_url"] = artifacts_url
 
     with st.spinner("共有データを初期化しています..."):
-        report = ensure_shared_data(data_url, artifacts_url)
+        ensure_shared_data(data_url, artifacts_url)
 
-    st.session_state["community_bootstrap_report"] = report
     st.session_state[state_key] = True
-
-
-def render_data_setup_tab() -> None:
-    st.subheader("共有データ取得")
-    st.caption(
-        "Google Drive の共有リンクから `data.zip` と `artifacts.zip` を取得し、"
-        "アプリ内で再利用します。ダウンロード済みデータは `st.cache_resource` で保持します。"
-    )
-
-    default_data_url, default_artifacts_url = get_shared_data_urls()
-
-    bootstrap_report = st.session_state.get("community_bootstrap_report")
-    if bootstrap_report:
-        st.info("Secrets に設定された共有リンクから初期データを読み込み済みです。")
-
-    with st.form("community_data_download_form"):
-        data_url = st.text_input("data.zip URL", value=default_data_url)
-        artifacts_url = st.text_input("artifacts.zip URL", value=default_artifacts_url)
-        submitted = st.form_submit_button("共有データを取得")
-
-    col1, col2 = st.columns(2)
-    with col1:
-        force_refresh = st.button("キャッシュをクリアして再取得", use_container_width=True)
-    with col2:
-        clear_only = st.button("予測キャッシュのみクリア", use_container_width=True)
-
-    if clear_only:
-        predict_today_cached.clear()
-        st.success("予測キャッシュをクリアしました。")
-
-    if force_refresh:
-        ensure_shared_data.clear()
-        clear_prediction_caches()
-        st.info("共有データキャッシュをクリアしました。続けて再取得してください。")
-
-    if not submitted:
-        return
-
-    st.session_state["community_data_drive_url"] = data_url
-    st.session_state["community_artifacts_drive_url"] = artifacts_url
-
-    try:
-        with st.spinner("共有データをダウンロードして展開しています..."):
-            report = ensure_shared_data(data_url.strip(), artifacts_url.strip())
-        clear_prediction_caches()
-        st.session_state["community_bootstrap_report"] = report
-    except Exception as exc:  # pragma: no cover
-        log_exception_to_stderr("Failed to restore shared data in Community Cloud app")
-        LOGGER.exception("Failed to restore shared data in Community Cloud app")
-        st.error(f"共有データ取得に失敗しました: {exc}")
-        render_exception_details(exc)
-        return
-
-    st.success("共有データの取得が完了しました。")
-    st.json(report)
 
 
 def render_prediction_tab() -> None:
@@ -421,12 +361,7 @@ def main() -> None:
         LOGGER.exception("Startup shared data bootstrap failed in Community Cloud app")
         st.warning(f"起動時の共有データ初期化に失敗しました: {exc}")
         render_exception_details(exc)
-
-    tabs = st.tabs(["当日レース予測", "共有データ取得"])
-    with tabs[0]:
-        render_prediction_tab()
-    with tabs[1]:
-        render_data_setup_tab()
+    render_prediction_tab()
 
 
 if __name__ == "__main__":
