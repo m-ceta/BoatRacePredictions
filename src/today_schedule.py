@@ -7,6 +7,7 @@ from datetime import date, datetime, time
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo
 
 try:
     import lhafile
@@ -19,6 +20,7 @@ ENTRY_DEADLINE_RE = re.compile(
     r"^\s*(?P<race_no>[0-9０-９]{1,2})\s*R?.*?電話投票締切予定時刻\s*(?P<hour>[0-9０-９]{1,2})[:：](?P<minute>[0-9０-９]{2})"
 )
 FULLWIDTH_DIGIT_TRANS = str.maketrans("０１２３４５６７８９：", "0123456789:")
+JST = ZoneInfo("Asia/Tokyo")
 
 
 def fetch_daily_race_schedule(target_date: date | None = None) -> dict[str, dict[int, time]]:
@@ -73,7 +75,7 @@ def choose_default_today_race_no(
     if not race_schedule:
         return 12
 
-    now_time = (now or datetime.now()).time()
+    now_time = _normalize_now(now).time()
     future_races = sorted(race_no for race_no, deadline in race_schedule.items() if deadline >= now_time)
     if future_races:
         return future_races[0]
@@ -84,7 +86,7 @@ def filter_future_schedule(
     schedule: dict[str, dict[int, time]],
     now: datetime | None = None,
 ) -> dict[str, dict[int, time]]:
-    now_time = (now or datetime.now()).time()
+    now_time = _normalize_now(now).time()
     filtered: dict[str, dict[int, time]] = {}
     for venue_code, race_map in schedule.items():
         future_races = {
@@ -95,6 +97,14 @@ def filter_future_schedule(
         if future_races:
             filtered[venue_code] = future_races
     return filtered
+
+
+def _normalize_now(now: datetime | None) -> datetime:
+    if now is None:
+        return datetime.now(JST)
+    if now.tzinfo is None:
+        return now.replace(tzinfo=JST)
+    return now.astimezone(JST)
 
 
 def fetch_mbrace_program_text(target_date: date) -> str:
