@@ -25,12 +25,12 @@ def render_exception_details(exc: Exception) -> None:
     with st.expander("詳細エラー", expanded=False):
         st.exception(exc)
 
+
 from src.drive_restore import (
     DEFAULT_ARTIFACTS_DRIVE_FILE_URL,
     DEFAULT_DATA_DRIVE_FILE_URL,
     download_and_restore_packages,
 )
-
 
 VENUES = {
     "01": "桐生",
@@ -213,7 +213,9 @@ def _format_buy_candidates_frame(frame):
 
 def bootstrap_shared_data_from_secrets() -> None:
     data_url = default_secret("data_drive_file_url", DEFAULT_DATA_DRIVE_FILE_URL).strip()
-    artifacts_url = default_secret("artifacts_drive_file_url", DEFAULT_ARTIFACTS_DRIVE_FILE_URL).strip()
+    artifacts_url = default_secret(
+        "artifacts_drive_file_url", DEFAULT_ARTIFACTS_DRIVE_FILE_URL
+    ).strip()
     if not data_url or not artifacts_url:
         return
 
@@ -288,10 +290,7 @@ def render_data_setup_tab() -> None:
 
 def render_prediction_tab() -> None:
     st.subheader("当日レース予測")
-    st.caption(
-        "番組表やオッズを含む当日予測結果は `st.cache_data` で 5 分間キャッシュし、"
-        "同じ条件での再実行時の通信量を抑えます。"
-    )
+    st.caption("本日のレースの順位予測を行い、オッズを考慮した買い目を信頼度と合わせて出力します。")
 
     schedule_fetch_error: Exception | None = None
     try:
@@ -301,7 +300,9 @@ def render_prediction_tab() -> None:
         schedule = {}
 
     if schedule_fetch_error is not None:
-        st.warning(f"本日の開催情報の取得に失敗しました。mbrace への接続または応答に問題があります: {schedule_fetch_error}")
+        st.warning(
+            f"本日の開催情報の取得に失敗しました。mbrace への接続または応答に問題があります: {schedule_fetch_error}"
+        )
         if st.button("mbrace取得を再試行", key="retry_today_schedule_cloud"):
             load_today_schedule.clear()
             st.rerun()
@@ -350,7 +351,9 @@ def render_prediction_tab() -> None:
 
     data_url, artifacts_url = get_shared_data_urls()
     if not data_url or not artifacts_url:
-        st.warning("先に『共有データ取得』タブで data.zip / artifacts.zip の URL を設定してください。")
+        st.warning(
+            "先に『共有データ取得』タブで data.zip / artifacts.zip の URL を設定してください。"
+        )
         return
 
     try:
@@ -381,17 +384,29 @@ def render_prediction_tab() -> None:
     st.success("予測が完了しました。")
     st.text(prediction.text)
     st.markdown("**順位予測**")
-    st.dataframe(_format_ranking_frame(prediction.ranking), use_container_width=True, hide_index=True)
+    st.dataframe(
+        _format_ranking_frame(prediction.ranking), use_container_width=True, hide_index=True
+    )
     st.markdown("**三連単候補**")
-    st.dataframe(_format_trifecta_frame(prediction.trifecta.head(20)), use_container_width=True, hide_index=True)
+    st.dataframe(
+        _format_trifecta_frame(prediction.trifecta.head(20)),
+        use_container_width=True,
+        hide_index=True,
+    )
 
     if prediction.odds is not None and not prediction.odds.empty:
         st.markdown("**オッズ評価**")
-        st.dataframe(_format_odds_frame(prediction.odds.head(20)), use_container_width=True, hide_index=True)
+        st.dataframe(
+            _format_odds_frame(prediction.odds.head(20)), use_container_width=True, hide_index=True
+        )
 
     if prediction.buy_candidates is not None and not prediction.buy_candidates.empty:
         st.markdown("**買い候補**")
-        st.dataframe(_format_buy_candidates_frame(prediction.buy_candidates), use_container_width=True, hide_index=True)
+        st.dataframe(
+            _format_buy_candidates_frame(prediction.buy_candidates),
+            use_container_width=True,
+            hide_index=True,
+        )
 
 
 def main() -> None:
