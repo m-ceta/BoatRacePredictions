@@ -29,6 +29,22 @@ def test_parse_program_race_schedule_extracts_deadlines() -> None:
     }
 
 
+def test_parse_program_race_schedule_extracts_current_format_deadlines() -> None:
+    text = "\n".join(
+        [
+            "23BBGN",
+            "  １Ｒ  朝１戦　　　          Ｈ１８００ｍ  電話投票締切予定０８：３２ ",
+            "  ２Ｒ  モー２ング戦          Ｈ１８００ｍ  電話投票締切予定０８：５８ ",
+        ]
+    )
+
+    schedule = parse_program_race_schedule(text)
+
+    assert schedule == {
+        "23": {1: time(8, 32), 2: time(8, 58)},
+    }
+
+
 def test_choose_default_today_venue_prefers_marugame_then_smallest() -> None:
     assert choose_default_today_venue({"15": {1: time(10, 57)}, "24": {1: time(10, 50)}}) == "15"
     assert choose_default_today_venue({"24": {1: time(10, 50)}, "18": {1: time(10, 51)}}) == "18"

@@ -17,7 +17,7 @@ except ImportError:  # pragma: no cover
 
 SECTION_BBGN_RE = re.compile(r"^(?P<section_code>\d{2})BBGN$")
 ENTRY_DEADLINE_RE = re.compile(
-    r"^\s*(?P<race_no>[0-9０-９]{1,2})\s*R?.*?電話投票締切予定時刻\s*(?P<hour>[0-9０-９]{1,2})[:：](?P<minute>[0-9０-９]{2})"
+    r"^\s*(?P<race_no>[0-9０-９]{1,2})\s*R?.*?電話投票締切予定(?:時刻)?\s*(?P<hour>[0-9０-９]{1,2})[:：](?P<minute>[0-9０-９]{2})"
 )
 FULLWIDTH_DIGIT_TRANS = str.maketrans("０１２３４５６７８９：", "0123456789:")
 JST = ZoneInfo("Asia/Tokyo")

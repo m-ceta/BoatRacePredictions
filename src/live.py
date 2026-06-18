@@ -4,7 +4,7 @@ import re
 import subprocess
 import tempfile
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
@@ -22,6 +22,13 @@ except ImportError:  # pragma: no cover - optional runtime dependency
 from src.features.builder import add_current_meet_features, add_race_relative_features
 from src.models.ranker import predict_race_order, predict_trifecta_probabilities
 from src.parsers.bk_parser import parse_entry_text
+from src.today_schedule import (
+    choose_default_today_race_no as _choose_default_today_race_no,
+    choose_default_today_venue as _choose_default_today_venue,
+    current_jst_date,
+    fetch_daily_race_schedule as _fetch_daily_race_schedule,
+    parse_program_race_schedule as _parse_program_race_schedule,
+)
 
 
 VENUE_CODE_MAP = {
@@ -76,11 +83,6 @@ VENUE_CODE_MAP = {
 }
 
 _HTML_TITLE_RE = re.compile(r"<title>(.*?)</title>", re.IGNORECASE | re.DOTALL)
-SECTION_BBGN_RE = re.compile(r"^(?P<section_code>\d{2})BBGN$")
-ENTRY_DEADLINE_RE = re.compile(
-    r"^\s*(?P<race_no>[0-9０-９]{1,2})\s*R?.*?電話投票締切予定時刻\s*(?P<hour>[0-9０-９]{1,2})[:：](?P<minute>[0-9０-９]{2})"
-)
-FULLWIDTH_DIGIT_TRANS = str.maketrans("０１２３４５６７８９：", "0123456789:")
 LIVE_JST = ZoneInfo("Asia/Tokyo")
 
 
@@ -225,45 +227,18 @@ def predict_today_race(
 
 
 def fetch_daily_race_schedule(target_date: date | None = None) -> dict[str, dict[int, time]]:
-    schedule_date = normalize_target_date(target_date)
-    return parse_program_race_schedule(fetch_mbrace_program_text(schedule_date))
+    return _fetch_daily_race_schedule(normalize_target_date(target_date))
 
 
 def parse_program_race_schedule(program_text: str) -> dict[str, dict[int, time]]:
-    schedule: dict[str, dict[int, time]] = {}
-    current_section_code: str | None = None
-    for raw_line in program_text.splitlines():
-        line = raw_line.translate(FULLWIDTH_DIGIT_TRANS)
-        section_match = SECTION_BBGN_RE.match(line.strip())
-        if section_match:
-            current_section_code = section_match.group("section_code")
-            schedule.setdefault(current_section_code, {})
-            continue
-
-        if current_section_code is None:
-            continue
-
-        deadline_match = ENTRY_DEADLINE_RE.match(line)
-        if deadline_match is None:
-            continue
-
-        race_no = int(deadline_match.group("race_no"))
-        hour = int(deadline_match.group("hour"))
-        minute = int(deadline_match.group("minute"))
-        schedule.setdefault(current_section_code, {})[race_no] = time(hour=hour, minute=minute)
-    return {venue: races for venue, races in schedule.items() if races}
+    return _parse_program_race_schedule(program_text)
 
 
 def choose_default_today_venue(
     schedule: dict[str, dict[int, time]],
     preferred_venue: str = "15",
 ) -> str:
-    available = sorted(schedule.keys())
-    if not available:
-        return preferred_venue
-    if preferred_venue in schedule:
-        return preferred_venue
-    return available[0]
+    return _choose_default_today_venue(schedule, preferred_venue=preferred_venue)
 
 
 def choose_default_today_race_no(
@@ -271,16 +246,7 @@ def choose_default_today_race_no(
     venue_code: str,
     now: datetime | None = None,
 ) -> int:
-    race_schedule = schedule.get(venue_code, {})
-    if not race_schedule:
-        return 12
-
-    now_time = (now or datetime.now()).time()
-    future_races = sorted(race_no for race_no, deadline in race_schedule.items() if deadline >= now_time)
-    if future_races:
-        return future_races[0]
-
-    return sorted(race_schedule.keys())[-1]
+    return _choose_default_today_race_no(schedule, venue_code=venue_code, now=now)
 
 
 def load_live_history_frame(config: dict[str, Any], target_date: date) -> pd.DataFrame:
@@ -941,7 +907,7 @@ def normalize_venue_code(venue: str) -> str:
 
 def normalize_target_date(value: date | str | None) -> date:
     if value is None:
-        return datetime.now(LIVE_JST).date()
+        return current_jst_date()
     if isinstance(value, date):
         return value
     return pd.Timestamp(value).date()
