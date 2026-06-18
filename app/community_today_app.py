@@ -221,15 +221,23 @@ def render_prediction_tab() -> None:
         "同じ条件での再実行時の通信量を抑えます。"
     )
 
+    schedule_fetch_error: Exception | None = None
     try:
         schedule = load_today_schedule()
     except Exception as exc:  # pragma: no cover
+        schedule_fetch_error = exc
         schedule = {}
-        st.warning(f"本日の開催情報の取得に失敗したため、手動選択に切り替えます: {exc}")
+
+    if schedule_fetch_error is not None:
+        st.warning(f"本日の開催情報の取得に失敗しました。mbrace への接続または応答に問題があります: {schedule_fetch_error}")
+        if st.button("mbrace取得を再試行", key="retry_today_schedule_cloud"):
+            load_today_schedule.clear()
+            st.rerun()
+        return
 
     if not schedule:
-        st.info("現在時刻以降に本日開催予定のレースはありません。手動選択に切り替えます。")
-        venue_options = list(VENUES.keys())
+        st.info("現在時刻以降に本日開催予定のレースはありません。")
+        return
     else:
         venue_options = sorted(schedule.keys())
     venue_key = _prediction_venue_key()
