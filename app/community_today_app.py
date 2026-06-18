@@ -139,6 +139,78 @@ def _set_default_prediction_race(schedule: dict[str, dict[int, object]]) -> None
     st.session_state[_prediction_race_key()] = choose_default_today_race_no(schedule, venue)
 
 
+def _select_and_rename_columns(frame: Any, columns: list[tuple[str, str]]):
+    available = [(source, label) for source, label in columns if source in frame.columns]
+    if not available:
+        return frame.copy()
+    selected = frame[[source for source, _ in available]].copy()
+    return selected.rename(columns={source: label for source, label in available})
+
+
+def _format_ranking_frame(frame):
+    return _select_and_rename_columns(
+        frame,
+        [
+            ("predicted_rank", "予想着順"),
+            ("lane", "艇番"),
+            ("racer_name", "選手名"),
+            ("class_name", "級別"),
+            ("branch", "支部"),
+            ("age", "年齢"),
+            ("motor_no", "モーター"),
+            ("boat_no", "ボート"),
+            ("exhibition_time", "展示タイム"),
+            ("course", "進入"),
+            ("start_timing", "ST"),
+            ("win_probability_like", "1着期待度"),
+            ("score", "総合スコア"),
+        ],
+    )
+
+
+def _format_trifecta_frame(frame):
+    return _select_and_rename_columns(
+        frame,
+        [
+            ("trifecta", "買い目"),
+            ("probability", "予想確率"),
+            ("probability_v1", "基本モデル確率"),
+            ("probability_v2", "最適化後確率"),
+            ("raw_probability_v1", "基本モデル生スコア"),
+            ("raw_probability_v2", "最適化後生スコア"),
+        ],
+    )
+
+
+def _format_odds_frame(frame):
+    return _select_and_rename_columns(
+        frame,
+        [
+            ("trifecta", "買い目"),
+            ("probability", "予想確率"),
+            ("odds", "現在オッズ"),
+            ("break_even_odds", "損益分岐オッズ"),
+            ("recommended_min_odds", "買い目安オッズ"),
+            ("expected_value", "期待値"),
+            ("buy_decision", "判定"),
+        ],
+    )
+
+
+def _format_buy_candidates_frame(frame):
+    return _select_and_rename_columns(
+        frame,
+        [
+            ("trifecta", "買い目"),
+            ("probability", "予想確率"),
+            ("odds", "現在オッズ"),
+            ("recommended_min_odds", "買い目安オッズ"),
+            ("expected_value", "期待値"),
+            ("buy_decision", "判定"),
+        ],
+    )
+
+
 def bootstrap_shared_data_from_secrets() -> None:
     data_url = default_secret("data_drive_file_url", DEFAULT_DATA_DRIVE_FILE_URL).strip()
     artifacts_url = default_secret("artifacts_drive_file_url", DEFAULT_ARTIFACTS_DRIVE_FILE_URL).strip()
@@ -309,17 +381,17 @@ def render_prediction_tab() -> None:
     st.success("予測が完了しました。")
     st.text(prediction.text)
     st.markdown("**順位予測**")
-    st.dataframe(prediction.ranking, use_container_width=True, hide_index=True)
+    st.dataframe(_format_ranking_frame(prediction.ranking), use_container_width=True, hide_index=True)
     st.markdown("**三連単候補**")
-    st.dataframe(prediction.trifecta.head(20), use_container_width=True, hide_index=True)
+    st.dataframe(_format_trifecta_frame(prediction.trifecta.head(20)), use_container_width=True, hide_index=True)
 
     if prediction.odds is not None and not prediction.odds.empty:
         st.markdown("**オッズ評価**")
-        st.dataframe(prediction.odds.head(20), use_container_width=True, hide_index=True)
+        st.dataframe(_format_odds_frame(prediction.odds.head(20)), use_container_width=True, hide_index=True)
 
     if prediction.buy_candidates is not None and not prediction.buy_candidates.empty:
         st.markdown("**買い候補**")
-        st.dataframe(prediction.buy_candidates, use_container_width=True, hide_index=True)
+        st.dataframe(_format_buy_candidates_frame(prediction.buy_candidates), use_container_width=True, hide_index=True)
 
 
 def main() -> None:
