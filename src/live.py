@@ -800,7 +800,7 @@ def decode_rowdata_bytes(data: bytes) -> str:
             text = data.decode(encoding)
         except UnicodeDecodeError:
             continue
-        if "遶ｶ襍ｰ謌千ｸｾ" not in text and "逡ｪ邨・｡ｨ" not in text and "濶・" not in text:
+        if "競走成績" not in text and "番組表" not in text and "艇" not in text:
             continue
         return text
     return data.decode("cp932", errors="ignore")
@@ -825,7 +825,7 @@ def extract_lzh_text(archive_bytes: bytes) -> str:
                 text = data.decode(encoding)
             except UnicodeDecodeError:
                 continue
-            if "遶ｶ襍ｰ謌千ｸｾ" not in text and "逡ｪ邨・｡ｨ" not in text and "濶・" not in text:
+            if "競走成績" not in text and "番組表" not in text and "艇" not in text:
                 continue
             return text
     return decode_rowdata_bytes(extracted[0][1])

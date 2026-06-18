@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from datetime import date
 from pathlib import Path
 from typing import Sequence
 
@@ -18,19 +19,18 @@ from src.api import (
     load_bundle,
     predict_today,
 )
-from src.today_schedule import (
-    choose_default_today_race_no,
-    choose_default_today_venue,
-    fetch_daily_race_schedule,
-    filter_future_schedule,
-)
 from src.drive_restore import (
     DEFAULT_ARTIFACTS_DRIVE_FILE_URL,
     DEFAULT_DATA_DRIVE_FILE_URL,
     DEFAULT_ROWDATA_DRIVE_FILE_URL,
     download_and_restore_packages,
 )
-
+from src.today_schedule import (
+    choose_default_today_race_no,
+    choose_default_today_venue,
+    fetch_daily_race_schedule,
+    filter_future_schedule,
+)
 
 VENUES = {
     "01": "桐生",
@@ -209,7 +209,9 @@ def render_prediction_tab() -> None:
         schedule = {}
 
     if schedule_fetch_error is not None:
-        st.warning(f"本日の開催情報の取得に失敗しました。mbrace への接続または応答に問題があります: {schedule_fetch_error}")
+        st.warning(
+            f"本日の開催情報の取得に失敗しました。mbrace への接続または応答に問題があります: {schedule_fetch_error}"
+        )
         if st.button("mbrace取得を再試行", key="retry_today_schedule_local"):
             load_today_schedule.clear()
             st.rerun()
@@ -218,8 +220,8 @@ def render_prediction_tab() -> None:
     if not schedule:
         st.info("現在時刻以降に本日開催予定のレースはありません。")
         return
-    else:
-        venue_options = sorted(schedule.keys())
+
+    venue_options = sorted(schedule.keys())
     venue_key = _prediction_venue_key()
     race_key = _prediction_race_key()
     if st.session_state.get(venue_key) not in venue_options:
@@ -235,7 +237,7 @@ def render_prediction_tab() -> None:
         args=(schedule,),
     )
 
-    race_options = sorted(schedule.get(selected, {}).keys()) if schedule else list(range(1, 13))
+    race_options = sorted(schedule.get(selected, {}).keys())
     if st.session_state.get(race_key) not in race_options:
         st.session_state[race_key] = choose_default_today_race_no(schedule, selected)
         if st.session_state[race_key] not in race_options:

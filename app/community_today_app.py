@@ -13,24 +13,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-LOGGER = logging.getLogger(__name__)
-
-
-def log_exception_to_stderr(context: str) -> None:
-    print(f"[community_today_app] {context}", file=sys.stderr, flush=True)
-    print(traceback.format_exc(), file=sys.stderr, flush=True)
-
-
-def render_exception_details(exc: Exception) -> None:
-    with st.expander("詳細エラー", expanded=False):
-        st.exception(exc)
-
-
 from src.drive_restore import (
     DEFAULT_ARTIFACTS_DRIVE_FILE_URL,
     DEFAULT_DATA_DRIVE_FILE_URL,
     download_and_restore_packages,
 )
+
+LOGGER = logging.getLogger(__name__)
 
 VENUES = {
     "01": "桐生",
@@ -66,6 +55,16 @@ def repo_root() -> Path:
 
 def default_config_path() -> str:
     return "configs/train.yaml"
+
+
+def log_exception_to_stderr(context: str) -> None:
+    print(f"[community_today_app] {context}", file=sys.stderr, flush=True)
+    print(traceback.format_exc(), file=sys.stderr, flush=True)
+
+
+def render_exception_details(exc: Exception) -> None:
+    with st.expander("詳細エラー", expanded=False):
+        st.exception(exc)
 
 
 def default_secret(name: str, fallback: str) -> str:
@@ -240,18 +239,16 @@ def _build_prediction_summary(prediction: Any) -> str:
 
     return "\n".join(
         [
-            f"????: 1? {first}, 2? {second}, 3? {third}",
-            f"????: 1? {_format_percent(first_prob)}, 2? {_format_percent(second_prob)}, 3? {_format_percent(third_prob)}",
-            f"?????: {prediction.confidence_label} ({_format_percent(prediction.confidence_score)})",
+            f"予想着順: 1着 {first}, 2着 {second}, 3着 {third}",
+            f"着順確率: 1着 {_format_percent(first_prob)}, 2着 {_format_percent(second_prob)}, 3着 {_format_percent(third_prob)}",
+            f"予想信頼度: {prediction.confidence_label} ({_format_percent(prediction.confidence_score)})",
         ]
     )
 
 
 def bootstrap_shared_data_from_secrets() -> None:
     data_url = default_secret("data_drive_file_url", DEFAULT_DATA_DRIVE_FILE_URL).strip()
-    artifacts_url = default_secret(
-        "artifacts_drive_file_url", DEFAULT_ARTIFACTS_DRIVE_FILE_URL
-    ).strip()
+    artifacts_url = default_secret("artifacts_drive_file_url", DEFAULT_ARTIFACTS_DRIVE_FILE_URL).strip()
     if not data_url or not artifacts_url:
         return
 
@@ -262,7 +259,7 @@ def bootstrap_shared_data_from_secrets() -> None:
     st.session_state["community_data_drive_url"] = data_url
     st.session_state["community_artifacts_drive_url"] = artifacts_url
 
-    with st.spinner("共有データを初期化しています..."):
+    with st.spinner("共有データを起動時に読み込んでいます..."):
         ensure_shared_data(data_url, artifacts_url)
 
     st.session_state[state_key] = True
@@ -270,7 +267,7 @@ def bootstrap_shared_data_from_secrets() -> None:
 
 def render_prediction_tab() -> None:
     st.subheader("当日レース予測")
-    st.caption("本日のレースの順位予測を行い、オッズを考慮した買い目を信頼度と合わせて出力します。")
+    st.caption("本日のレースの順位予想、3連単予想、オッズ評価を表示します。")
 
     schedule_fetch_error: Exception | None = None
     try:
@@ -291,8 +288,8 @@ def render_prediction_tab() -> None:
     if not schedule:
         st.info("現在時刻以降に本日開催予定のレースはありません。")
         return
-    else:
-        venue_options = sorted(schedule.keys())
+
+    venue_options = sorted(schedule.keys())
     venue_key = _prediction_venue_key()
     race_key = _prediction_race_key()
     if st.session_state.get(venue_key) not in venue_options:
@@ -309,7 +306,7 @@ def render_prediction_tab() -> None:
         args=(schedule,),
     )
 
-    race_options = sorted(schedule.get(selected, {}).keys()) if schedule else list(range(1, 13))
+    race_options = sorted(schedule.get(selected, {}).keys())
     if st.session_state.get(race_key) not in race_options:
         from src.today_schedule import choose_default_today_race_no
 
@@ -330,9 +327,7 @@ def render_prediction_tab() -> None:
 
     data_url, artifacts_url = get_shared_data_urls()
     if not data_url or not artifacts_url:
-        st.warning(
-            "先に『共有データ取得』タブで data.zip / artifacts.zip の URL を設定してください。"
-        )
+        st.warning("Secrets に data.zip / artifacts.zip の共有リンクを設定してください。")
         return
 
     try:
@@ -362,11 +357,11 @@ def render_prediction_tab() -> None:
 
     st.success("予測が完了しました。")
     st.text(_build_prediction_summary(prediction))
+
     st.markdown("**順位予測**")
-    st.dataframe(
-        _format_ranking_frame(prediction.ranking), use_container_width=True, hide_index=True
-    )
-    st.markdown("**三連単候補**")
+    st.dataframe(_format_ranking_frame(prediction.ranking), use_container_width=True, hide_index=True)
+
+    st.markdown("**3連単予想**")
     st.dataframe(
         _format_trifecta_frame(prediction.trifecta.head(20)),
         use_container_width=True,
@@ -375,9 +370,7 @@ def render_prediction_tab() -> None:
 
     if prediction.odds is not None and not prediction.odds.empty:
         st.markdown("**オッズ評価**")
-        st.dataframe(
-            _format_odds_frame(prediction.odds.head(20)), use_container_width=True, hide_index=True
-        )
+        st.dataframe(_format_odds_frame(prediction.odds.head(20)), use_container_width=True, hide_index=True)
 
     if prediction.buy_candidates is not None and not prediction.buy_candidates.empty:
         st.markdown("**買い候補**")
@@ -391,7 +384,7 @@ def render_prediction_tab() -> None:
 def main() -> None:
     st.set_page_config(page_title="BoatRace Today", page_icon="🚤", layout="wide")
     st.title("BoatRace Today")
-    st.caption("Streamlit Community Cloud 向けの当日予測専用アプリです。")
+    st.caption("Streamlit Community Cloud 向けの当日予測アプリです。")
 
     try:
         bootstrap_shared_data_from_secrets()
@@ -400,6 +393,7 @@ def main() -> None:
         LOGGER.exception("Startup shared data bootstrap failed in Community Cloud app")
         st.warning(f"起動時の共有データ初期化に失敗しました: {exc}")
         render_exception_details(exc)
+
     render_prediction_tab()
 
 
