@@ -64,6 +64,10 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def default_config_path() -> str:
+    return "configs/train.yaml"
+
+
 def default_secret(name: str, fallback: str) -> str:
     try:
         return str(st.secrets.get(name, fallback))
@@ -207,6 +211,42 @@ def _format_buy_candidates_frame(frame):
     )
 
 
+def _format_percent(value: float) -> str:
+    return f"{float(value) * 100:.1f}%"
+
+
+def _build_prediction_summary(prediction: Any) -> str:
+    top = prediction.trifecta.iloc[0]
+    first, second, third = [int(x) for x in str(top["trifecta"]).split("-")]
+
+    first_prob = float(
+        prediction.trifecta.loc[
+            prediction.trifecta["trifecta"].str.split("-").str[0].astype(int) == first,
+            "probability",
+        ].sum()
+    )
+    second_prob = float(
+        prediction.trifecta.loc[
+            prediction.trifecta["trifecta"].str.split("-").str[1].astype(int) == second,
+            "probability",
+        ].sum()
+    )
+    third_prob = float(
+        prediction.trifecta.loc[
+            prediction.trifecta["trifecta"].str.split("-").str[2].astype(int) == third,
+            "probability",
+        ].sum()
+    )
+
+    return "\n".join(
+        [
+            f"????: 1? {first}, 2? {second}, 3? {third}",
+            f"????: 1? {_format_percent(first_prob)}, 2? {_format_percent(second_prob)}, 3? {_format_percent(third_prob)}",
+            f"?????: {prediction.confidence_label} ({_format_percent(prediction.confidence_score)})",
+        ]
+    )
+
+
 def bootstrap_shared_data_from_secrets() -> None:
     data_url = default_secret("data_drive_file_url", DEFAULT_DATA_DRIVE_FILE_URL).strip()
     artifacts_url = default_secret(
@@ -260,7 +300,6 @@ def render_prediction_tab() -> None:
 
         st.session_state[venue_key] = choose_default_today_venue(schedule)
 
-    config_path = st.text_input("設定ファイル", value="configs/train.yaml")
     selected = st.selectbox(
         "レース場",
         options=venue_options,
@@ -303,7 +342,7 @@ def render_prediction_tab() -> None:
             ensure_shared_data(data_url, artifacts_url)
         with st.spinner("予測を実行しています..."):
             prediction = predict_today_cached(
-                config_path=config_path,
+                config_path=default_config_path(),
                 venue=selected,
                 race_no=int(race_no),
                 race_date=current_jst_date(),
@@ -322,7 +361,7 @@ def render_prediction_tab() -> None:
         return
 
     st.success("予測が完了しました。")
-    st.text(prediction.text)
+    st.text(_build_prediction_summary(prediction))
     st.markdown("**順位予測**")
     st.dataframe(
         _format_ranking_frame(prediction.ranking), use_container_width=True, hide_index=True
