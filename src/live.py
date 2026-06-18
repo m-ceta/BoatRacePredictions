@@ -330,6 +330,7 @@ def build_live_feature_frame(
     frame["race_date"] = pd.to_datetime(frame["race_date"])
 
     frame = merge_recent_group_features(frame, hist)
+    frame = fill_live_measurement_proxies(frame)
     frame = add_current_meet_features(frame)
     frame = add_race_relative_features(frame)
 
@@ -339,6 +340,48 @@ def build_live_feature_frame(
         elif column not in categorical_feature_names:
             frame[column] = pd.to_numeric(frame[column], errors="coerce")
     return frame[["race_id", *feature_columns]].copy()
+
+
+def fill_live_measurement_proxies(frame: pd.DataFrame) -> pd.DataFrame:
+    filled = frame.copy()
+
+    if "start_timing" not in filled.columns:
+        filled["start_timing"] = pd.NA
+    filled["start_timing"] = pd.to_numeric(filled["start_timing"], errors="coerce")
+    if "racer_venue_prev_avg_st" in filled.columns:
+        filled["start_timing"] = filled["start_timing"].fillna(
+            pd.to_numeric(filled["racer_venue_prev_avg_st"], errors="coerce")
+        )
+    if "racer_prev_avg_st" in filled.columns:
+        filled["start_timing"] = filled["start_timing"].fillna(
+            pd.to_numeric(filled["racer_prev_avg_st"], errors="coerce")
+        )
+
+    if "course" not in filled.columns:
+        filled["course"] = pd.NA
+    filled["course"] = pd.to_numeric(filled["course"], errors="coerce")
+    if "racer_venue_prev_avg_course" in filled.columns:
+        filled["course"] = filled["course"].fillna(
+            pd.to_numeric(filled["racer_venue_prev_avg_course"], errors="coerce")
+        )
+    if "racer_prev_avg_course" in filled.columns:
+        filled["course"] = filled["course"].fillna(
+            pd.to_numeric(filled["racer_prev_avg_course"], errors="coerce")
+        )
+
+    if "exhibition_time" not in filled.columns:
+        filled["exhibition_time"] = pd.NA
+    filled["exhibition_time"] = pd.to_numeric(filled["exhibition_time"], errors="coerce")
+    if "racer_venue_prev_avg_exhibition" in filled.columns:
+        filled["exhibition_time"] = filled["exhibition_time"].fillna(
+            pd.to_numeric(filled["racer_venue_prev_avg_exhibition"], errors="coerce")
+        )
+    if "racer_prev_avg_exhibition" in filled.columns:
+        filled["exhibition_time"] = filled["exhibition_time"].fillna(
+            pd.to_numeric(filled["racer_prev_avg_exhibition"], errors="coerce")
+        )
+
+    return filled
 
 
 def merge_recent_group_features(frame: pd.DataFrame, hist: pd.DataFrame) -> pd.DataFrame:
@@ -372,6 +415,7 @@ def merge_recent_group_features(frame: pd.DataFrame, hist: pd.DataFrame) -> pd.D
                 ("racer_prev_std_st_10", 10, "std"),
             ],
             "exhibition_time": [("racer_prev_avg_exhibition", 30, "mean")],
+            "course": [("racer_prev_avg_course", 30, "mean")],
         },
     )
     frame = frame.merge(racer_recent, on=["racer_id"], how="left")
@@ -387,6 +431,9 @@ def merge_recent_group_features(frame: pd.DataFrame, hist: pd.DataFrame) -> pd.D
             {
                 "is_win": [("racer_venue_prev_win_rate", 15, "mean")],
                 "is_top3": [("racer_venue_prev_top3_rate", 15, "mean")],
+                "start_timing": [("racer_venue_prev_avg_st", 15, "mean")],
+                "exhibition_time": [("racer_venue_prev_avg_exhibition", 15, "mean")],
+                "course": [("racer_venue_prev_avg_course", 15, "mean")],
             },
         ),
         on=["racer_id", "venue"],
