@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import logging
 import sys
 import traceback
@@ -214,6 +212,14 @@ def _format_percent(value: float) -> str:
     return f"{float(value) * 100:.1f}%"
 
 
+def _confidence_label(score: float) -> str:
+    if score >= 0.22:
+        return "高"
+    if score >= 0.16:
+        return "中"
+    return "低"
+
+
 def _build_prediction_summary(prediction: Any) -> str:
     top = prediction.trifecta.iloc[0]
     first, second, third = [int(x) for x in str(top["trifecta"]).split("-")]
@@ -241,9 +247,38 @@ def _build_prediction_summary(prediction: Any) -> str:
         [
             f"予想着順: 1着 {first}, 2着 {second}, 3着 {third}",
             f"着順確率: 1着 {_format_percent(first_prob)}, 2着 {_format_percent(second_prob)}, 3着 {_format_percent(third_prob)}",
-            f"予想信頼度: {prediction.confidence_label} ({_format_percent(prediction.confidence_score)})",
+            f"予想信頼度: {_confidence_label(float(prediction.confidence_score))} ({_format_percent(prediction.confidence_score)})",
         ]
     )
+
+
+def _render_prediction_guide() -> None:
+    with st.expander("買い目判断と予測の見方", expanded=False):
+        st.markdown(
+            """
+**買い目の判断方法**
+
+- `現在オッズ` が `買い目安オッズ` 以上なら `買い候補`、未満なら `見送り` です。
+- `買い目安オッズ` は、予想確率から出した `損益分岐オッズ` に 10% の余裕を乗せた目安です。
+
+**予想信頼度**
+
+- 本命艇の `1着期待度` が高いほど上がります。
+- 1位と2位の差、3連単1位候補と2位候補の差が大きいほど上がります。
+- `高 / 中 / 低` は、予想がどれだけ絞れているかの目安です。
+
+**1着期待度**
+
+- その艇が 1 着になる見込みを、順位モデルのスコアから相対的に表した値です。
+- 同じレース内で、どの艇が頭候補として強いかを見るための指標です。
+
+**基本モデル確率と最適化後確率**
+
+- `基本モデル確率` は、順位予想からそのまま作った 3連単確率です。
+- `最適化後確率` は、追加モデルで 3連単の並び順を調整した後の確率です。
+- `予想確率` は、通常この最適化後の値を使っています。
+"""
+        )
 
 
 def bootstrap_shared_data_from_secrets() -> None:
@@ -267,7 +302,7 @@ def bootstrap_shared_data_from_secrets() -> None:
 
 def render_prediction_tab() -> None:
     st.subheader("当日レース予測")
-    st.caption("本日のレースの順位予想、3連単予想、オッズ評価を表示します。")
+    st.caption("本日のレースの着順予想、3連単予想、オッズ評価を表示します。")
 
     schedule_fetch_error: Exception | None = None
     try:
@@ -357,6 +392,7 @@ def render_prediction_tab() -> None:
 
     st.success("予測が完了しました。")
     st.text(_build_prediction_summary(prediction))
+    _render_prediction_guide()
 
     st.markdown("**順位予測**")
     st.dataframe(_format_ranking_frame(prediction.ranking), use_container_width=True, hide_index=True)
