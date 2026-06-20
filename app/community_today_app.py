@@ -221,32 +221,8 @@ def _confidence_label(score: float) -> str:
 
 
 def _build_prediction_summary(prediction: Any) -> str:
-    top = prediction.trifecta.iloc[0]
-    first, second, third = [int(x) for x in str(top["trifecta"]).split("-")]
-
-    first_prob = float(
-        prediction.trifecta.loc[
-            prediction.trifecta["trifecta"].str.split("-").str[0].astype(int) == first,
-            "probability",
-        ].sum()
-    )
-    second_prob = float(
-        prediction.trifecta.loc[
-            prediction.trifecta["trifecta"].str.split("-").str[1].astype(int) == second,
-            "probability",
-        ].sum()
-    )
-    third_prob = float(
-        prediction.trifecta.loc[
-            prediction.trifecta["trifecta"].str.split("-").str[2].astype(int) == third,
-            "probability",
-        ].sum()
-    )
-
     return "\n".join(
         [
-            f"予想着順: 1着 {first}, 2着 {second}, 3着 {third}",
-            f"着順確率: 1着 {_format_percent(first_prob)}, 2着 {_format_percent(second_prob)}, 3着 {_format_percent(third_prob)}",
             f"予想信頼度: {_confidence_label(float(prediction.confidence_score))} ({_format_percent(prediction.confidence_score)})",
         ]
     )
