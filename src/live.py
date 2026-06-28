@@ -4,7 +4,7 @@ import re
 import subprocess
 import tempfile
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
@@ -84,6 +84,8 @@ VENUE_CODE_MAP = {
 
 _HTML_TITLE_RE = re.compile(r"<title>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 LIVE_JST = ZoneInfo("Asia/Tokyo")
+BUY_EXPECTED_VALUE_THRESHOLD = 1.0
+BUY_MIN_ODDS = 10.0
 
 
 @dataclass(slots=True)
@@ -122,7 +124,7 @@ class TodayRacePrediction:
                 [
                     f"オッズ評価上位: {top_odds['trifecta']}",
                     f"現在オッズ: {float(top_odds['odds']):.1f}倍",
-                    f"買い目安オッズ: {float(top_odds['recommended_min_odds']):.1f}倍以上",
+                    f"期待値: {float(top_odds['expected_value']):.2f}",
                     f"判定: {top_odds['buy_decision']}",
                 ]
             )
@@ -131,7 +133,7 @@ class TodayRacePrediction:
             for row in self.buy_candidates.head(5).itertuples(index=False):
                 lines.append(
                     f"{row.trifecta} | 確率 {format_percent(float(row.probability))} | オッズ {float(row.odds):.1f}倍 | "
-                    f"目安 {float(row.recommended_min_odds):.1f}倍"
+                    f"期待値 {float(row.expected_value):.2f} | 判定 {row.buy_decision}"
                 )
         return "\n".join(lines)
 
@@ -682,30 +684,32 @@ def parse_odds_value(text: str) -> float | None:
 def attach_odds_and_value(
     trifecta: pd.DataFrame,
     odds_map: dict[str, float],
-    margin_multiplier: float = 1.1,
+    expected_value_threshold: float = BUY_EXPECTED_VALUE_THRESHOLD,
+    min_odds: float = BUY_MIN_ODDS,
 ) -> pd.DataFrame:
     frame = trifecta.copy()
     frame["odds"] = frame["trifecta"].map(odds_map)
     frame = frame.dropna(subset=["odds"]).copy()
     if frame.empty:
         return frame
-    frame["break_even_odds"] = 1.0 / frame["probability"].clip(lower=1e-9)
-    frame["recommended_min_odds"] = frame["break_even_odds"] * margin_multiplier
-    frame["expected_value"] = frame["probability"] * frame["odds"]
+
+    frame["probability"] = pd.to_numeric(frame["probability"], errors="coerce")
+    frame["odds"] = pd.to_numeric(frame["odds"], errors="coerce")
+    frame["expected_value"] = frame["odds"] * frame["probability"]
+    frame = frame.sort_values(["expected_value", "probability"], ascending=[False, False]).reset_index(drop=True)
     frame["buy_decision"] = frame.apply(
-        lambda row: "買い候補" if float(row["odds"]) >= float(row["recommended_min_odds"]) else "見送り",
+        lambda row: "買い"
+        if float(row["expected_value"]) >= float(expected_value_threshold) and float(row["odds"]) >= float(min_odds)
+        else "見送り",
         axis=1,
     )
-    return frame.sort_values(
-        ["buy_decision", "expected_value", "probability"],
-        ascending=[True, False, False],
-    ).reset_index(drop=True)
+    return frame
 
 
 def select_buy_candidates(odds_frame: pd.DataFrame, top_n: int = 5) -> pd.DataFrame:
     if odds_frame.empty:
         return odds_frame
-    buy_only = odds_frame[odds_frame["buy_decision"] == "買い候補"].copy()
+    buy_only = odds_frame[odds_frame["buy_decision"] != "見送り"].copy()
     if not buy_only.empty:
         return buy_only.sort_values(
             ["expected_value", "probability"],
@@ -817,7 +821,7 @@ def find_seven_zip() -> str:
     raise RuntimeError("7-Zip is required to extract .lzh schedule files but was not found.")
 
 
-def extract_lzh_text(archive_bytes: bytes) -> str:
+def extract_lzh_text(archive_bytes: bytes) -> str:  # noqa: F811
     extracted = extract_lzh_entries(archive_bytes)
     for _, data in extracted:
         for encoding in ("cp932", "shift_jis", "utf-8", "latin1"):
@@ -831,7 +835,7 @@ def extract_lzh_text(archive_bytes: bytes) -> str:
     return decode_rowdata_bytes(extracted[0][1])
 
 
-def extract_lzh_first_file_bytes(archive_bytes: bytes) -> bytes:
+def extract_lzh_first_file_bytes(archive_bytes: bytes) -> bytes:  # noqa: F811
     return extract_lzh_entries(archive_bytes)[0][1]
 
 
@@ -906,7 +910,7 @@ def extract_lzh_entries_with_seven_zip(archive_bytes: bytes, seven_zip: str) -> 
         return [(path.name, path.read_bytes()) for path in extracted]
 
 
-def find_seven_zip() -> str | None:
+def find_seven_zip() -> str | None:  # noqa: F811
     candidates = [
         Path(r"C:\Program Files\7-Zip\7z.exe"),
         Path(r"C:\Program Files\7-Zip\7z.EXE"),

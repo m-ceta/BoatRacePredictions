@@ -11,7 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.drive_restore import (
+from src.drive_restore import (  # noqa: E402
     DEFAULT_ARTIFACTS_DRIVE_FILE_URL,
     DEFAULT_DATA_DRIVE_FILE_URL,
     download_and_restore_packages,
@@ -186,8 +186,6 @@ def _format_odds_frame(frame):
             ("trifecta", "買い目"),
             ("probability", "予想確率"),
             ("odds", "現在オッズ"),
-            ("break_even_odds", "損益分岐オッズ"),
-            ("recommended_min_odds", "買い目安オッズ"),
             ("expected_value", "期待値"),
             ("buy_decision", "判定"),
         ],
@@ -201,7 +199,6 @@ def _format_buy_candidates_frame(frame):
             ("trifecta", "買い目"),
             ("probability", "予想確率"),
             ("odds", "現在オッズ"),
-            ("recommended_min_odds", "買い目安オッズ"),
             ("expected_value", "期待値"),
             ("buy_decision", "判定"),
         ],
@@ -234,8 +231,8 @@ def _render_prediction_guide() -> None:
             """
 **買い目の判断方法**
 
-- `現在オッズ` が `買い目安オッズ` 以上なら `買い候補`、未満なら `見送り` です。
-- `買い目安オッズ` は、予想確率から出した `損益分岐オッズ` に 10% の余裕を乗せた目安です。
+- `期待値` は `現在オッズ × 予想確率` です。
+- `期待値` が 1.0 以上、かつ `現在オッズ` が 10.0 倍以上なら `買い`、それ以外は `見送り` です。
 
 **予想信頼度**
 

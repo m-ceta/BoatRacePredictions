@@ -13,19 +13,19 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.api import (
+from src.api import (  # noqa: E402
     backfill_rowdata_files,
     build_dataset_from_rowdata_streaming,
     load_bundle,
     predict_today,
 )
-from src.drive_restore import (
+from src.drive_restore import (  # noqa: E402
     DEFAULT_ARTIFACTS_DRIVE_FILE_URL,
     DEFAULT_DATA_DRIVE_FILE_URL,
     DEFAULT_ROWDATA_DRIVE_FILE_URL,
     download_and_restore_packages,
 )
-from src.today_schedule import (
+from src.today_schedule import (  # noqa: E402
     choose_default_today_race_no,
     choose_default_today_venue,
     fetch_daily_race_schedule,
@@ -137,8 +137,6 @@ def _format_odds_frame(frame: pd.DataFrame) -> pd.DataFrame:
             ("trifecta", "買い目"),
             ("probability", "予想確率"),
             ("odds", "現在オッズ"),
-            ("break_even_odds", "損益分岐オッズ"),
-            ("recommended_min_odds", "買い目安オッズ"),
             ("expected_value", "期待値"),
             ("buy_decision", "判定"),
         ],
@@ -152,7 +150,6 @@ def _format_buy_candidates_frame(frame: pd.DataFrame) -> pd.DataFrame:
             ("trifecta", "買い目"),
             ("probability", "予想確率"),
             ("odds", "現在オッズ"),
-            ("recommended_min_odds", "買い目安オッズ"),
             ("expected_value", "期待値"),
             ("buy_decision", "判定"),
         ],
