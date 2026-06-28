@@ -12,8 +12,6 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.drive_restore import (  # noqa: E402
-    DEFAULT_ARTIFACTS_DRIVE_FILE_URL,
-    DEFAULT_DATA_DRIVE_FILE_URL,
     download_and_restore_packages,
 )
 
@@ -75,24 +73,36 @@ def default_secret(name: str, fallback: str) -> str:
 def get_shared_data_urls() -> tuple[str, str]:
     data_url = st.session_state.get(
         "community_data_drive_url",
-        default_secret("data_drive_file_url", DEFAULT_DATA_DRIVE_FILE_URL),
+        default_secret("data_drive_file_url", ""),
     )
     artifacts_url = st.session_state.get(
         "community_artifacts_drive_url",
-        default_secret("artifacts_drive_file_url", DEFAULT_ARTIFACTS_DRIVE_FILE_URL),
+        default_secret("artifacts_drive_file_url", ""),
     )
     return str(data_url).strip(), str(artifacts_url).strip()
 
 
 @st.cache_resource(show_spinner=False)
 def ensure_shared_data(data_url: str, artifacts_url: str) -> dict[str, object]:
+    data_url = data_url.strip()
+    artifacts_url = artifacts_url.strip()
+    restore_data = bool(data_url)
+    restore_artifacts = bool(artifacts_url)
+    if not restore_data and not restore_artifacts:
+        return {
+            "rowdata_zip": None,
+            "data_zip": None,
+            "artifacts_zip": None,
+            "restored_targets": [],
+        }
+
     report = download_and_restore_packages(
         project_root=repo_root(),
         data_drive_file_url=data_url,
         artifacts_drive_file_url=artifacts_url,
         restore_rowdata=False,
-        restore_data=True,
-        restore_artifacts=True,
+        restore_data=restore_data,
+        restore_artifacts=restore_artifacts,
     )
     return report.to_dict()
 
@@ -255,9 +265,9 @@ def _render_prediction_guide() -> None:
 
 
 def bootstrap_shared_data_from_secrets() -> None:
-    data_url = default_secret("data_drive_file_url", DEFAULT_DATA_DRIVE_FILE_URL).strip()
-    artifacts_url = default_secret("artifacts_drive_file_url", DEFAULT_ARTIFACTS_DRIVE_FILE_URL).strip()
-    if not data_url or not artifacts_url:
+    data_url = default_secret("data_drive_file_url", "").strip()
+    artifacts_url = default_secret("artifacts_drive_file_url", "").strip()
+    if not data_url and not artifacts_url:
         return
 
     state_key = f"community_bootstrap_done::{data_url}::{artifacts_url}"
@@ -334,15 +344,13 @@ def render_prediction_tab() -> None:
         return
 
     data_url, artifacts_url = get_shared_data_urls()
-    if not data_url or not artifacts_url:
-        st.warning("Secrets に data.zip / artifacts.zip の共有リンクを設定してください。")
-        return
 
     try:
         from src.today_schedule import current_jst_date
 
-        with st.spinner("共有データを確認しています..."):
-            ensure_shared_data(data_url, artifacts_url)
+        if data_url or artifacts_url:
+            with st.spinner("共有データを確認しています..."):
+                ensure_shared_data(data_url, artifacts_url)
         with st.spinner("予測を実行しています..."):
             prediction = predict_today_cached(
                 config_path=default_config_path(),
