@@ -63,6 +63,13 @@ def rowdata_file_path(rowdata_dir: str | Path, kind: str, target_date: date) -> 
     return directory / f"{kind.upper()}{target_date.strftime('%y%m%d')}.TXT"
 
 
+def normalize_rowdata_year(raw_year: str) -> int:
+    year = int(raw_year)
+    if year < 100:
+        return 1900 + year if year >= 80 else 2000 + year
+    return year
+
+
 def existing_rowdata_dates(rowdata_dir: str | Path, kind: str) -> set[date]:
     directory = Path(rowdata_dir)
     dates: set[date] = set()
@@ -72,7 +79,7 @@ def existing_rowdata_dates(rowdata_dir: str | Path, kind: str) -> set[date]:
             continue
         token = stem[1:]
         try:
-            parsed = date(2000 + int(token[:2]), int(token[2:4]), int(token[4:6]))
+            parsed = date(normalize_rowdata_year(token[:2]), int(token[2:4]), int(token[4:6]))
         except ValueError:
             continue
         dates.add(parsed)

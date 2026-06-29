@@ -26,6 +26,11 @@ def test_existing_rowdata_dates_reads_yyMMdd(tmp_path) -> None:
     assert existing_rowdata_dates(tmp_path, "B") == {date(2026, 5, 20), date(2026, 5, 21)}
 
 
+def test_existing_rowdata_dates_interprets_1999_as_1900s(tmp_path) -> None:
+    (tmp_path / "B991231.TXT").write_text("dummy", encoding="utf-8")
+    assert existing_rowdata_dates(tmp_path, "B") == {date(1999, 12, 31)}
+
+
 def test_infer_backfill_range_defaults_to_next_day(tmp_path) -> None:
     (tmp_path / "B260520.TXT").write_text("dummy", encoding="utf-8")
     (tmp_path / "K260520.TXT").write_text("dummy", encoding="utf-8")
@@ -36,6 +41,18 @@ def test_infer_backfill_range_defaults_to_next_day(tmp_path) -> None:
     )
     assert start_date == date(2026, 5, 21)
     assert end_date == date(2026, 5, 22)
+
+
+def test_infer_backfill_range_uses_latest_real_date_not_2099(tmp_path) -> None:
+    (tmp_path / "B991231.TXT").write_text("dummy", encoding="utf-8")
+    (tmp_path / "K260531.TXT").write_text("dummy", encoding="utf-8")
+    start_date, end_date = infer_backfill_range(
+        rowdata_dir=tmp_path,
+        kinds=("B", "K"),
+        end_date=date(2026, 6, 25),
+    )
+    assert start_date == date(2026, 6, 1)
+    assert end_date == date(2026, 6, 25)
 
 
 def test_infer_default_backfill_end_date_uses_yesterday_during_daytime() -> None:
