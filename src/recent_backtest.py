@@ -10,15 +10,19 @@ import pandas as pd
 
 from src.api import load_bundle, predict_trifecta
 from src.evaluation.metrics import compute_trifecta_metrics
+from src.live import build_live_feature_frame, load_live_history_frame
 from src.models.ranker import load_config
 from src.parsers.bk_parser import (
     FULLWIDTH_SPACE,
     SECTION_CODE_RE,
     build_race_id,
     load_shift_jis_lines,
+    parse_entry_file,
     parse_date_from_line,
+    parse_result_file,
     parse_venue_from_line,
 )
+ROWDATA_FILE_RE = re.compile(r"^(?P<kind>[BK])(?P<yy>\d{2})(?P<mm>\d{2})(?P<dd>\d{2})\.TXT$", re.IGNORECASE)
 
 
 RACE_HEADER_RE = re.compile(r"^\s*(?P<race_no>\d{1,2})R\b")
@@ -27,31 +31,98 @@ TRIFECTA_PAYOUT_RE = re.compile(
 )
 
 
-def _latest_available_race_date(training_table_path: Path) -> date:
-    race_dates = pd.read_parquet(training_table_path, columns=["race_date"])
-    latest = pd.to_datetime(race_dates["race_date"], errors="coerce").max()
-    if pd.isna(latest):
-        raise ValueError(f"Could not determine latest race_date from {training_table_path}")
-    return latest.date()
+def _parse_rowdata_file_date(path: Path) -> date | None:
+    match = ROWDATA_FILE_RE.match(path.name)
+    if not match:
+        return None
+    yy = int(match.group("yy"))
+    year = 1900 + yy if yy >= 90 else 2000 + yy
+    return date(year, int(match.group("mm")), int(match.group("dd")))
 
 
-def _load_training_rows_for_period(
-    training_table_path: Path,
+def _list_rowdata_dates(rowdata_dir: Path, kind: str) -> set[date]:
+    dates: set[date] = set()
+    for path in rowdata_dir.glob(f"{kind}*.TXT"):
+        parsed = _parse_rowdata_file_date(path)
+        if parsed is not None:
+            dates.add(parsed)
+    return dates
+
+
+def _latest_available_rowdata_date(rowdata_dir: Path) -> date:
+    common_dates = _list_rowdata_dates(rowdata_dir, "B") & _list_rowdata_dates(rowdata_dir, "K")
+    if not common_dates:
+        raise ValueError(f"Could not determine latest common B/K rowdata date in {rowdata_dir}")
+    return max(common_dates)
+
+
+def _load_entry_rows_for_period(
+    rowdata_dir: Path,
     start_date: date,
     end_date: date,
 ) -> pd.DataFrame:
-    filters = [
-        ("race_date", ">=", pd.Timestamp(start_date)),
-        ("race_date", "<=", pd.Timestamp(end_date)),
-    ]
-    try:
-        frame = pd.read_parquet(training_table_path, filters=filters)
-    except Exception:
-        frame = pd.read_parquet(training_table_path)
-        race_dates = pd.to_datetime(frame["race_date"], errors="coerce").dt.date
-        frame = frame[(race_dates >= start_date) & (race_dates <= end_date)].copy()
-    frame["race_date"] = pd.to_datetime(frame["race_date"], errors="coerce")
+    rows: list[dict[str, Any]] = []
+    current = start_date
+    while current <= end_date:
+        path = rowdata_dir / f"B{current.strftime('%y%m%d')}.TXT"
+        if path.exists():
+            rows.extend(item.to_dict() for item in parse_entry_file(path))
+        current += timedelta(days=1)
+
+    frame = pd.DataFrame(rows)
+    if not frame.empty and "race_date" in frame.columns:
+        frame["race_date"] = pd.to_datetime(frame["race_date"], errors="coerce")
     return frame
+
+
+def _load_result_rows_for_period(
+    rowdata_dir: Path,
+    start_date: date,
+    end_date: date,
+) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    current = start_date
+    while current <= end_date:
+        path = rowdata_dir / f"K{current.strftime('%y%m%d')}.TXT"
+        if path.exists():
+            rows.extend(item.to_dict() for item in parse_result_file(path))
+        current += timedelta(days=1)
+
+    frame = pd.DataFrame(rows)
+    if not frame.empty and "race_date" in frame.columns:
+        frame["race_date"] = pd.to_datetime(frame["race_date"], errors="coerce")
+    return frame
+
+
+def _build_recent_backtest_base_frame(entries_df: pd.DataFrame, results_df: pd.DataFrame) -> pd.DataFrame:
+    if entries_df.empty or results_df.empty:
+        return pd.DataFrame()
+
+    merged = entries_df.merge(
+        results_df[
+            [
+                "race_id",
+                "lane",
+                "finish_position",
+                "finish_status",
+                "exhibition_time",
+                "course",
+                "start_timing",
+                "race_time",
+                "weather",
+                "wind_direction",
+                "wind_speed_m",
+                "wave_cm",
+                "winning_style",
+            ]
+        ],
+        on=["race_id", "lane"],
+        how="inner",
+        validate="one_to_one",
+    ).copy()
+    if not merged.empty:
+        merged["race_date"] = pd.to_datetime(merged["race_date"], errors="coerce")
+    return merged
 
 
 def parse_trifecta_payouts_from_lines(lines: list[str]) -> pd.DataFrame:
@@ -148,6 +219,105 @@ def _serialize_frame(frame: pd.DataFrame) -> list[dict[str, Any]]:
     return serializable.to_dict(orient="records")
 
 
+BACKTEST_RESULT_ONLY_COLUMNS = {
+    "finish_position",
+    "finish_status",
+    "start_timing",
+    "course",
+    "exhibition_time",
+    "race_time",
+    "weather",
+    "wind_direction",
+    "wind_speed_m",
+    "wave_cm",
+    "winning_style",
+    "target_rank",
+    "is_win",
+    "is_top2",
+    "is_top3",
+}
+
+
+def prepare_recent_backtest_entry_frame(evaluation_rows: pd.DataFrame) -> pd.DataFrame:
+    entry_frame = evaluation_rows.copy()
+    for column in BACKTEST_RESULT_ONLY_COLUMNS:
+        if column in entry_frame.columns:
+            entry_frame = entry_frame.drop(columns=column)
+    current_meet_feature_columns = [
+        column
+        for column in entry_frame.columns
+        if column.startswith("current_meet_") and column != "current_meet_results"
+    ]
+    if current_meet_feature_columns:
+        entry_frame = entry_frame.drop(columns=current_meet_feature_columns)
+    return entry_frame
+
+
+def _build_history_append_frame(evaluation_rows: pd.DataFrame) -> pd.DataFrame:
+    history_columns = [
+        "race_date",
+        "race_no",
+        "racer_id",
+        "venue",
+        "lane",
+        "course",
+        "motor_no",
+        "boat_no",
+        "finish_position",
+        "start_timing",
+        "exhibition_time",
+    ]
+    available = [column for column in history_columns if column in evaluation_rows.columns]
+    history = evaluation_rows[available].copy()
+    if history.empty:
+        return history
+    history["race_date"] = pd.to_datetime(history["race_date"], errors="coerce")
+    finish = pd.to_numeric(history["finish_position"], errors="coerce")
+    history["is_win"] = (finish == 1).astype(int)
+    history["is_top3"] = (finish.fillna(999).astype(int) <= 3).astype(int)
+    return history
+
+
+def build_recent_backtest_prediction_frame(
+    bundle,
+    evaluation_rows: pd.DataFrame,
+    start_date: date,
+) -> pd.DataFrame:
+    if evaluation_rows.empty:
+        return evaluation_rows.copy()
+
+    entry_frame = prepare_recent_backtest_entry_frame(evaluation_rows)
+    history_df = load_live_history_frame(bundle.config, start_date)
+    built_frames: list[pd.DataFrame] = []
+
+    eval_columns = [
+        column
+        for column in ("race_id", "lane", "finish_position")
+        if column in evaluation_rows.columns
+    ]
+    evaluation_frame = evaluation_rows[eval_columns].drop_duplicates(subset=["race_id", "lane"]).copy()
+
+    for race_day, race_day_entries in entry_frame.groupby("race_date", sort=True):
+        built = build_live_feature_frame(race_day_entries.copy(), history_df, bundle.feature_columns)
+        built_frames.append(built)
+        day_results = evaluation_rows[evaluation_rows["race_date"] == race_day].copy()
+        history_append = _build_history_append_frame(day_results)
+        if not history_append.empty:
+            history_df = pd.concat([history_df, history_append], ignore_index=True)
+
+    if not built_frames:
+        return pd.DataFrame(columns=["race_id", *bundle.feature_columns, *eval_columns])
+
+    prediction_frame = pd.concat(built_frames, ignore_index=True)
+    prediction_frame = prediction_frame.merge(
+        evaluation_frame,
+        on=["race_id", "lane"],
+        how="left",
+        validate="one_to_one",
+    )
+    return prediction_frame
+
+
 def evaluate_recent_week_predictions(
     config_path: str | Path = Path("configs/train.yaml"),
     rowdata_dir: str | Path = Path("rowdata"),
@@ -165,27 +335,28 @@ def evaluate_recent_week_predictions(
     config_path = Path(config_path)
     rowdata_dir = Path(rowdata_dir)
     config = load_config(config_path)
-    training_table_path = Path(config["data"]["training_table"])
-
-    latest_date = _latest_available_race_date(training_table_path)
+    latest_date = _latest_available_rowdata_date(rowdata_dir)
     start_date = latest_date - timedelta(days=days - 1)
-    training_week = _load_training_rows_for_period(training_table_path, start_date, latest_date)
-    if training_week.empty:
-        raise ValueError(f"No training rows found between {start_date} and {latest_date}")
+    entries_week = _load_entry_rows_for_period(rowdata_dir, start_date, latest_date)
+    results_week = _load_result_rows_for_period(rowdata_dir, start_date, latest_date)
+    evaluation_week = _build_recent_backtest_base_frame(entries_week, results_week)
+    if evaluation_week.empty:
+        raise ValueError(f"No recent rowdata races found between {start_date} and {latest_date}")
 
     payout_df, missing_payout_files = _load_recent_payouts(rowdata_dir, start_date, latest_date)
     if payout_df.empty:
         raise ValueError(f"No trifecta payout data found in {rowdata_dir} between {start_date} and {latest_date}")
 
-    common_race_ids = sorted(set(training_week["race_id"].astype(str)) & set(payout_df["race_id"].astype(str)))
+    common_race_ids = sorted(set(evaluation_week["race_id"].astype(str)) & set(payout_df["race_id"].astype(str)))
     if not common_race_ids:
-        raise ValueError("No overlapping races found between training_table and payout files")
+        raise ValueError("No overlapping races found between rowdata entries/results and payout files")
 
-    training_week = training_week[training_week["race_id"].astype(str).isin(common_race_ids)].copy()
+    evaluation_week = evaluation_week[evaluation_week["race_id"].astype(str).isin(common_race_ids)].copy()
     payout_df = payout_df[payout_df["race_id"].astype(str).isin(common_race_ids)].copy()
 
     bundle = load_bundle(config_path)
-    trifecta_all = predict_trifecta(bundle, training_week, top_n=None, use_v2=True)
+    prediction_frame = build_recent_backtest_prediction_frame(bundle, evaluation_week, start_date)
+    trifecta_all = predict_trifecta(bundle, prediction_frame, top_n=None, use_v2=True)
     trifecta_all = trifecta_all[trifecta_all["race_id"].astype(str).isin(common_race_ids)].copy()
 
     top_predictions = (
@@ -197,7 +368,7 @@ def evaluate_recent_week_predictions(
     top_predictions["prediction_rank"] = top_predictions.groupby("race_id", sort=False).cumcount() + 1
 
     race_meta = (
-        training_week[["race_id", "race_date", "venue", "race_no"]]
+        evaluation_week[["race_id", "race_date", "venue", "race_no"]]
         .drop_duplicates(subset=["race_id"])
         .reset_index(drop=True)
     )

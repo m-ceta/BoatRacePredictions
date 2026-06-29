@@ -508,8 +508,52 @@ def merge_recent_group_features(frame: pd.DataFrame, hist: pd.DataFrame) -> pd.D
         how="left",
     )
 
-    frame["st_momentum_diff"] = frame["racer_prev_avg_st_5"] - frame["racer_prev_avg_st_10"]
-    frame["finish_momentum_diff"] = frame["racer_prev_avg_finish_10"] - frame["racer_prev_avg_finish_5"]
+    required_recent_columns = [
+        "racer_prev_win_rate",
+        "racer_prev_win_rate_5",
+        "racer_prev_top3_rate",
+        "racer_prev_top3_rate_5",
+        "racer_prev_avg_finish",
+        "racer_prev_avg_finish_5",
+        "racer_prev_avg_finish_10",
+        "racer_prev_best_finish_5",
+        "racer_prev_worst_finish_5",
+        "racer_prev_avg_st",
+        "racer_prev_avg_st_5",
+        "racer_prev_avg_st_10",
+        "racer_prev_std_st_10",
+        "racer_prev_avg_exhibition",
+        "racer_prev_avg_course",
+        "racer_venue_prev_win_rate",
+        "racer_venue_prev_top3_rate",
+        "racer_venue_prev_avg_st",
+        "racer_venue_prev_avg_exhibition",
+        "racer_venue_prev_avg_course",
+        "racer_lane_prev_win_rate",
+        "racer_lane_prev_top3_rate",
+        "racer_lane_prev_avg_st",
+        "racer_lane_prev_avg_finish",
+        "racer_venue_lane_prev_top3_rate",
+        "racer_venue_lane_prev_avg_st",
+        "racer_course_prev_top3_rate",
+        "racer_course_prev_avg_finish",
+        "motor_prev_top3_rate",
+        "motor_prev_win_rate",
+        "motor_prev_avg_st",
+        "boat_prev_top3_rate",
+        "boat_prev_win_rate",
+        "boat_prev_avg_st",
+    ]
+    for column in required_recent_columns:
+        if column not in frame.columns:
+            frame[column] = pd.NA
+
+    st_5 = pd.to_numeric(frame.get("racer_prev_avg_st_5"), errors="coerce")
+    st_10 = pd.to_numeric(frame.get("racer_prev_avg_st_10"), errors="coerce")
+    finish_5 = pd.to_numeric(frame.get("racer_prev_avg_finish_5"), errors="coerce")
+    finish_10 = pd.to_numeric(frame.get("racer_prev_avg_finish_10"), errors="coerce")
+    frame["st_momentum_diff"] = st_5 - st_10
+    frame["finish_momentum_diff"] = finish_10 - finish_5
     frame["lane_is_inner"] = (frame["lane"] <= 3).astype(int)
     frame["lane_is_outer"] = (frame["lane"] >= 5).astype(int)
     return frame
