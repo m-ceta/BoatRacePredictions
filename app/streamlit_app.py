@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from datetime import date
@@ -192,6 +193,104 @@ def _render_command_result(command_label: str, return_code: int, output_text: st
 
     with st.expander("実行ログ", expanded=return_code != 0):
         st.code(output_text or "(no output)")
+
+
+def _format_recent_backtest_daily_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    return _select_and_rename_columns(
+        frame,
+        [
+            ("race_date", "日付"),
+            ("race_count", "対象レース数"),
+            ("hit_races", "的中レース数"),
+            ("hit_rate", "正解率"),
+            ("total_stake", "購入額"),
+            ("total_return", "払戻額"),
+            ("recovery_rate", "回収率"),
+        ],
+    )
+
+
+def _format_recent_backtest_race_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    return _select_and_rename_columns(
+        frame,
+        [
+            ("race_date", "日付"),
+            ("venue", "レース場"),
+            ("race_no", "レースNo"),
+            ("predicted_tickets", "購入買い目"),
+            ("actual_trifecta", "結果3連単"),
+            ("actual_payout", "結果払戻"),
+            ("race_hit", "的中"),
+            ("total_stake", "購入額"),
+            ("total_return", "払戻額"),
+            ("recovery_rate", "回収率"),
+        ],
+    )
+
+
+def _format_recent_backtest_ticket_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    return _select_and_rename_columns(
+        frame,
+        [
+            ("race_date", "日付"),
+            ("venue", "レース場"),
+            ("race_no", "レースNo"),
+            ("prediction_rank", "予想順位"),
+            ("trifecta", "購入買い目"),
+            ("probability", "予想確率"),
+            ("actual_trifecta", "結果3連単"),
+            ("trifecta_payout", "結果払戻"),
+            ("hit", "的中"),
+            ("stake_amount", "購入額"),
+            ("return_amount", "払戻額"),
+        ],
+    )
+
+
+def _render_recent_backtest_report(report: dict) -> None:
+    summary = report.get("summary", {})
+    race_count = int(summary.get("race_count", 0))
+    hit_races = int(summary.get("hit_races", 0))
+    ticket_count = int(summary.get("ticket_count", 0))
+    total_stake = float(summary.get("total_stake", 0.0))
+    total_return = float(summary.get("total_return", 0.0))
+
+    st.success("過去1週間分の予測と結果比較が完了しました。")
+    st.caption(
+        f"対象期間: {summary.get('start_date', '-')} ～ {summary.get('end_date', '-')} / "
+        f"利用データ最終日: {summary.get('latest_available_date', '-')}"
+    )
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("対象レース数", f"{race_count}")
+    col2.metric("的中レース数", f"{hit_races}")
+    col3.metric("正解率", f"{float(summary.get('race_hit_rate', 0.0)) * 100:.1f}%")
+    col4.metric("回収率", f"{float(summary.get('recovery_rate', 0.0)) * 100:.1f}%")
+
+    col5, col6, col7, col8 = st.columns(4)
+    col5.metric("購入点数", f"{ticket_count}")
+    col6.metric("購入額", f"{total_stake:,.0f}円")
+    col7.metric("払戻額", f"{total_return:,.0f}円")
+    col8.metric("Top3内率", f"{float(summary.get('top3_hit_rate', 0.0)) * 100:.1f}%")
+
+    missing_payout_files = summary.get("missing_payout_files", [])
+    if missing_payout_files:
+        st.warning(f"払戻ファイルが見つからなかった日があります: {len(missing_payout_files)}件")
+
+    daily_df = pd.DataFrame(report.get("daily_summary", []))
+    if not daily_df.empty:
+        st.markdown("**日別集計**")
+        st.dataframe(_format_recent_backtest_daily_frame(daily_df), use_container_width=True, hide_index=True)
+
+    race_df = pd.DataFrame(report.get("race_summary", []))
+    if not race_df.empty:
+        st.markdown("**レース別結果**")
+        st.dataframe(_format_recent_backtest_race_frame(race_df), use_container_width=True, hide_index=True)
+
+    ticket_df = pd.DataFrame(report.get("ticket_details", []))
+    if not ticket_df.empty:
+        st.markdown("**購入明細**")
+        st.dataframe(_format_recent_backtest_ticket_frame(ticket_df), use_container_width=True, hide_index=True)
 
 
 def render_prediction_tab() -> None:
@@ -470,6 +569,54 @@ def render_trifecta_train_tab() -> None:
     _render_command_result("三連単最適化学習", return_code, output_text)
 
 
+def render_recent_backtest_tab() -> None:
+    st.subheader("過去1週間分予測")
+    st.caption("学習済みモデルで直近7日間のレースを再予測し、結果と比較して正解率と回収率を集計します。")
+
+    with st.form("recent_backtest_form"):
+        config_path = st.text_input("設定ファイル", value="configs/train.yaml", key="recent_backtest_config")
+        rowdata_dir = st.text_input("rowdata フォルダ", value="rowdata", key="recent_backtest_rowdata")
+        days = st.number_input("対象日数", min_value=1, max_value=31, value=7, step=1)
+        top_k = st.number_input("1レースあたりの購入点数", min_value=1, max_value=10, value=1, step=1)
+        stake = st.number_input("1点あたり購入額", min_value=100, max_value=10000, value=100, step=100)
+        submitted = st.form_submit_button("過去1週間分予測を実行")
+
+    if not submitted:
+        return
+
+    return_code, output_text = _run_python_cli(
+        "過去1週間分予測",
+        [
+            "-c",
+            "from src.cli import backtest_recent_week_main; backtest_recent_week_main()",
+            "--config",
+            config_path,
+            "--rowdata",
+            rowdata_dir,
+            "--days",
+            str(int(days)),
+            "--stake",
+            str(int(stake)),
+            "--top-k",
+            str(int(top_k)),
+        ],
+    )
+    if return_code != 0:
+        _render_command_result("過去1週間分予測", return_code, output_text)
+        return
+
+    try:
+        report = json.loads(output_text)
+    except json.JSONDecodeError:
+        _render_command_result("過去1週間分予測", return_code, output_text)
+        st.error("コマンド出力を JSON として解釈できませんでした。")
+        return
+
+    _render_recent_backtest_report(report)
+    with st.expander("実行ログ"):
+        st.code(output_text or "(no output)")
+
+
 def main() -> None:
     st.set_page_config(page_title="BoatRace Predictions", page_icon="🚤", layout="wide")
     st.title("BoatRace Predictions")
@@ -483,6 +630,7 @@ def main() -> None:
             "学習データ更新",
             "モデル再学習",
             "三連単最適化学習",
+            "過去1週間分予測",
         ]
     )
     with tabs[0]:
@@ -497,6 +645,8 @@ def main() -> None:
         render_train_tab()
     with tabs[5]:
         render_trifecta_train_tab()
+    with tabs[6]:
+        render_recent_backtest_tab()
 
 
 if __name__ == "__main__":

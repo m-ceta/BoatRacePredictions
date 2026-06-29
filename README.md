@@ -117,6 +117,24 @@ boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-m
 boatrace-eval-trifecta-full --config configs/train.yaml
 ```
 
+### 過去1週間分予測
+
+直近7日間の学習データを使って過去レースを再予測し、各レースで予想上位の買い目を購入した想定で正解率と回収率を集計します。
+
+```bash
+boatrace-backtest-recent-week --config configs/train.yaml --rowdata rowdata
+```
+
+主なオプション:
+
+```bash
+boatrace-backtest-recent-week --config configs/train.yaml --rowdata rowdata --days 7 --top-k 1 --stake 100
+```
+
+- `--days`: 対象日数。既定値は `7`
+- `--top-k`: 1レースごとに購入する予想上位件数。既定値は `1`
+- `--stake`: 1点あたり購入額。既定値は `100`
+
 ### 当日レース予測
 
 ```bash
@@ -202,6 +220,7 @@ streamlit run app/streamlit_app.py
 - 学習データ更新
 - モデル再学習
 - 三連単最適化学習
+- 過去1週間分予測
 
 ### Streamlit Community Cloud 用アプリ
 

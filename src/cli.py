@@ -23,6 +23,7 @@ from src.evaluation.metrics import compute_trifecta_rerank_metrics
 from src.features.builder import build_training_table, save_processed_tables
 from src.features.streaming_builder import compare_processed_tables
 from src.live import predict_today_race
+from src.recent_backtest import evaluate_recent_week_predictions
 from src.models.ranker import (
     cleanup_processed_intermediate_dirs,
     collect_garbage,
@@ -134,6 +135,25 @@ def package_download_main() -> None:
         restore_artifacts=not args.skip_artifacts,
     )
     print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+
+
+def backtest_recent_week_main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=Path, default=Path("configs/train.yaml"))
+    parser.add_argument("--rowdata", type=Path, default=Path("rowdata"))
+    parser.add_argument("--days", type=int, default=7)
+    parser.add_argument("--stake", type=int, default=100)
+    parser.add_argument("--top-k", type=int, default=1)
+    args = parser.parse_args()
+
+    report = evaluate_recent_week_predictions(
+        config_path=args.config,
+        rowdata_dir=args.rowdata,
+        days=args.days,
+        stake_per_ticket=args.stake,
+        top_k=args.top_k,
+    )
+    print(json.dumps(report, ensure_ascii=False, indent=2))
 
 
 def train_main() -> None:
