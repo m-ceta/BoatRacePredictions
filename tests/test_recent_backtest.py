@@ -6,6 +6,8 @@ import src.recent_backtest as recent_backtest
 from src.recent_backtest import parse_trifecta_payouts_from_lines
 from src.recent_backtest import build_recent_backtest_prediction_frame
 from src.recent_backtest import _latest_available_rowdata_date
+from src.recent_backtest import _normalize_race_type
+from src.recent_backtest import _resolve_backtest_period
 from src.recent_backtest import prepare_recent_backtest_entry_frame
 
 
@@ -172,3 +174,22 @@ def test_latest_available_rowdata_date_uses_common_bk_dates(tmp_path) -> None:
     latest = _latest_available_rowdata_date(tmp_path)
 
     assert latest.isoformat() == "2026-06-01"
+
+
+def test_normalize_race_type_groups_special_labels() -> None:
+    assert _normalize_race_type("一般") == "一般戦"
+    assert _normalize_race_type("予選特賞") == "特賞・選抜"
+    assert _normalize_race_type("優勝戦") == "優勝戦"
+    assert _normalize_race_type("準優勝戦") == "準優勝戦"
+
+
+def test_resolve_backtest_period_prefers_explicit_range(tmp_path) -> None:
+    start, end = _resolve_backtest_period(
+        tmp_path,
+        days=7,
+        start_date=pd.Timestamp("2026-06-01").date(),
+        end_date=pd.Timestamp("2026-06-29").date(),
+    )
+
+    assert start.isoformat() == "2026-06-01"
+    assert end.isoformat() == "2026-06-29"

@@ -1669,8 +1669,7 @@ def restrict_trifecta_candidates_for_rerank(trifecta_df: pd.DataFrame, top_n: in
     if trifecta_df.empty:
         return trifecta_df.copy()
     ordered = trifecta_df["raw_probability_v1"].rank(ascending=False, method="first") <= int(top_n)
-    actual = trifecta_df["is_actual"].astype(bool) if "is_actual" in trifecta_df.columns else pd.Series(False, index=trifecta_df.index)
-    restricted = trifecta_df.loc[ordered | actual].copy()
+    restricted = trifecta_df.loc[ordered].copy()
     for probability_col in ("probability_v1", "probability_v2"):
         if probability_col not in restricted.columns:
             continue
@@ -1684,8 +1683,7 @@ def select_rerank_candidate_mask_from_v1(v1_df: pd.DataFrame, top_n: int = 24) -
     if v1_df.empty:
         return pd.Series(dtype=bool)
     ordered = v1_df["raw_probability_v1"].rank(ascending=False, method="first") <= int(top_n)
-    actual = v1_df["is_actual"].astype(bool) if "is_actual" in v1_df.columns else pd.Series(False, index=v1_df.index)
-    return (ordered | actual).astype(bool)
+    return ordered.astype(bool)
 
 
 def merge_odds_into_trifecta(trifecta_df: pd.DataFrame, odds_df: pd.DataFrame | None) -> pd.DataFrame:

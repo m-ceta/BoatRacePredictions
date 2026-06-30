@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import date, timedelta
+from math import ceil
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,33 @@ from src.parsers.bk_parser import (
     parse_venue_from_line,
 )
 ROWDATA_FILE_RE = re.compile(r"^(?P<kind>[BK])(?P<yy>\d{2})(?P<mm>\d{2})(?P<dd>\d{2})\.TXT$", re.IGNORECASE)
+
+VENUE_NAMES = {
+    "01": "桐生",
+    "02": "戸田",
+    "03": "江戸川",
+    "04": "平和島",
+    "05": "多摩川",
+    "06": "浜名湖",
+    "07": "蒲郡",
+    "08": "常滑",
+    "09": "津",
+    "10": "三国",
+    "11": "びわこ",
+    "12": "住之江",
+    "13": "尼崎",
+    "14": "鳴門",
+    "15": "丸亀",
+    "16": "児島",
+    "17": "宮島",
+    "18": "徳山",
+    "19": "下関",
+    "20": "若松",
+    "21": "芦屋",
+    "22": "福岡",
+    "23": "唐津",
+    "24": "大村",
+}
 
 
 RACE_HEADER_RE = re.compile(r"^\s*(?P<race_no>\d{1,2})R\b")
@@ -201,8 +229,50 @@ def _load_recent_payouts(
                 columns=["race_id", "race_date", "venue", "race_no", "actual_trifecta", "trifecta_payout"]
             ),
             missing_files,
-        )
+    )
     return pd.concat(rows, ignore_index=True), missing_files
+
+
+def _resolve_backtest_period(
+    rowdata_dir: Path,
+    days: int,
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> tuple[date, date]:
+    if start_date is not None and end_date is not None:
+        if start_date > end_date:
+            raise ValueError("start_date must be on or before end_date")
+        return start_date, end_date
+    if start_date is not None:
+        return start_date, start_date + timedelta(days=days - 1)
+    latest_date = _latest_available_rowdata_date(rowdata_dir) if end_date is None else end_date
+    return latest_date - timedelta(days=days - 1), latest_date
+
+
+def _normalize_race_type(leg_type: str | None, race_title: str | None = None) -> str:
+    text = " ".join(part for part in [str(leg_type or ""), str(race_title or "")] if part).strip()
+    if not text:
+        return "不明"
+    if "準優勝" in text:
+        return "準優勝戦"
+    if "優勝戦" in text:
+        return "優勝戦"
+    if (
+        "ドリーム" in text
+        or "選抜" in text
+        or "特選" in text
+        or "特賞" in text
+        or clean_text_label(text).endswith("特")
+        or clean_text_label(text).endswith("選")
+    ):
+        return "特賞・選抜"
+    if "予選" in text:
+        return "予選"
+    return "一般戦"
+
+
+def clean_text_label(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip()
 
 
 def _serialize_frame(frame: pd.DataFrame) -> list[dict[str, Any]]:
@@ -324,6 +394,8 @@ def evaluate_recent_week_predictions(
     days: int = 7,
     stake_per_ticket: int = 100,
     top_k: int = 1,
+    start_date: date | None = None,
+    end_date: date | None = None,
 ) -> dict[str, Any]:
     if days <= 0:
         raise ValueError("days must be positive")
@@ -334,18 +406,18 @@ def evaluate_recent_week_predictions(
 
     config_path = Path(config_path)
     rowdata_dir = Path(rowdata_dir)
-    config = load_config(config_path)
-    latest_date = _latest_available_rowdata_date(rowdata_dir)
-    start_date = latest_date - timedelta(days=days - 1)
-    entries_week = _load_entry_rows_for_period(rowdata_dir, start_date, latest_date)
-    results_week = _load_result_rows_for_period(rowdata_dir, start_date, latest_date)
+    load_config(config_path)
+    start_date, end_date = _resolve_backtest_period(rowdata_dir, days=days, start_date=start_date, end_date=end_date)
+    latest_date = end_date
+    entries_week = _load_entry_rows_for_period(rowdata_dir, start_date, end_date)
+    results_week = _load_result_rows_for_period(rowdata_dir, start_date, end_date)
     evaluation_week = _build_recent_backtest_base_frame(entries_week, results_week)
     if evaluation_week.empty:
-        raise ValueError(f"No recent rowdata races found between {start_date} and {latest_date}")
+        raise ValueError(f"No recent rowdata races found between {start_date} and {end_date}")
 
-    payout_df, missing_payout_files = _load_recent_payouts(rowdata_dir, start_date, latest_date)
+    payout_df, missing_payout_files = _load_recent_payouts(rowdata_dir, start_date, end_date)
     if payout_df.empty:
-        raise ValueError(f"No trifecta payout data found in {rowdata_dir} between {start_date} and {latest_date}")
+        raise ValueError(f"No trifecta payout data found in {rowdata_dir} between {start_date} and {end_date}")
 
     common_race_ids = sorted(set(evaluation_week["race_id"].astype(str)) & set(payout_df["race_id"].astype(str)))
     if not common_race_ids:
@@ -368,7 +440,7 @@ def evaluate_recent_week_predictions(
     top_predictions["prediction_rank"] = top_predictions.groupby("race_id", sort=False).cumcount() + 1
 
     race_meta = (
-        evaluation_week[["race_id", "race_date", "venue", "race_no"]]
+        evaluation_week[["race_id", "race_date", "venue", "race_no", "race_title", "leg_type"]]
         .drop_duplicates(subset=["race_id"])
         .reset_index(drop=True)
     )
@@ -396,6 +468,8 @@ def evaluate_recent_week_predictions(
             "race_date",
             "venue",
             "race_no",
+            "race_title",
+            "leg_type",
             "race_id",
             "prediction_rank",
             "trifecta",
@@ -421,6 +495,8 @@ def evaluate_recent_week_predictions(
             race_date=("race_date", "first"),
             venue=("venue", "first"),
             race_no=("race_no", "first"),
+            race_title=("race_title", "first"),
+            leg_type=("leg_type", "first"),
             tickets_bought=("prediction_rank", "count"),
             race_hit=("hit", "max"),
             total_stake=("stake_amount", "sum"),
@@ -471,7 +547,7 @@ def evaluate_recent_week_predictions(
     summary = {
         "latest_available_date": latest_date.isoformat(),
         "start_date": start_date.isoformat(),
-        "end_date": latest_date.isoformat(),
+        "end_date": end_date.isoformat(),
         "days_requested": int(days),
         "available_race_dates": [value.strftime("%Y-%m-%d") for value in sorted(race_summary["race_date"].dt.date.unique())],
         "race_count": race_count,
@@ -496,4 +572,268 @@ def evaluate_recent_week_predictions(
         "daily_summary": _serialize_frame(daily_summary),
         "race_summary": _serialize_frame(race_summary),
         "ticket_details": _serialize_frame(ticket_details),
+    }
+
+
+def _summarize_hit_frame(frame: pd.DataFrame, group_column: str) -> pd.DataFrame:
+    if frame.empty:
+        return pd.DataFrame(columns=[group_column, "レース数", "的中レース数", "的中率", "投資額", "払戻額", "回収率"])
+    summary = (
+        frame.groupby(group_column, sort=False)
+        .agg(
+            レース数=("race_id", "count"),
+            的中レース数=("race_hit", "sum"),
+            投資額=("total_stake", "sum"),
+            払戻額=("total_return", "sum"),
+        )
+        .reset_index()
+    )
+    summary["的中率"] = np.where(summary["レース数"] > 0, summary["的中レース数"] / summary["レース数"], 0.0)
+    summary["回収率"] = np.where(summary["投資額"] > 0, summary["払戻額"] / summary["投資額"], 0.0)
+    return summary.sort_values([group_column]).reset_index(drop=True)
+
+
+def _format_rate_columns(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    formatted = frame.copy()
+    for column in columns:
+        if column in formatted.columns:
+            formatted[column] = formatted[column].map(lambda value: f"{float(value) * 100:.2f}%")
+    return formatted
+
+
+def _build_japanese_report_frames(report: dict[str, Any]) -> dict[str, pd.DataFrame]:
+    race_summary = pd.DataFrame(report.get("race_summary", [])).copy()
+    ticket_details = pd.DataFrame(report.get("ticket_details", [])).copy()
+    daily_summary = pd.DataFrame(report.get("daily_summary", [])).copy()
+
+    for frame in (race_summary, ticket_details, daily_summary):
+        if "race_date" in frame.columns:
+            frame["race_date"] = pd.to_datetime(frame["race_date"], errors="coerce")
+
+    if not race_summary.empty:
+        race_summary["venue_code"] = race_summary["race_id"].astype(str).str.split("_").str[1]
+        race_summary["レース場"] = race_summary["venue_code"].map(VENUE_NAMES).fillna(race_summary["venue_code"])
+        race_summary["レースNo"] = pd.to_numeric(race_summary["race_no"], errors="coerce").astype("Int64")
+        race_summary["レース種別"] = race_summary.apply(
+            lambda row: _normalize_race_type(row.get("leg_type"), row.get("race_title")),
+            axis=1,
+        )
+        race_summary["日付"] = race_summary["race_date"].dt.strftime("%Y-%m-%d")
+        race_summary["的中"] = race_summary["race_hit"].map(lambda value: "的中" if bool(value) else "不的中")
+
+    if not ticket_details.empty:
+        ticket_details["venue_code"] = ticket_details["race_id"].astype(str).str.split("_").str[1]
+        ticket_details["レース場"] = ticket_details["venue_code"].map(VENUE_NAMES).fillna(ticket_details["venue_code"])
+        ticket_details["レースNo"] = pd.to_numeric(ticket_details["race_no"], errors="coerce").astype("Int64")
+        ticket_details["日付"] = ticket_details["race_date"].dt.strftime("%Y-%m-%d")
+        ticket_details["的中"] = ticket_details["hit"].map(lambda value: "的中" if bool(value) else "不的中")
+
+    if not daily_summary.empty:
+        daily_summary["日付"] = daily_summary["race_date"].dt.strftime("%Y-%m-%d")
+
+    venue_summary = _summarize_hit_frame(race_summary, "レース場")
+    race_no_summary = _summarize_hit_frame(race_summary, "レースNo")
+    race_type_summary = _summarize_hit_frame(race_summary, "レース種別")
+
+    race_summary_ja = race_summary[
+        [
+            "日付",
+            "レース場",
+            "レースNo",
+            "レース種別",
+            "predicted_tickets",
+            "actual_trifecta",
+            "actual_payout",
+            "的中",
+            "total_stake",
+            "total_return",
+            "recovery_rate",
+        ]
+    ].rename(
+        columns={
+            "predicted_tickets": "予想買い目",
+            "actual_trifecta": "結果3連単",
+            "actual_payout": "払戻",
+            "total_stake": "投資額",
+            "total_return": "払戻額",
+            "recovery_rate": "回収率",
+        }
+    ) if not race_summary.empty else pd.DataFrame()
+
+    ticket_details_ja = ticket_details[
+        [
+            "日付",
+            "レース場",
+            "レースNo",
+            "prediction_rank",
+            "trifecta",
+            "probability",
+            "actual_trifecta",
+            "trifecta_payout",
+            "的中",
+            "stake_amount",
+            "return_amount",
+        ]
+    ].rename(
+        columns={
+            "prediction_rank": "予想順位",
+            "trifecta": "予想3連単",
+            "probability": "予想確率",
+            "actual_trifecta": "結果3連単",
+            "trifecta_payout": "払戻",
+            "stake_amount": "投資額",
+            "return_amount": "払戻額",
+        }
+    ) if not ticket_details.empty else pd.DataFrame()
+
+    daily_summary_ja = daily_summary[
+        ["日付", "race_count", "hit_races", "hit_rate", "total_stake", "total_return", "recovery_rate"]
+    ].rename(
+        columns={
+            "race_count": "レース数",
+            "hit_races": "的中レース数",
+            "hit_rate": "的中率",
+            "total_stake": "投資額",
+            "total_return": "払戻額",
+            "recovery_rate": "回収率",
+        }
+    ) if not daily_summary.empty else pd.DataFrame()
+
+    return {
+        "daily_summary": daily_summary_ja,
+        "race_summary": race_summary_ja,
+        "ticket_details": ticket_details_ja,
+        "venue_summary": venue_summary,
+        "race_no_summary": race_no_summary,
+        "race_type_summary": race_type_summary,
+    }
+
+
+def _pick_japanese_font_family() -> str:
+    from matplotlib import font_manager
+
+    for family in ("Yu Gothic", "Meiryo", "MS Gothic", "Noto Sans CJK JP", "IPAexGothic"):
+        try:
+            path = font_manager.findfont(family, fallback_to_default=False)
+        except Exception:
+            path = ""
+        if path:
+            return family
+    return "sans-serif"
+
+
+def _render_table_pages(pdf, title: str, frame: pd.DataFrame, rows_per_page: int = 24) -> None:
+    import matplotlib.pyplot as plt
+
+    if frame.empty:
+        fig, ax = plt.subplots(figsize=(11.69, 8.27))
+        ax.axis("off")
+        ax.set_title(title, loc="left", fontsize=14, fontweight="bold")
+        ax.text(0.01, 0.9, "データはありません。", fontsize=11, va="top")
+        pdf.savefig(fig, bbox_inches="tight")
+        plt.close(fig)
+        return
+
+    page_count = ceil(len(frame) / rows_per_page)
+    for page in range(page_count):
+        chunk = frame.iloc[page * rows_per_page : (page + 1) * rows_per_page].copy()
+        fig, ax = plt.subplots(figsize=(16.54, 11.69))
+        ax.axis("off")
+        ax.set_title(f"{title} ({page + 1}/{page_count})", loc="left", fontsize=14, fontweight="bold")
+        table = ax.table(
+            cellText=chunk.astype(str).values.tolist(),
+            colLabels=chunk.columns.tolist(),
+            loc="upper left",
+            cellLoc="left",
+            colLoc="left",
+            bbox=[0.0, 0.0, 1.0, 0.92],
+        )
+        table.auto_set_font_size(False)
+        table.set_fontsize(8)
+        table.scale(1, 1.2)
+        pdf.savefig(fig, bbox_inches="tight")
+        plt.close(fig)
+
+
+def _build_trend_lines(summary_by_group: pd.DataFrame, label: str) -> list[str]:
+    if summary_by_group.empty:
+        return [f"{label}: データなし"]
+    best_hit = summary_by_group.sort_values("的中率", ascending=False).iloc[0]
+    worst_hit = summary_by_group.sort_values("的中率", ascending=True).iloc[0]
+    best_recovery = summary_by_group.sort_values("回収率", ascending=False).iloc[0]
+    return [
+        f"{label} 的中率上位: {best_hit.iloc[0]} ({best_hit['的中率'] * 100:.2f}%)",
+        f"{label} 的中率下位: {worst_hit.iloc[0]} ({worst_hit['的中率'] * 100:.2f}%)",
+        f"{label} 回収率上位: {best_recovery.iloc[0]} ({best_recovery['回収率'] * 100:.2f}%)",
+    ]
+
+
+def export_backtest_report_artifacts(
+    report: dict[str, Any],
+    output_dir: str | Path,
+    base_name: str,
+) -> dict[str, str]:
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    plt.rcParams["font.family"] = _pick_japanese_font_family()
+    japanese_frames = _build_japanese_report_frames(report)
+    summary = report["summary"]
+
+    daily_csv = output_path / f"{base_name}_日別集計.csv"
+    race_csv = output_path / f"{base_name}_レース別結果.csv"
+    ticket_csv = output_path / f"{base_name}_買い目詳細.csv"
+    pdf_path = output_path / f"{base_name}_集計レポート.pdf"
+
+    japanese_frames["daily_summary"].to_csv(daily_csv, index=False, encoding="utf-8-sig")
+    japanese_frames["race_summary"].to_csv(race_csv, index=False, encoding="utf-8-sig")
+    japanese_frames["ticket_details"].to_csv(ticket_csv, index=False, encoding="utf-8-sig")
+
+    venue_summary = _format_rate_columns(japanese_frames["venue_summary"], ["的中率", "回収率"])
+    race_no_summary = _format_rate_columns(japanese_frames["race_no_summary"], ["的中率", "回収率"])
+    race_type_summary = _format_rate_columns(japanese_frames["race_type_summary"], ["的中率", "回収率"])
+    daily_summary = _format_rate_columns(japanese_frames["daily_summary"], ["的中率", "回収率"])
+
+    trend_lines = (
+        _build_trend_lines(japanese_frames["venue_summary"], "レース場")
+        + _build_trend_lines(japanese_frames["race_no_summary"], "レースNo")
+        + _build_trend_lines(japanese_frames["race_type_summary"], "レース種別")
+    )
+
+    with PdfPages(pdf_path) as pdf:
+        fig, ax = plt.subplots(figsize=(11.69, 8.27))
+        ax.axis("off")
+        ax.set_title("3連単バックテスト集計レポート", loc="left", fontsize=18, fontweight="bold")
+        lines = [
+            f"対象期間: {summary['start_date']} ～ {summary['end_date']}",
+            f"買い方: 1レース {summary['top_k']} 点買い / 1点 {summary['stake_per_ticket']}円",
+            f"レース数: {summary['race_count']}",
+            f"購入点数: {summary['ticket_count']}",
+            f"的中レース数: {summary['hit_races']}",
+            f"的中率: {summary['race_hit_rate'] * 100:.2f}%",
+            f"投資額: {summary['total_stake']:,.0f}円",
+            f"払戻額: {summary['total_return']:,.0f}円",
+            f"回収率: {summary['recovery_rate'] * 100:.2f}%",
+            "",
+            "傾向メモ:",
+            *trend_lines,
+        ]
+        ax.text(0.01, 0.95, "\n".join(lines), va="top", fontsize=12)
+        pdf.savefig(fig, bbox_inches="tight")
+        plt.close(fig)
+
+        _render_table_pages(pdf, "日別集計", daily_summary, rows_per_page=28)
+        _render_table_pages(pdf, "レース場別集計", venue_summary, rows_per_page=28)
+        _render_table_pages(pdf, "レースNo別集計", race_no_summary, rows_per_page=28)
+        _render_table_pages(pdf, "レース種別別集計", race_type_summary, rows_per_page=28)
+        _render_table_pages(pdf, "レース別結果", japanese_frames["race_summary"], rows_per_page=28)
+
+    return {
+        "daily_csv": str(daily_csv),
+        "race_csv": str(race_csv),
+        "ticket_csv": str(ticket_csv),
+        "pdf": str(pdf_path),
     }

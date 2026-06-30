@@ -24,6 +24,7 @@ from src.features.builder import build_training_table, save_processed_tables
 from src.features.streaming_builder import compare_processed_tables
 from src.live import predict_today_race
 from src.recent_backtest import evaluate_recent_week_predictions
+from src.recent_backtest import export_backtest_report_artifacts
 from src.models.ranker import (
     cleanup_processed_intermediate_dirs,
     collect_garbage,
@@ -142,8 +143,11 @@ def backtest_recent_week_main() -> None:
     parser.add_argument("--config", type=Path, default=Path("configs/train.yaml"))
     parser.add_argument("--rowdata", type=Path, default=Path("rowdata"))
     parser.add_argument("--days", type=int, default=7)
+    parser.add_argument("--start", type=str, default=None)
+    parser.add_argument("--end", type=str, default=None)
     parser.add_argument("--stake", type=int, default=100)
     parser.add_argument("--top-k", type=int, default=1)
+    parser.add_argument("--report-dir", type=Path, default=None)
     args = parser.parse_args()
 
     report = evaluate_recent_week_predictions(
@@ -152,7 +156,12 @@ def backtest_recent_week_main() -> None:
         days=args.days,
         stake_per_ticket=args.stake,
         top_k=args.top_k,
+        start_date=pd.Timestamp(args.start).date() if args.start else None,
+        end_date=pd.Timestamp(args.end).date() if args.end else None,
     )
+    if args.report_dir is not None:
+        base_name = f"backtest_{report['summary']['start_date']}_{report['summary']['end_date']}_top{args.top_k}"
+        report["artifacts"] = export_backtest_report_artifacts(report, args.report_dir, base_name)
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
 

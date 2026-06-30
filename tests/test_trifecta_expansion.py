@@ -8,6 +8,8 @@ from src.models.ranker import (
     infer_feature_columns,
     predict_race_order,
     predict_trifecta_probabilities,
+    restrict_trifecta_candidates_for_rerank,
+    select_rerank_candidate_mask_from_v1,
 )
 from src.odds.expected_value import attach_expected_value_columns
 
@@ -115,3 +117,37 @@ def test_future_information_columns_do_not_enter_features() -> None:
     assert "is_win" not in feature_columns
     assert "is_top3" not in feature_columns
     assert "winning_style" not in feature_columns
+
+
+def test_select_rerank_candidate_mask_from_v1_does_not_force_actual_inclusion() -> None:
+    v1_df = pd.DataFrame(
+        {
+            "race_id": ["R1"] * 4,
+            "trifecta": ["1-2-3", "1-3-2", "2-1-3", "3-1-2"],
+            "raw_probability_v1": [0.4, 0.3, 0.2, 0.1],
+            "is_actual": [False, False, False, True],
+        }
+    )
+
+    mask = select_rerank_candidate_mask_from_v1(v1_df, top_n=2)
+
+    assert mask.tolist() == [True, True, False, False]
+
+
+def test_restrict_trifecta_candidates_for_rerank_does_not_force_actual_inclusion() -> None:
+    trifecta_df = pd.DataFrame(
+        {
+            "race_id": ["R1"] * 4,
+            "trifecta": ["1-2-3", "1-3-2", "2-1-3", "3-1-2"],
+            "raw_probability_v1": [0.4, 0.3, 0.2, 0.1],
+            "probability_v1": [0.4, 0.3, 0.2, 0.1],
+            "probability_v2": [0.4, 0.3, 0.2, 0.1],
+            "is_actual": [False, False, False, True],
+        }
+    )
+
+    restricted = restrict_trifecta_candidates_for_rerank(trifecta_df, top_n=2)
+
+    assert restricted["trifecta"].tolist() == ["1-2-3", "1-3-2"]
+    assert np.isclose(restricted["probability_v1"].sum(), 1.0)
+    assert np.isclose(restricted["probability_v2"].sum(), 1.0)
