@@ -10,7 +10,6 @@ import numpy as np
 import pandas as pd
 
 from src.api import load_bundle, predict_trifecta
-from src.evaluation.metrics import compute_trifecta_metrics
 from src.live import build_live_feature_frame, load_live_history_frame
 from src.models.ranker import load_config
 from src.parsers.bk_parser import (
@@ -388,6 +387,26 @@ def build_recent_backtest_prediction_frame(
     return prediction_frame
 
 
+def compute_ticket_rank_hit_rates(
+    ticket_details: pd.DataFrame,
+    race_count: int,
+    top_ks: tuple[int, ...] = (1, 3, 5),
+) -> dict[str, float]:
+    if race_count <= 0 or ticket_details.empty:
+        return {f"top{top_k}_hit_rate": 0.0 for top_k in top_ks}
+
+    metrics: dict[str, float] = {}
+    for top_k in top_ks:
+        covered_races = int(
+            ticket_details.loc[ticket_details["prediction_rank"] <= int(top_k)]
+            .groupby("race_id", sort=False)["hit"]
+            .max()
+            .sum()
+        )
+        metrics[f"top{top_k}_hit_rate"] = covered_races / race_count
+    return metrics
+
+
 def evaluate_recent_week_predictions(
     config_path: str | Path = Path("configs/train.yaml"),
     rowdata_dir: str | Path = Path("rowdata"),
@@ -535,14 +554,13 @@ def evaluate_recent_week_predictions(
         0.0,
     )
 
-    accuracy_metrics = compute_trifecta_metrics(trifecta_all, probability_col="probability")
-
     race_count = int(race_summary["race_id"].nunique())
     ticket_count = int(len(ticket_details))
     hit_races = int(race_summary["race_hit"].sum())
     hit_tickets = int(ticket_details["hit"].sum())
     total_stake = float(ticket_details["stake_amount"].sum())
     total_return = float(ticket_details["return_amount"].sum())
+    rank_hit_rates = compute_ticket_rank_hit_rates(ticket_details, race_count)
 
     summary = {
         "latest_available_date": latest_date.isoformat(),
@@ -561,9 +579,9 @@ def evaluate_recent_week_predictions(
         "ticket_hit_rate": hit_tickets / ticket_count if ticket_count else 0.0,
         "total_return": total_return,
         "recovery_rate": total_return / total_stake if total_stake else 0.0,
-        "top1_hit_rate": float(accuracy_metrics.get("top1_hit_rate", 0.0)),
-        "top3_hit_rate": float(accuracy_metrics.get("top3_hit_rate", 0.0)),
-        "top5_hit_rate": float(accuracy_metrics.get("top5_hit_rate", 0.0)),
+        "top1_hit_rate": float(rank_hit_rates.get("top1_hit_rate", 0.0)),
+        "top3_hit_rate": float(rank_hit_rates.get("top3_hit_rate", 0.0)),
+        "top5_hit_rate": float(rank_hit_rates.get("top5_hit_rate", 0.0)),
         "missing_payout_files": missing_payout_files,
     }
 

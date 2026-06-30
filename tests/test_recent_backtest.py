@@ -5,6 +5,7 @@ import pandas as pd
 import src.recent_backtest as recent_backtest
 from src.recent_backtest import parse_trifecta_payouts_from_lines
 from src.recent_backtest import build_recent_backtest_prediction_frame
+from src.recent_backtest import compute_ticket_rank_hit_rates
 from src.recent_backtest import _latest_available_rowdata_date
 from src.recent_backtest import _normalize_race_type
 from src.recent_backtest import _resolve_backtest_period
@@ -193,3 +194,24 @@ def test_resolve_backtest_period_prefers_explicit_range(tmp_path) -> None:
 
     assert start.isoformat() == "2026-06-01"
     assert end.isoformat() == "2026-06-29"
+
+
+def test_compute_ticket_rank_hit_rates_uses_bought_tickets_only() -> None:
+    ticket_details = pd.DataFrame(
+        [
+            {"race_id": "R1", "prediction_rank": 1, "hit": False},
+            {"race_id": "R1", "prediction_rank": 2, "hit": True},
+            {"race_id": "R1", "prediction_rank": 3, "hit": False},
+            {"race_id": "R2", "prediction_rank": 1, "hit": False},
+            {"race_id": "R2", "prediction_rank": 2, "hit": False},
+            {"race_id": "R2", "prediction_rank": 3, "hit": False},
+            {"race_id": "R3", "prediction_rank": 1, "hit": True},
+            {"race_id": "R3", "prediction_rank": 2, "hit": False},
+        ]
+    )
+
+    metrics = compute_ticket_rank_hit_rates(ticket_details, race_count=3)
+
+    assert metrics["top1_hit_rate"] == 1 / 3
+    assert metrics["top3_hit_rate"] == 2 / 3
+    assert metrics["top5_hit_rate"] == 2 / 3
