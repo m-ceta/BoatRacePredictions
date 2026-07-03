@@ -102,13 +102,13 @@ boatrace-train --config configs/train.yaml
 ### 三連単最適化学習
 
 ```bash
-boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 1000 --eval-rerank-top-n 10
+boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 1000
 ```
 
 rerank 最適化付き:
 
 ```bash
-boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 1000 --eval-rerank-top-n 10 --optimize-rerank
+boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 1000 --optimize-rerank
 ```
 
 ### full valid 再評価

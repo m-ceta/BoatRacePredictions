@@ -23,9 +23,6 @@ model:
     lightgbm: false
     device_id: 0
 
-inference:
-  trifecta_rerank_top_n: 10
-
 phase3:
   label_weights:
     exact_full: 1.0

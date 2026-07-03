@@ -6,11 +6,13 @@ import pandas as pd
 from src.models.ranker import (
     blend_conservative_rerank_scores,
     enumerate_trifecta_probabilities_from_scores,
+    get_rerank_top_n,
     infer_feature_columns,
     predict_race_order,
     predict_trifecta_probabilities,
     restrict_trifecta_candidates_for_rerank,
     select_rerank_candidate_mask_from_v1,
+    with_rerank_top_n,
 )
 from src.odds.expected_value import attach_expected_value_columns
 
@@ -181,3 +183,12 @@ def test_rerank_blend_uses_update_direction_when_not_conservative() -> None:
     )
 
     assert int(np.argmax(blended)) == 2
+
+
+def test_rerank_top_n_prefers_model_value_over_fallback() -> None:
+    model = {"model_type": "lgbm_ranker"}
+
+    updated = with_rerank_top_n(model, 16)
+
+    assert get_rerank_top_n(updated, 10) == 16
+    assert get_rerank_top_n(model, 10) == 10

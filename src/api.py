@@ -12,6 +12,8 @@ from src.models.ranker import (
     cleanup_processed_intermediate_dirs,
     collect_garbage,
     get_artifact_paths,
+    get_default_rerank_top_n,
+    get_rerank_top_n,
     load_config,
     load_classifier_artifacts,
     load_ensemble_weights,
@@ -162,6 +164,7 @@ def load_bundle(config_path: str | Path = Path("configs/train.yaml")) -> BoatRac
     config = load_config(Path(config_path))
     artifacts = get_artifact_paths(config)
     flow_model, flow_classes = load_flow_artifacts(config)
+    trifecta_v2_model = load_trifecta_v2_model_artifact(config)
     return BoatRaceModelBundle(
         config=config,
         models=load_models(config),
@@ -174,8 +177,8 @@ def load_bundle(config_path: str | Path = Path("configs/train.yaml")) -> BoatRac
         flow_model=flow_model,
         flow_classes=flow_classes,
         staged_models=load_staged_model_artifacts(config),
-        trifecta_v2_model=load_trifecta_v2_model_artifact(config),
-        rerank_top_n=int(config.get("inference", {}).get("trifecta_rerank_top_n", 24)),
+        trifecta_v2_model=trifecta_v2_model,
+        rerank_top_n=get_rerank_top_n(trifecta_v2_model, get_default_rerank_top_n(config)),
     )
 
 

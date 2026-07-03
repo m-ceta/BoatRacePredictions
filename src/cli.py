@@ -31,6 +31,8 @@ from src.models.ranker import (
     evaluate_trifecta,
     fit_model_trifecta_calibrator,
     get_artifact_paths,
+    get_default_rerank_top_n,
+    get_rerank_top_n,
     load_config,
     load_classifier_artifacts,
     load_ensemble_weights,
@@ -52,6 +54,7 @@ from src.models.ranker import (
     optimize_phase3_calibration_window,
     with_conservative_rerank_weight,
     with_rank_penalty_settings,
+    with_rerank_top_n,
     infer_feature_columns,
     infer_categorical_columns,
     infer_latest_available_race_date,
@@ -225,7 +228,6 @@ def predict_main() -> None:
     parser.add_argument("--output", type=Path, default=Path("predictions.csv"))
     parser.add_argument("--trifecta-output", type=Path, default=None)
     parser.add_argument("--odds", type=Path, default=None)
-    parser.add_argument("--rerank-top-n", type=int, default=None)
     args = parser.parse_args()
 
     bundle = load_bundle(args.config)
@@ -249,7 +251,7 @@ def predict_main() -> None:
             trifecta_v2_model=bundle.trifecta_v2_model,
             odds_df=odds_df,
             use_v2=True,
-            rerank_top_n=bundle.rerank_top_n if args.rerank_top_n is None else args.rerank_top_n,
+            rerank_top_n=bundle.rerank_top_n,
         )
         trifecta.to_csv(args.trifecta_output, index=False, encoding="utf-8-sig")
 
@@ -260,7 +262,6 @@ def train_trifecta_v2_main() -> None:
     parser.add_argument("--training-device", choices=["cpu", "gpu"], default=None)
     parser.add_argument("--max-races", type=int, default=1000)
     parser.add_argument("--eval-max-races", type=int, default=3000)
-    parser.add_argument("--eval-rerank-top-n", type=int, default=24)
     parser.add_argument("--optimize-rerank", action="store_true")
     args = parser.parse_args()
 
@@ -285,6 +286,7 @@ def train_trifecta_v2_main() -> None:
     classifier_models = load_classifier_artifacts(config)
     ensemble_weights = load_ensemble_weights(artifacts["ensemble_weights_path"])
     trifecta_calibrator = load_trifecta_calibrator(artifacts["trifecta_calibrator_path"])
+    eval_rerank_top_n = get_default_rerank_top_n(config)
 
     flow_model, flow_classes = train_flow_model(train_df, valid_df, feature_columns, categorical_columns, config)
     collect_garbage()
@@ -333,12 +335,13 @@ def train_trifecta_v2_main() -> None:
             staged_models=staged_models,
             trifecta_v2_model=trifecta_v3_model,
         )
-        optimized_top_n = int(rerank_optimization.get("best_top_n", args.eval_rerank_top_n))
+        optimized_top_n = int(rerank_optimization.get("best_top_n", eval_rerank_top_n))
         optimized_weight = float(rerank_optimization.get("best_conservative_weight", 0.92))
         optimized_penalty = float(rerank_optimization.get("best_rank_penalty_strength", 0.0))
-        args.eval_rerank_top_n = optimized_top_n
+        eval_rerank_top_n = optimized_top_n
         trifecta_v3_model = with_conservative_rerank_weight(trifecta_v3_model, optimized_weight)
         trifecta_v3_model = with_rank_penalty_settings(trifecta_v3_model, optimized_penalty, 5)
+    trifecta_v3_model = with_rerank_top_n(trifecta_v3_model, eval_rerank_top_n)
     calibration_optimization = optimize_phase3_calibration_window(
         models,
         ensemble_weights,
@@ -350,7 +353,7 @@ def train_trifecta_v2_main() -> None:
         flow_classes=flow_classes,
         staged_models=staged_models,
         trifecta_v2_model=trifecta_v3_model,
-        rerank_top_n=args.eval_rerank_top_n,
+        rerank_top_n=eval_rerank_top_n,
     )
     calibration_window_days = int(calibration_optimization.get("best_window_days", 60))
     trifecta_v2_calibrator = fit_model_trifecta_calibrator(
@@ -365,7 +368,7 @@ def train_trifecta_v2_main() -> None:
         staged_models=staged_models,
         trifecta_v2_model=trifecta_v2_model,
         use_v2=True,
-        rerank_top_n=args.eval_rerank_top_n,
+        rerank_top_n=eval_rerank_top_n,
     )
     trifecta_v3_calibrator = fit_model_trifecta_calibrator(
         models,
@@ -379,7 +382,7 @@ def train_trifecta_v2_main() -> None:
         staged_models=staged_models,
         trifecta_v2_model=trifecta_v3_model,
         use_v2=True,
-        rerank_top_n=args.eval_rerank_top_n,
+        rerank_top_n=eval_rerank_top_n,
         calibration_window_days=calibration_window_days,
     )
 
@@ -432,7 +435,7 @@ def train_trifecta_v2_main() -> None:
         "valid_races": int(eval_valid_df["race_id"].nunique()) if not eval_valid_df.empty else 0,
         "test_races": int(eval_test_df["race_id"].nunique()) if not eval_test_df.empty else 0,
         "eval_max_races": int(args.eval_max_races),
-        "eval_rerank_top_n": int(args.eval_rerank_top_n),
+        "eval_rerank_top_n": int(eval_rerank_top_n),
     }
     if rerank_optimization:
         metrics["rerank_optimization"] = rerank_optimization
@@ -451,7 +454,7 @@ def train_trifecta_v2_main() -> None:
             staged_models=staged_models,
             trifecta_v2_model=trifecta_v2_model,
             use_v2=False,
-            rerank_top_n=args.eval_rerank_top_n,
+            rerank_top_n=eval_rerank_top_n,
         ),
         "test_calibrated": evaluate_trifecta(
             models,
@@ -466,7 +469,7 @@ def train_trifecta_v2_main() -> None:
             staged_models=staged_models,
             trifecta_v2_model=trifecta_v2_model,
             use_v2=False,
-            rerank_top_n=args.eval_rerank_top_n,
+            rerank_top_n=eval_rerank_top_n,
         ),
     }
     metrics["trifecta_v2_metrics"] = {
@@ -483,7 +486,7 @@ def train_trifecta_v2_main() -> None:
             staged_models=staged_models,
             trifecta_v2_model=trifecta_v2_model,
             use_v2=True,
-            rerank_top_n=args.eval_rerank_top_n,
+            rerank_top_n=eval_rerank_top_n,
         ),
         "test_calibrated": evaluate_trifecta(
             models,
@@ -498,7 +501,7 @@ def train_trifecta_v2_main() -> None:
             staged_models=staged_models,
             trifecta_v2_model=trifecta_v2_model,
             use_v2=True,
-            rerank_top_n=args.eval_rerank_top_n,
+            rerank_top_n=eval_rerank_top_n,
         ),
     }
     metrics["trifecta_v3_metrics"] = {
@@ -515,7 +518,7 @@ def train_trifecta_v2_main() -> None:
             staged_models=staged_models,
             trifecta_v2_model=trifecta_v3_model,
             use_v2=True,
-            rerank_top_n=args.eval_rerank_top_n,
+            rerank_top_n=eval_rerank_top_n,
         ),
         "test_calibrated": evaluate_trifecta(
             models,
@@ -530,7 +533,7 @@ def train_trifecta_v2_main() -> None:
             staged_models=staged_models,
             trifecta_v2_model=trifecta_v3_model,
             use_v2=True,
-            rerank_top_n=args.eval_rerank_top_n,
+            rerank_top_n=eval_rerank_top_n,
         ),
     }
     artifacts["metrics_path"].write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -585,7 +588,7 @@ def evaluate_trifecta_full_valid_main() -> None:
     ensemble_weights = load_ensemble_weights(artifacts["ensemble_weights_path"])
     v1_calibrator = load_trifecta_calibrator(artifacts["trifecta_calibrator_path"])
     v3_calibrator = load_optional_trifecta_calibrator(artifacts["trifecta_v3_calibrator_path"])
-    rerank_top_n = int(config.get("inference", {}).get("trifecta_rerank_top_n", 10))
+    rerank_top_n = get_rerank_top_n(trifecta_v3_model, get_default_rerank_top_n(config))
 
     valid_metrics = evaluate_trifecta_in_chunks(
         valid_df,

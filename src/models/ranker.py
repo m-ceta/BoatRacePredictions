@@ -150,6 +150,13 @@ def get_phase3_settings(config: dict | None = None) -> dict[str, Any]:
     return settings
 
 
+def get_default_rerank_top_n(config: dict | None = None) -> int:
+    top_n_grid = get_phase3_settings(config)["rerank"].get("top_n_grid", [10])
+    if not top_n_grid:
+        return 10
+    return int(top_n_grid[0])
+
+
 def infer_latest_available_race_date(training_table: pd.DataFrame) -> pd.Timestamp | None:
     if "race_date" not in training_table.columns or training_table.empty:
         return None
@@ -338,6 +345,12 @@ def get_rank_penalty_start(model: Any) -> int:
     return int(DEFAULT_PHASE3_SETTINGS["rerank"]["rank_penalty_start"])
 
 
+def get_rerank_top_n(model: Any, fallback: int | None = None) -> int | None:
+    if is_trifecta_v2_bundle(model) and model.get("rerank_top_n") is not None:
+        return int(model["rerank_top_n"])
+    return None if fallback is None else int(fallback)
+
+
 def with_conservative_rerank_weight(model: Any, weight: float) -> Any:
     if not is_trifecta_v2_bundle(model):
         return model
@@ -352,6 +365,14 @@ def with_rank_penalty_settings(model: Any, strength: float, start_rank: int) -> 
     updated = dict(model)
     updated["rank_penalty_strength"] = float(strength)
     updated["rank_penalty_start"] = int(start_rank)
+    return updated
+
+
+def with_rerank_top_n(model: Any, top_n: int) -> Any:
+    if not is_trifecta_v2_bundle(model):
+        return model
+    updated = dict(model)
+    updated["rerank_top_n"] = int(top_n)
     return updated
 
 
@@ -2417,6 +2438,7 @@ def train_trifecta_v2_model(
         "conservative_v1_weight": float(phase3_settings["rerank"]["default_conservative_weight"]),
         "rank_penalty_strength": float(phase3_settings["rerank"]["default_rank_penalty_strength"]),
         "rank_penalty_start": int(phase3_settings["rerank"]["rank_penalty_start"]),
+        "rerank_top_n": get_default_rerank_top_n(config),
     }
 
 
@@ -2602,6 +2624,7 @@ def train_phase3_conditional_trifecta_model(
     bundle["conservative_v1_weight"] = float(phase3_settings["rerank"]["default_conservative_weight"])
     bundle["rank_penalty_strength"] = float(phase3_settings["rerank"]["default_rank_penalty_strength"])
     bundle["rank_penalty_start"] = int(phase3_settings["rerank"]["rank_penalty_start"])
+    bundle["rerank_top_n"] = get_default_rerank_top_n(config)
     return bundle
 
 
