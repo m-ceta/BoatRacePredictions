@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 
 from src.models.ranker import (
+    blend_conservative_rerank_scores,
     enumerate_trifecta_probabilities_from_scores,
     infer_feature_columns,
     predict_race_order,
@@ -151,3 +152,32 @@ def test_restrict_trifecta_candidates_for_rerank_does_not_force_actual_inclusion
     assert restricted["trifecta"].tolist() == ["1-2-3", "1-3-2"]
     assert np.isclose(restricted["probability_v1"].sum(), 1.0)
     assert np.isclose(restricted["probability_v2"].sum(), 1.0)
+
+
+def test_conservative_rerank_blend_keeps_higher_scores_better() -> None:
+    base = np.asarray([0.9, 0.8, 0.7, 0.6], dtype=float)
+    update = np.asarray([0.9, 0.7, 0.8, 0.6], dtype=float)
+
+    blended = blend_conservative_rerank_scores(
+        base,
+        update,
+        conservative_weight=0.95,
+        rank_penalty_strength=0.0,
+    )
+
+    assert int(np.argmax(blended)) == 0
+    assert blended[0] > blended[-1]
+
+
+def test_rerank_blend_uses_update_direction_when_not_conservative() -> None:
+    base = np.asarray([0.9, 0.8, 0.7, 0.6], dtype=float)
+    update = np.asarray([0.1, 0.2, 0.9, 0.3], dtype=float)
+
+    blended = blend_conservative_rerank_scores(
+        base,
+        update,
+        conservative_weight=0.0,
+        rank_penalty_strength=0.0,
+    )
+
+    assert int(np.argmax(blended)) == 2

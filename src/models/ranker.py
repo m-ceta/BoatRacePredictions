@@ -370,14 +370,17 @@ def blend_conservative_rerank_scores(
     if np.allclose(update, update[0]):
         return base
     base_rank_order = pd.Series(base).rank(ascending=False, method="first").to_numpy(dtype=float)
-    base_rank = pd.Series(base).rank(ascending=False, method="average", pct=True).to_numpy(dtype=float)
-    update_rank = pd.Series(update).rank(ascending=False, method="average", pct=True).to_numpy(dtype=float)
+    denom = float(max(len(base) - 1, 1))
+    base_rank = pd.Series(base).rank(ascending=False, method="average").to_numpy(dtype=float)
+    update_rank = pd.Series(update).rank(ascending=False, method="average").to_numpy(dtype=float)
+    base_rank_score = 1.0 - ((base_rank - 1.0) / denom)
+    update_rank_score = 1.0 - ((update_rank - 1.0) / denom)
     rank_penalty_strength = float(max(rank_penalty_strength, 0.0))
     if rank_penalty_strength > 0.0 and len(base_rank_order) > 0:
-        denom = float(max(len(base_rank_order) - int(rank_penalty_start), 1))
-        overflow = np.clip((base_rank_order - float(rank_penalty_start)) / denom, 0.0, 1.0)
-        update_rank = np.clip(update_rank - (overflow * rank_penalty_strength), 0.0, 1.0)
-    return conservative_weight * base_rank + (1.0 - conservative_weight) * update_rank
+        penalty_denom = float(max(len(base_rank_order) - int(rank_penalty_start), 1))
+        overflow = np.clip((base_rank_order - float(rank_penalty_start)) / penalty_denom, 0.0, 1.0)
+        update_rank_score = np.clip(update_rank_score - (overflow * rank_penalty_strength), 0.0, 1.0)
+    return conservative_weight * base_rank_score + (1.0 - conservative_weight) * update_rank_score
 
 
 def train_ranker(
