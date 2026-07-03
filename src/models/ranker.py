@@ -101,6 +101,13 @@ DEFAULT_PHASE3_SETTINGS = {
         "rank_penalty_strength_grid": [0.0, 0.01, 0.02, 0.03],
         "default_rank_penalty_strength": 0.02,
         "rank_penalty_start": 5,
+        "log_loss_max_delta_vs_v1": 0.03,
+        "objective_top5_weight": 0.35,
+        "objective_top3_weight": 0.25,
+        "objective_top1_weight": 0.15,
+        "objective_mrr_weight": 0.15,
+        "objective_log_loss_weight": 0.10,
+        "objective_log_loss_excess_penalty": 1.0,
     },
     "calibration": {
         "window_days_options": [30, 60, 90],
@@ -373,6 +380,29 @@ def with_rerank_top_n(model: Any, top_n: int) -> Any:
         return model
     updated = dict(model)
     updated["rerank_top_n"] = int(top_n)
+    return updated
+
+
+def with_calibration_window_days(model: Any, window_days: int) -> Any:
+    if not is_trifecta_v2_bundle(model):
+        return model
+    updated = dict(model)
+    updated["calibration_window_days"] = int(window_days)
+    return updated
+
+
+def with_phase3_optimization_metadata(
+    model: Any,
+    rerank_optimization: dict[str, Any] | None = None,
+    calibration_optimization: dict[str, Any] | None = None,
+) -> Any:
+    if not is_trifecta_v2_bundle(model):
+        return model
+    updated = dict(model)
+    updated["phase3_optimization"] = {
+        "rerank": rerank_optimization or {},
+        "calibration": calibration_optimization or {},
+    }
     return updated
 
 
@@ -1914,6 +1944,38 @@ def fit_model_trifecta_calibrator(
     return calibrator
 
 
+def _metric_value(metrics: dict[str, Any], key: str) -> float:
+    return float(metrics.get(key, 0.0) or 0.0)
+
+
+def _rerank_metric_value(metrics: dict[str, Any], key: str) -> float:
+    rerank_metrics = metrics.get("rerank_metrics", {})
+    if not isinstance(rerank_metrics, dict):
+        return 0.0
+    return float(rerank_metrics.get(key, 0.0) or 0.0)
+
+
+def _phase3_tuning_objective(
+    metrics: dict[str, Any],
+    baseline_metrics: dict[str, Any],
+    settings: dict[str, Any],
+) -> tuple[float, float, float, bool]:
+    baseline_log_loss = _metric_value(baseline_metrics, "log_loss")
+    log_loss = _metric_value(metrics, "log_loss")
+    max_delta = float(settings.get("log_loss_max_delta_vs_v1", 0.03))
+    allowed_log_loss = baseline_log_loss + max_delta
+    log_loss_excess = max(log_loss - allowed_log_loss, 0.0)
+    objective = (
+        float(settings.get("objective_top5_weight", 0.35)) * _metric_value(metrics, "top5_hit_rate")
+        + float(settings.get("objective_top3_weight", 0.25)) * _metric_value(metrics, "top3_hit_rate")
+        + float(settings.get("objective_top1_weight", 0.15)) * _metric_value(metrics, "top1_hit_rate")
+        + float(settings.get("objective_mrr_weight", 0.15)) * _rerank_metric_value(metrics, "rerank_mrr")
+        - float(settings.get("objective_log_loss_weight", 0.10)) * log_loss
+        - float(settings.get("objective_log_loss_excess_penalty", 1.0)) * log_loss_excess
+    )
+    return float(objective), float(allowed_log_loss), float(log_loss_excess), bool(log_loss_excess <= 0.0)
+
+
 def optimize_rerank_inference_settings(
     models: dict[str, Any],
     weights: dict[str, float],
@@ -1928,25 +1990,60 @@ def optimize_rerank_inference_settings(
     top_n_candidates: list[int] | None = None,
     conservative_weights: list[float] | None = None,
     rank_penalty_strengths: list[float] | None = None,
-) -> dict[str, float]:
+    config: dict | None = None,
+) -> dict[str, Any]:
+    rerank_settings = get_phase3_settings(config)["rerank"]
     if valid_df.empty or trifecta_v2_model is None or not is_trifecta_v2_bundle(trifecta_v2_model):
+        default_top_n = get_default_rerank_top_n(config)
         return {
-            "best_top_n": 10.0,
+            "best_top_n": float(default_top_n),
             "best_conservative_weight": get_conservative_rerank_weight(trifecta_v2_model),
             "best_rank_penalty_strength": get_rank_penalty_strength(trifecta_v2_model),
             "objective": 0.0,
+            "status": "skipped",
         }
 
-    top_n_grid = top_n_candidates or list(DEFAULT_PHASE3_SETTINGS["rerank"]["top_n_grid"])
-    weight_grid = conservative_weights or list(DEFAULT_PHASE3_SETTINGS["rerank"]["weight_grid"])
-    penalty_grid = rank_penalty_strengths or list(DEFAULT_PHASE3_SETTINGS["rerank"]["rank_penalty_strength_grid"])
+    top_n_grid = top_n_candidates or list(rerank_settings["top_n_grid"])
+    weight_grid = conservative_weights or list(rerank_settings["weight_grid"])
+    penalty_grid = rank_penalty_strengths or list(rerank_settings["rank_penalty_strength_grid"])
     best: dict[str, float] = {
         "best_top_n": float(top_n_grid[0]),
         "best_conservative_weight": float(weight_grid[0]),
         "best_rank_penalty_strength": float(penalty_grid[0]),
         "objective": float("-inf"),
     }
+    baseline_by_top_n: dict[int, dict[str, Any]] = {}
     for top_n in top_n_grid:
+        top_n_int = int(top_n)
+        baseline_calibrator = fit_model_trifecta_calibrator(
+            models,
+            weights,
+            valid_df,
+            feature_columns,
+            categorical_columns,
+            classifier_models=classifier_models,
+            flow_model=flow_model,
+            flow_classes=flow_classes,
+            staged_models=staged_models,
+            trifecta_v2_model=trifecta_v2_model,
+            use_v2=False,
+            rerank_top_n=top_n_int,
+        )
+        baseline_by_top_n[top_n_int] = evaluate_trifecta(
+            models,
+            weights,
+            baseline_calibrator,
+            valid_df,
+            feature_columns,
+            categorical_columns,
+            classifier_models=classifier_models,
+            flow_model=flow_model,
+            flow_classes=flow_classes,
+            staged_models=staged_models,
+            trifecta_v2_model=trifecta_v2_model,
+            use_v2=False,
+            rerank_top_n=top_n_int,
+        )
         for conservative_weight in weight_grid:
             for rank_penalty_strength in penalty_grid:
                 candidate_model = with_conservative_rerank_weight(trifecta_v2_model, conservative_weight)
@@ -1967,7 +2064,7 @@ def optimize_rerank_inference_settings(
                     staged_models=staged_models,
                     trifecta_v2_model=candidate_model,
                     use_v2=True,
-                    rerank_top_n=int(top_n),
+                    rerank_top_n=top_n_int,
                 )
                 metrics = evaluate_trifecta(
                     models,
@@ -1982,25 +2079,29 @@ def optimize_rerank_inference_settings(
                     staged_models=staged_models,
                     trifecta_v2_model=candidate_model,
                     use_v2=True,
-                    rerank_top_n=int(top_n),
+                    rerank_top_n=top_n_int,
                 )
-                objective = (
-                    0.65 * float(metrics.get("top5_hit_rate", 0.0))
-                    + 0.20 * float(metrics.get("top3_hit_rate", 0.0))
-                    + 0.10 * float(metrics.get("top1_hit_rate", 0.0))
-                    - 0.015 * float(metrics.get("log_loss", 0.0))
+                objective, allowed_log_loss, log_loss_excess, within_guard = _phase3_tuning_objective(
+                    metrics,
+                    baseline_by_top_n[top_n_int],
+                    rerank_settings,
                 )
                 if objective > best["objective"]:
                     best = {
-                        "best_top_n": float(top_n),
+                        "best_top_n": float(top_n_int),
                         "best_conservative_weight": float(conservative_weight),
                         "best_rank_penalty_strength": float(rank_penalty_strength),
                         "objective": float(objective),
+                        "v1_log_loss": float(baseline_by_top_n[top_n_int].get("log_loss", 0.0)),
+                        "allowed_log_loss": float(allowed_log_loss),
+                        "log_loss_excess": float(log_loss_excess),
+                        "within_log_loss_guard": float(within_guard),
                         "top1_hit_rate": float(metrics.get("top1_hit_rate", 0.0)),
                         "top3_hit_rate": float(metrics.get("top3_hit_rate", 0.0)),
                         "top5_hit_rate": float(metrics.get("top5_hit_rate", 0.0)),
                         "top10_hit_rate": float(metrics.get("top10_hit_rate", 0.0)),
                         "log_loss": float(metrics.get("log_loss", 0.0)),
+                        "rerank_mrr": _rerank_metric_value(metrics, "rerank_mrr"),
                     }
     return best
 
@@ -2018,25 +2119,56 @@ def optimize_phase3_calibration_window(
     trifecta_v2_model: Any | None = None,
     rerank_top_n: int | None = None,
     window_days_options: list[int] | None = None,
-) -> dict[str, float]:
+    config: dict | None = None,
+) -> dict[str, Any]:
+    phase3_settings = get_phase3_settings(config)
     if valid_df.empty:
-        return {"best_window_days": float(DEFAULT_PHASE3_SETTINGS["calibration"]["default_window_days"]), "objective": 0.0}
+        return {"best_window_days": float(phase3_settings["calibration"]["default_window_days"]), "objective": 0.0}
     unique_dates = sorted(pd.to_datetime(valid_df["race_date"]).dropna().dt.normalize().unique().tolist())
     if len(unique_dates) < 4:
-        default_window = int(DEFAULT_PHASE3_SETTINGS["calibration"]["default_window_days"])
+        default_window = int(phase3_settings["calibration"]["default_window_days"])
         return {"best_window_days": float(default_window), "objective": 0.0}
     split_index = max(int(len(unique_dates) * 0.7), 1)
     split_date = pd.Timestamp(unique_dates[min(split_index - 1, len(unique_dates) - 1)])
     calibration_source = valid_df[pd.to_datetime(valid_df["race_date"]) <= split_date].copy()
     eval_df = valid_df[pd.to_datetime(valid_df["race_date"]) > split_date].copy()
     if calibration_source.empty or eval_df.empty:
-        default_window = int(DEFAULT_PHASE3_SETTINGS["calibration"]["default_window_days"])
+        default_window = int(phase3_settings["calibration"]["default_window_days"])
         return {"best_window_days": float(default_window), "objective": 0.0}
+    baseline_calibrator = fit_model_trifecta_calibrator(
+        models,
+        weights,
+        calibration_source,
+        feature_columns,
+        categorical_columns,
+        classifier_models=classifier_models,
+        flow_model=flow_model,
+        flow_classes=flow_classes,
+        staged_models=staged_models,
+        trifecta_v2_model=trifecta_v2_model,
+        use_v2=False,
+        rerank_top_n=rerank_top_n,
+    )
+    baseline_metrics = evaluate_trifecta(
+        models,
+        weights,
+        baseline_calibrator,
+        eval_df,
+        feature_columns,
+        categorical_columns,
+        classifier_models=classifier_models,
+        flow_model=flow_model,
+        flow_classes=flow_classes,
+        staged_models=staged_models,
+        trifecta_v2_model=trifecta_v2_model,
+        use_v2=False,
+        rerank_top_n=rerank_top_n,
+    )
     best = {
-        "best_window_days": float(DEFAULT_PHASE3_SETTINGS["calibration"]["default_window_days"]),
+        "best_window_days": float(phase3_settings["calibration"]["default_window_days"]),
         "objective": float("-inf"),
     }
-    for window_days in (window_days_options or list(DEFAULT_PHASE3_SETTINGS["calibration"]["window_days_options"])):
+    for window_days in (window_days_options or list(phase3_settings["calibration"]["window_days_options"])):
         calibrator = fit_model_trifecta_calibrator(
             models,
             weights,
@@ -2067,18 +2199,24 @@ def optimize_phase3_calibration_window(
             use_v2=True,
             rerank_top_n=rerank_top_n,
         )
-        objective = (
-            0.75 * float(metrics.get("top5_hit_rate", 0.0))
-            + 0.15 * float(metrics.get("top3_hit_rate", 0.0))
-            - 0.02 * float(metrics.get("log_loss", 0.0))
+        objective, allowed_log_loss, log_loss_excess, within_guard = _phase3_tuning_objective(
+            metrics,
+            baseline_metrics,
+            phase3_settings["rerank"],
         )
         if objective > best["objective"]:
             best = {
                 "best_window_days": float(window_days),
                 "objective": float(objective),
+                "v1_log_loss": float(baseline_metrics.get("log_loss", 0.0)),
+                "allowed_log_loss": float(allowed_log_loss),
+                "log_loss_excess": float(log_loss_excess),
+                "within_log_loss_guard": float(within_guard),
+                "top1_hit_rate": float(metrics.get("top1_hit_rate", 0.0)),
                 "top3_hit_rate": float(metrics.get("top3_hit_rate", 0.0)),
                 "top5_hit_rate": float(metrics.get("top5_hit_rate", 0.0)),
                 "log_loss": float(metrics.get("log_loss", 0.0)),
+                "rerank_mrr": _rerank_metric_value(metrics, "rerank_mrr"),
             }
     return best
 
@@ -2628,6 +2766,200 @@ def train_phase3_conditional_trifecta_model(
     return bundle
 
 
+def _clip01(value: float) -> float:
+    return float(np.clip(value, 0.0, 1.0))
+
+
+def _row_numeric(row: pd.Series, *columns: str, default: float = 0.0) -> float:
+    for column in columns:
+        value = pd.to_numeric(row.get(column), errors="coerce")
+        if pd.notna(value):
+            return float(value)
+    return float(default)
+
+
+def _race_scale(values: pd.Series, lower_is_better: bool = False) -> pd.Series:
+    numeric = pd.to_numeric(values, errors="coerce")
+    if numeric.notna().sum() < 2:
+        return pd.Series(0.0, index=values.index)
+    min_value = float(numeric.min())
+    max_value = float(numeric.max())
+    if np.isclose(max_value, min_value):
+        return pd.Series(0.0, index=values.index)
+    scaled = (numeric - min_value) / (max_value - min_value)
+    if lower_is_better:
+        scaled = 1.0 - scaled
+    return scaled.fillna(0.0).astype(float)
+
+
+def _phase3_scenario_context(lane_frame: pd.DataFrame) -> dict[str, float]:
+    if lane_frame.empty:
+        return {
+            "escape_strength": 0.0,
+            "inner_collapse_risk": 0.0,
+            "sashi_pressure_2": 0.0,
+            "makuri_pressure_3_4": 0.0,
+            "makurizashi_pressure": 0.0,
+            "outer_sweep_risk": 0.0,
+            "attack_lane": 0.0,
+            "attack_pressure": 0.0,
+        }
+
+    frame = lane_frame.copy()
+    frame["rank_prob_ctx"] = frame.apply(lambda row: _row_numeric(row, "win_probability_like"), axis=1)
+    frame["top2_prob_ctx"] = frame.apply(lambda row: _row_numeric(row, "top2_prob"), axis=1)
+    frame["top3_prob_ctx"] = frame.apply(lambda row: _row_numeric(row, "top3_prob"), axis=1)
+    frame["exact1_prob_ctx"] = frame.apply(lambda row: _row_numeric(row, "exact1_prob", "win_prob"), axis=1)
+    frame["nige_prob_ctx"] = frame.apply(lambda row: _row_numeric(row, "flow_prob_nige"), axis=1)
+    frame["sashi_prob_ctx"] = frame.apply(lambda row: _row_numeric(row, "flow_prob_sashi"), axis=1)
+    frame["makuri_prob_ctx"] = frame.apply(lambda row: _row_numeric(row, "flow_prob_makuri"), axis=1)
+    frame["makurizashi_prob_ctx"] = frame.apply(lambda row: _row_numeric(row, "flow_prob_makurizashi"), axis=1)
+    frame["machine_ctx"] = frame.apply(
+        lambda row: _row_numeric(row, "motor_top2_rate_hist", "motor_prev_top3_rate", "motor_place_rate")
+        + _row_numeric(row, "boat_top2_rate_hist", "boat_prev_top3_rate", "boat_place_rate"),
+        axis=1,
+    )
+    frame["st_ctx"] = frame.apply(
+        lambda row: _row_numeric(row, "avg_st_last5", "racer_prev_avg_st_5", "racer_prev_avg_st"),
+        axis=1,
+    )
+    frame["exhibition_ctx"] = frame.apply(lambda row: _row_numeric(row, "exhibition_time"), axis=1)
+    frame["st_adv_ctx"] = _race_scale(frame["st_ctx"], lower_is_better=True)
+    frame["exhibition_adv_ctx"] = _race_scale(frame["exhibition_ctx"], lower_is_better=True)
+    frame["machine_adv_ctx"] = _race_scale(frame["machine_ctx"])
+
+    attack_scores: dict[int, float] = {}
+    for lane_value, row in frame.iterrows():
+        lane = int(lane_value)
+        lane_bias = 0.0
+        if lane == 2:
+            lane_bias = 0.08
+        elif lane in (3, 4):
+            lane_bias = 0.12
+        elif lane >= 5:
+            lane_bias = 0.05
+        attack_scores[lane] = _clip01(
+            0.25 * float(row["rank_prob_ctx"])
+            + 0.20 * float(row["top2_prob_ctx"])
+            + 0.18 * float(row["sashi_prob_ctx"])
+            + 0.22 * max(float(row["makuri_prob_ctx"]), float(row["makurizashi_prob_ctx"]))
+            + 0.07 * float(row["st_adv_ctx"])
+            + 0.05 * float(row["exhibition_adv_ctx"])
+            + 0.03 * float(row["machine_adv_ctx"])
+            + lane_bias
+        )
+
+    outer_attack_scores = {lane: score for lane, score in attack_scores.items() if lane != 1}
+    attack_lane = max(outer_attack_scores, key=outer_attack_scores.get) if outer_attack_scores else 0
+    attack_pressure = float(outer_attack_scores.get(attack_lane, 0.0))
+    lane1 = frame.loc[1] if 1 in frame.index else None
+    if lane1 is None:
+        escape_strength = 0.0
+        lane1_top2 = 0.0
+    else:
+        lane1_top2 = float(lane1["top2_prob_ctx"])
+        escape_base = _clip01(
+            0.32 * float(lane1["exact1_prob_ctx"])
+            + 0.24 * float(lane1["rank_prob_ctx"])
+            + 0.22 * float(lane1["nige_prob_ctx"])
+            + 0.08 * float(lane1["st_adv_ctx"])
+            + 0.06 * float(lane1["exhibition_adv_ctx"])
+            + 0.08 * float(lane1["machine_adv_ctx"])
+        )
+        escape_strength = _clip01(escape_base * (1.0 - 0.35 * attack_pressure))
+
+    lane2 = frame.loc[2] if 2 in frame.index else None
+    if lane2 is None:
+        sashi_pressure_2 = 0.0
+    else:
+        sashi_pressure_2 = _clip01(
+            0.38 * float(lane2["sashi_prob_ctx"])
+            + 0.24 * float(lane2["rank_prob_ctx"])
+            + 0.18 * float(lane2["top2_prob_ctx"])
+            + 0.10 * float(lane2["st_adv_ctx"])
+            + 0.05 * float(lane2["exhibition_adv_ctx"])
+            + 0.05 * float(lane2["machine_adv_ctx"])
+        )
+
+    makuri_pressure_3_4 = max(
+        (
+            _clip01(
+                0.34 * float(frame.loc[lane, "makuri_prob_ctx"])
+                + 0.20 * float(frame.loc[lane, "makurizashi_prob_ctx"])
+                + 0.20 * float(frame.loc[lane, "rank_prob_ctx"])
+                + 0.12 * float(frame.loc[lane, "top2_prob_ctx"])
+                + 0.08 * float(frame.loc[lane, "st_adv_ctx"])
+                + 0.06 * float(frame.loc[lane, "exhibition_adv_ctx"])
+            )
+            for lane in (3, 4)
+            if lane in frame.index
+        ),
+        default=0.0,
+    )
+    makurizashi_pressure = max(
+        (
+            _clip01(
+                0.42 * float(frame.loc[lane, "makurizashi_prob_ctx"])
+                + 0.18 * float(frame.loc[lane, "makuri_prob_ctx"])
+                + 0.18 * float(frame.loc[lane, "rank_prob_ctx"])
+                + 0.12 * float(frame.loc[lane, "top3_prob_ctx"])
+                + 0.10 * float(frame.loc[lane, "exhibition_adv_ctx"])
+            )
+            for lane in (3, 4, 5)
+            if lane in frame.index
+        ),
+        default=0.0,
+    )
+    outer_sweep_risk = _clip01(
+        0.35 * max((attack_scores.get(lane, 0.0) for lane in (4, 5, 6)), default=0.0)
+        + 0.35 * makurizashi_pressure
+        + 0.30 * max((float(frame.loc[lane, "top3_prob_ctx"]) for lane in (4, 5, 6) if lane in frame.index), default=0.0)
+    )
+    inner_collapse_risk = _clip01((1.0 - escape_strength) * (0.45 + 0.35 * attack_pressure) + 0.20 * (1.0 - lane1_top2))
+
+    return {
+        "escape_strength": escape_strength,
+        "inner_collapse_risk": inner_collapse_risk,
+        "sashi_pressure_2": sashi_pressure_2,
+        "makuri_pressure_3_4": makuri_pressure_3_4,
+        "makurizashi_pressure": makurizashi_pressure,
+        "outer_sweep_risk": outer_sweep_risk,
+        "attack_lane": float(attack_lane),
+        "attack_pressure": attack_pressure,
+    }
+
+
+def _phase3_line_features(
+    scenario: dict[str, float],
+    first_lane: int,
+    second_lane: int | None = None,
+    third_lane: int | None = None,
+) -> dict[str, float]:
+    lanes = [lane for lane in (first_lane, second_lane, third_lane) if lane is not None]
+    attack_lane = int(scenario.get("attack_lane", 0))
+    attack_in_line = attack_lane in lanes
+    escape_line_fit = float(first_lane == 1) * scenario["escape_strength"]
+    sashi_line_fit = float(first_lane == 2 and (second_lane in (1, 3, 4))) * scenario["sashi_pressure_2"]
+    makuri_line_fit = float(first_lane in (3, 4)) * scenario["makuri_pressure_3_4"]
+    makurizashi_line_fit = float(first_lane in (3, 4, 5) and (second_lane is None or second_lane <= 4)) * scenario["makurizashi_pressure"]
+    outer_follow_fit = float(any(lane >= 4 for lane in lanes[1:])) * scenario["outer_sweep_risk"]
+    attack_line_fit = float(first_lane == attack_lane or (second_lane == attack_lane and first_lane == 1)) * scenario["attack_pressure"]
+    scenario_mismatch_penalty = _clip01(
+        float(scenario["escape_strength"] > 0.45 and first_lane != 1) * scenario["escape_strength"]
+        + float(scenario["inner_collapse_risk"] > 0.45 and first_lane == 1) * scenario["inner_collapse_risk"]
+        + float(scenario["attack_pressure"] > 0.45 and not attack_in_line) * scenario["attack_pressure"]
+    )
+    return {
+        "escape_line_fit": escape_line_fit,
+        "sashi_line_fit": sashi_line_fit,
+        "makuri_line_fit": makuri_line_fit,
+        "makurizashi_line_fit": makurizashi_line_fit,
+        "outer_follow_fit": outer_follow_fit,
+        "attack_line_fit": attack_line_fit,
+        "scenario_mismatch_penalty": scenario_mismatch_penalty,
+    }
+
+
 def build_trifecta_feature_frame(
     race_df: pd.DataFrame,
     v1_df: pd.DataFrame,
@@ -2650,6 +2982,7 @@ def build_trifecta_feature_frame(
     )
     lane_frame["exact_second_prob"] = top2_exact
     lane_frame["exact_third_prob"] = top3_exact
+    scenario = _phase3_scenario_context(lane_frame)
 
     v1_map = dict(zip(v1_df["trifecta"], v1_df[v1_col]))
     v2_map = dict(zip(v2_df["trifecta"], v2_df[v2_col]))
@@ -2659,6 +2992,7 @@ def build_trifecta_feature_frame(
         first_row = lane_frame.loc[first]
         second_row = lane_frame.loc[second]
         third_row = lane_frame.loc[third]
+        line_features = _phase3_line_features(scenario, first, second, third)
         rows.append(
             {
                 "raw_probability_v1": float(v1_map[trifecta]),
@@ -2718,6 +3052,15 @@ def build_trifecta_feature_frame(
                 "makuri_alignment": float((first >= 3) * (pd.to_numeric(first_row.get("flow_prob_makuri"), errors="coerce") or 0.0)),
                 "makurizashi_alignment": float((first >= 3) * (pd.to_numeric(first_row.get("flow_prob_makurizashi"), errors="coerce") or 0.0)),
                 "outer_attack_bias": float((first >= 4) + (second >= 4)),
+                "escape_strength": scenario["escape_strength"],
+                "inner_collapse_risk": scenario["inner_collapse_risk"],
+                "sashi_pressure_2": scenario["sashi_pressure_2"],
+                "makuri_pressure_3_4": scenario["makuri_pressure_3_4"],
+                "makurizashi_pressure": scenario["makurizashi_pressure"],
+                "outer_sweep_risk": scenario["outer_sweep_risk"],
+                "attack_lane": scenario["attack_lane"],
+                "attack_pressure": scenario["attack_pressure"],
+                **line_features,
             }
         )
     frame = pd.DataFrame(rows)
@@ -2731,9 +3074,11 @@ def build_phase3_second_feature_frame(race_df: pd.DataFrame, first_lane: int) ->
     if first_lane not in lane_frame.index:
         return pd.DataFrame()
     first_row = lane_frame.loc[first_lane]
+    scenario = _phase3_scenario_context(lane_frame)
     rows: list[dict[str, float]] = []
     for second_lane in [int(lane) for lane in lane_frame.index if int(lane) != int(first_lane)]:
         second_row = lane_frame.loc[second_lane]
+        line_features = _phase3_line_features(scenario, int(first_lane), int(second_lane))
         first_rank_prob = float(pd.to_numeric(first_row.get("win_probability_like"), errors="coerce") or 0.0)
         second_rank_prob = float(pd.to_numeric(second_row.get("win_probability_like"), errors="coerce") or 0.0)
         first_top2_prob = float(pd.to_numeric(first_row.get("top2_prob"), errors="coerce") or 0.0)
@@ -2787,6 +3132,15 @@ def build_phase3_second_feature_frame(race_df: pd.DataFrame, first_lane: int) ->
                 "second_machine_strength": second_motor + second_boat,
                 "inside_follow_alignment": float((int(first_lane) <= 2 and int(second_lane) <= 4) * second_course_top3),
                 "outside_chase_alignment": float((int(first_lane) >= 3 and int(second_lane) >= 4) * second_top2_prob),
+                "escape_strength": scenario["escape_strength"],
+                "inner_collapse_risk": scenario["inner_collapse_risk"],
+                "sashi_pressure_2": scenario["sashi_pressure_2"],
+                "makuri_pressure_3_4": scenario["makuri_pressure_3_4"],
+                "makurizashi_pressure": scenario["makurizashi_pressure"],
+                "outer_sweep_risk": scenario["outer_sweep_risk"],
+                "attack_lane": scenario["attack_lane"],
+                "attack_pressure": scenario["attack_pressure"],
+                **line_features,
             }
         )
     return pd.DataFrame(rows)
@@ -2798,10 +3152,12 @@ def build_phase3_third_feature_frame(race_df: pd.DataFrame, first_lane: int, sec
         return pd.DataFrame()
     first_row = lane_frame.loc[first_lane]
     second_row = lane_frame.loc[second_lane]
+    scenario = _phase3_scenario_context(lane_frame)
     rows: list[dict[str, float]] = []
     excluded = {int(first_lane), int(second_lane)}
     for third_lane in [int(lane) for lane in lane_frame.index if int(lane) not in excluded]:
         third_row = lane_frame.loc[third_lane]
+        line_features = _phase3_line_features(scenario, int(first_lane), int(second_lane), int(third_lane))
         first_rank_prob = float(pd.to_numeric(first_row.get("win_probability_like"), errors="coerce") or 0.0)
         second_rank_prob = float(pd.to_numeric(second_row.get("win_probability_like"), errors="coerce") or 0.0)
         third_rank_prob = float(pd.to_numeric(third_row.get("win_probability_like"), errors="coerce") or 0.0)
@@ -2853,6 +3209,15 @@ def build_phase3_third_feature_frame(race_df: pd.DataFrame, first_lane: int, sec
                 "third_residual_top3": max(third_top3_prob - second_top2_prob, 0.0),
                 "third_inside_scrap_alignment": float((int(third_lane) <= 4) * third_course_top3),
                 "third_outer_scrap_alignment": float((int(third_lane) >= 4) * third_top3_prob),
+                "escape_strength": scenario["escape_strength"],
+                "inner_collapse_risk": scenario["inner_collapse_risk"],
+                "sashi_pressure_2": scenario["sashi_pressure_2"],
+                "makuri_pressure_3_4": scenario["makuri_pressure_3_4"],
+                "makurizashi_pressure": scenario["makurizashi_pressure"],
+                "outer_sweep_risk": scenario["outer_sweep_risk"],
+                "attack_lane": scenario["attack_lane"],
+                "attack_pressure": scenario["attack_pressure"],
+                **line_features,
             }
         )
     return pd.DataFrame(rows)

@@ -5,6 +5,9 @@ import pandas as pd
 
 from src.models.ranker import (
     blend_conservative_rerank_scores,
+    build_phase3_second_feature_frame,
+    build_phase3_third_feature_frame,
+    build_trifecta_feature_frame,
     enumerate_trifecta_probabilities_from_scores,
     get_rerank_top_n,
     infer_feature_columns,
@@ -192,3 +195,55 @@ def test_rerank_top_n_prefers_model_value_over_fallback() -> None:
 
     assert get_rerank_top_n(updated, 10) == 16
     assert get_rerank_top_n(model, 10) == 10
+
+
+def test_phase3_scenario_features_are_added_to_rerank_frames() -> None:
+    race_df = pd.DataFrame(
+        {
+            "race_id": ["R1"] * 6,
+            "lane": [1, 2, 3, 4, 5, 6],
+            "win_probability_like": [0.42, 0.20, 0.16, 0.10, 0.07, 0.05],
+            "win_prob": [0.46, 0.18, 0.14, 0.10, 0.07, 0.05],
+            "top2_prob": [0.72, 0.42, 0.35, 0.25, 0.17, 0.12],
+            "top3_prob": [0.88, 0.65, 0.55, 0.40, 0.29, 0.21],
+            "exact1_prob": [0.46, 0.18, 0.14, 0.10, 0.07, 0.05],
+            "exact2_prob": [0.26, 0.24, 0.21, 0.15, 0.10, 0.07],
+            "exact3_prob": [0.16, 0.23, 0.20, 0.15, 0.12, 0.09],
+            "flow_prob_nige": [0.70, 0.03, 0.03, 0.02, 0.01, 0.01],
+            "flow_prob_sashi": [0.05, 0.45, 0.12, 0.09, 0.05, 0.03],
+            "flow_prob_makuri": [0.02, 0.06, 0.38, 0.30, 0.12, 0.07],
+            "flow_prob_makurizashi": [0.02, 0.07, 0.24, 0.32, 0.20, 0.12],
+            "racer_prev_avg_st_5": [0.12, 0.14, 0.11, 0.13, 0.16, 0.17],
+            "exhibition_time": [6.70, 6.74, 6.68, 6.73, 6.78, 6.80],
+            "motor_prev_top3_rate": [0.48, 0.40, 0.46, 0.44, 0.37, 0.35],
+            "boat_prev_top3_rate": [0.45, 0.38, 0.43, 0.42, 0.35, 0.34],
+        }
+    )
+    v1 = pd.DataFrame(
+        {
+            "trifecta": ["1-2-3", "3-1-4"],
+            "raw_probability": [0.5, 0.2],
+        }
+    )
+    v2 = pd.DataFrame(
+        {
+            "trifecta": ["1-2-3", "3-1-4"],
+            "raw_probability_v2": [0.45, 0.25],
+        }
+    )
+
+    trifecta_features = build_trifecta_feature_frame(race_df, v1, v2)
+    second_features = build_phase3_second_feature_frame(race_df, 1)
+    third_features = build_phase3_third_feature_frame(race_df, 1, 2)
+
+    expected = {
+        "escape_strength",
+        "attack_lane",
+        "attack_pressure",
+        "escape_line_fit",
+        "scenario_mismatch_penalty",
+    }
+    assert expected.issubset(trifecta_features.columns)
+    assert expected.issubset(second_features.columns)
+    assert expected.issubset(third_features.columns)
+    assert trifecta_features.loc[0, "escape_line_fit"] > 0.0

@@ -53,6 +53,8 @@ from src.models.ranker import (
     optimize_rerank_inference_settings,
     optimize_phase3_calibration_window,
     with_conservative_rerank_weight,
+    with_calibration_window_days,
+    with_phase3_optimization_metadata,
     with_rank_penalty_settings,
     with_rerank_top_n,
     infer_feature_columns,
@@ -334,6 +336,7 @@ def train_trifecta_v2_main() -> None:
             flow_classes=flow_classes,
             staged_models=staged_models,
             trifecta_v2_model=trifecta_v3_model,
+            config=config,
         )
         optimized_top_n = int(rerank_optimization.get("best_top_n", eval_rerank_top_n))
         optimized_weight = float(rerank_optimization.get("best_conservative_weight", 0.92))
@@ -354,8 +357,15 @@ def train_trifecta_v2_main() -> None:
         staged_models=staged_models,
         trifecta_v2_model=trifecta_v3_model,
         rerank_top_n=eval_rerank_top_n,
+        config=config,
     )
     calibration_window_days = int(calibration_optimization.get("best_window_days", 60))
+    trifecta_v3_model = with_calibration_window_days(trifecta_v3_model, calibration_window_days)
+    trifecta_v3_model = with_phase3_optimization_metadata(
+        trifecta_v3_model,
+        rerank_optimization=rerank_optimization,
+        calibration_optimization=calibration_optimization,
+    )
     trifecta_v2_calibrator = fit_model_trifecta_calibrator(
         models,
         ensemble_weights,

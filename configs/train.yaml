@@ -47,6 +47,13 @@ phase3:
     rank_penalty_strength_grid: [0.0, 0.01, 0.02, 0.03]
     default_rank_penalty_strength: 0.02
     rank_penalty_start: 5
+    log_loss_max_delta_vs_v1: 0.03
+    objective_top5_weight: 0.35
+    objective_top3_weight: 0.25
+    objective_top1_weight: 0.15
+    objective_mrr_weight: 0.15
+    objective_log_loss_weight: 0.10
+    objective_log_loss_excess_penalty: 1.0
   calibration:
     window_days_options: [30, 60, 90]
     default_window_days: 60
