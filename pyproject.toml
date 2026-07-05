@@ -39,6 +39,8 @@ boatrace-backtest-recent-week = "src.cli:backtest_recent_week_main"
 boatrace-webui = "src.webui:main"
 boatrace-webui-today = "src.webui_today:main"
 boatrace-package-download = "src.cli:package_download_main"
+boatrace-package-restore-local = "src.cli:package_restore_local_main"
+boatrace-package-export = "src.cli:package_export_main"
 
 [build-system]
 requires = ["setuptools>=68.0"]

@@ -36,8 +36,8 @@ echo [1/2] boatrace-train --config configs/train.yaml
 call boatrace-train --config configs/train.yaml
 if errorlevel 1 exit /b %errorlevel%
 
-echo [2/2] boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 1000 --eval-rerank-top-n 10
-call boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 1000 --eval-rerank-top-n 10
+echo [2/2] boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 3000
+call boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 3000
 if errorlevel 1 exit /b %errorlevel%
 
 echo train.bat completed successfully.

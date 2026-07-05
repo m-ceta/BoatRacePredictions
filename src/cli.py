@@ -18,9 +18,9 @@ from src.drive_restore import (
     DEFAULT_DATA_DRIVE_FILE_URL,
     DEFAULT_ROWDATA_DRIVE_FILE_URL,
     download_and_restore_packages,
+    export_package_archives,
+    restore_packages_from_zip_files,
 )
-from src.evaluation.metrics import compute_trifecta_rerank_metrics
-from src.features.builder import build_training_table, save_processed_tables
 from src.features.streaming_builder import compare_processed_tables
 from src.live import predict_today_race
 from src.recent_backtest import evaluate_recent_week_predictions
@@ -47,7 +47,6 @@ from src.models.ranker import (
     predict_trifecta_probabilities,
     predict_race_order,
     save_artifacts,
-    train_ranker,
     train_phase3_conditional_trifecta_model,
     train_trifecta_v2_model,
     optimize_rerank_inference_settings,
@@ -67,7 +66,6 @@ from src.models.ranker import (
 from src.models.training_device import with_training_device_override
 from src.models.flow import evaluate_flow_model, train_flow_model
 from src.models.staged import evaluate_staged_models, train_staged_models
-from src.parsers.bk_parser import parse_entry_file, parse_result_file
 
 
 def build_dataset_main() -> None:
@@ -139,6 +137,62 @@ def package_download_main() -> None:
         restore_rowdata=not args.skip_rowdata,
         restore_data=not args.skip_data,
         restore_artifacts=not args.skip_artifacts,
+    )
+    print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+
+
+def package_restore_local_main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--project-root", type=Path, default=Path("."))
+    parser.add_argument("--source-dir", type=Path, default=Path("."))
+    parser.add_argument("--rowdata-zip", type=Path, default=None)
+    parser.add_argument("--data-zip", type=Path, default=None)
+    parser.add_argument("--artifacts-zip", type=Path, default=None)
+    parser.add_argument("--rowdata-zip-name", type=str, default="rowdata.zip")
+    parser.add_argument("--data-zip-name", type=str, default="data.zip")
+    parser.add_argument("--artifacts-zip-name", type=str, default="artifacts.zip")
+    parser.add_argument("--skip-rowdata", action="store_true")
+    parser.add_argument("--skip-data", action="store_true")
+    parser.add_argument("--skip-artifacts", action="store_true")
+    args = parser.parse_args()
+
+    report = restore_packages_from_zip_files(
+        project_root=args.project_root,
+        source_dir=args.source_dir,
+        rowdata_zip_path=args.rowdata_zip,
+        data_zip_path=args.data_zip,
+        artifacts_zip_path=args.artifacts_zip,
+        rowdata_zip_name=args.rowdata_zip_name,
+        data_zip_name=args.data_zip_name,
+        artifacts_zip_name=args.artifacts_zip_name,
+        restore_rowdata=not args.skip_rowdata,
+        restore_data=not args.skip_data,
+        restore_artifacts=not args.skip_artifacts,
+    )
+    print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+
+
+def package_export_main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--project-root", type=Path, default=Path("."))
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--rowdata-zip-name", type=str, default="rowdata.zip")
+    parser.add_argument("--data-zip-name", type=str, default="data.zip")
+    parser.add_argument("--artifacts-zip-name", type=str, default="artifacts.zip")
+    parser.add_argument("--skip-rowdata", action="store_true")
+    parser.add_argument("--skip-data", action="store_true")
+    parser.add_argument("--skip-artifacts", action="store_true")
+    args = parser.parse_args()
+
+    report = export_package_archives(
+        project_root=args.project_root,
+        output_dir=args.output_dir,
+        rowdata_zip_name=args.rowdata_zip_name,
+        data_zip_name=args.data_zip_name,
+        artifacts_zip_name=args.artifacts_zip_name,
+        export_rowdata=not args.skip_rowdata,
+        export_data=not args.skip_data,
+        export_artifacts=not args.skip_artifacts,
     )
     print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
 
@@ -258,6 +312,14 @@ def predict_main() -> None:
         trifecta.to_csv(args.trifecta_output, index=False, encoding="utf-8-sig")
 
 
+def print_train_trifecta_v2_progress(message: str) -> None:
+    print(f"[boatrace-train-trifecta-v2] {message}", flush=True)
+
+
+def race_count(df: pd.DataFrame) -> int:
+    return int(df["race_id"].nunique()) if "race_id" in df.columns and not df.empty else 0
+
+
 def train_trifecta_v2_main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
@@ -265,17 +327,26 @@ def train_trifecta_v2_main() -> None:
     parser.add_argument("--max-races", type=int, default=1000)
     parser.add_argument("--eval-max-races", type=int, default=3000)
     parser.add_argument("--optimize-rerank", action="store_true")
+    parser.add_argument("--reset-rerank-optimization", action="store_true")
     args = parser.parse_args()
 
+    progress = print_train_trifecta_v2_progress
+    progress("start")
+    progress("loading config and training splits")
     config = load_config(args.config)
     config = with_training_device_override(config, args.training_device)
     artifacts = get_artifact_paths(config)
-    train_end = pd.Timestamp(config["split"]["train_end_date"])
-    valid_end = pd.Timestamp(config["split"]["valid_end_date"])
     train_df, valid_df, test_df = load_training_splits(Path(config["data"]["training_table"]), config)
     eval_valid_df = sample_races_for_evaluation(valid_df, args.eval_max_races)
     eval_test_df = sample_races_for_evaluation(test_df, args.eval_max_races)
+    progress(
+        "loaded splits: "
+        f"train_races={race_count(train_df)}, valid_races={race_count(valid_df)}, "
+        f"test_races={race_count(test_df)}, eval_valid_races={race_count(eval_valid_df)}, "
+        f"eval_test_races={race_count(eval_test_df)}"
+    )
 
+    progress("inferring feature columns")
     schema_df = pd.concat(
         [train_df.head(200), valid_df.head(200), test_df.head(200)],
         ignore_index=True,
@@ -284,16 +355,22 @@ def train_trifecta_v2_main() -> None:
     categorical_columns = infer_categorical_columns(schema_df, feature_columns)
     del schema_df
     collect_garbage()
+    progress(f"inferred features: numeric_and_categorical={len(feature_columns)}, categorical={len(categorical_columns)}")
+
+    progress("loading existing ranker/classifier artifacts")
     models = load_models(config)
     classifier_models = load_classifier_artifacts(config)
     ensemble_weights = load_ensemble_weights(artifacts["ensemble_weights_path"])
     trifecta_calibrator = load_trifecta_calibrator(artifacts["trifecta_calibrator_path"])
     eval_rerank_top_n = get_default_rerank_top_n(config)
 
+    progress("training flow model")
     flow_model, flow_classes = train_flow_model(train_df, valid_df, feature_columns, categorical_columns, config)
     collect_garbage()
+    progress("training staged models")
     staged_models = train_staged_models(train_df, valid_df, feature_columns, categorical_columns, config)
     collect_garbage()
+    progress(f"training trifecta v2 model: max_races={args.max_races}")
     trifecta_v2_model = train_trifecta_v2_model(
         train_df,
         models=models,
@@ -308,6 +385,7 @@ def train_trifecta_v2_main() -> None:
         config=config,
     )
     collect_garbage()
+    progress(f"training phase3 conditional trifecta model: max_races={args.max_races}")
     trifecta_v3_model = train_phase3_conditional_trifecta_model(
         train_df,
         models=models,
@@ -325,6 +403,11 @@ def train_trifecta_v2_main() -> None:
     collect_garbage()
     rerank_optimization = {}
     if args.optimize_rerank and not eval_valid_df.empty:
+        rerank_checkpoint_path = artifacts["rerank_optimization_checkpoint_path"]
+        if args.reset_rerank_optimization and rerank_checkpoint_path.exists():
+            progress(f"resetting rerank optimization checkpoint: {rerank_checkpoint_path}")
+            rerank_checkpoint_path.unlink()
+        progress(f"optimizing rerank settings: checkpoint={rerank_checkpoint_path}")
         rerank_optimization = optimize_rerank_inference_settings(
             models,
             ensemble_weights,
@@ -337,14 +420,25 @@ def train_trifecta_v2_main() -> None:
             staged_models=staged_models,
             trifecta_v2_model=trifecta_v3_model,
             config=config,
+            checkpoint_path=rerank_checkpoint_path,
+            progress_callback=progress,
         )
         optimized_top_n = int(rerank_optimization.get("best_top_n", eval_rerank_top_n))
         optimized_weight = float(rerank_optimization.get("best_conservative_weight", 0.92))
         optimized_penalty = float(rerank_optimization.get("best_rank_penalty_strength", 0.0))
+        progress(
+            "optimized rerank settings: "
+            f"top_n={optimized_top_n}, weight={optimized_weight:.4g}, penalty={optimized_penalty:.4g}"
+        )
         eval_rerank_top_n = optimized_top_n
         trifecta_v3_model = with_conservative_rerank_weight(trifecta_v3_model, optimized_weight)
         trifecta_v3_model = with_rank_penalty_settings(trifecta_v3_model, optimized_penalty, 5)
+    elif args.optimize_rerank:
+        progress("skipping rerank optimization: no evaluation races")
+    else:
+        progress("skipping rerank optimization: --optimize-rerank not set")
     trifecta_v3_model = with_rerank_top_n(trifecta_v3_model, eval_rerank_top_n)
+    progress(f"optimizing calibration window: rerank_top_n={eval_rerank_top_n}")
     calibration_optimization = optimize_phase3_calibration_window(
         models,
         ensemble_weights,
@@ -360,12 +454,14 @@ def train_trifecta_v2_main() -> None:
         config=config,
     )
     calibration_window_days = int(calibration_optimization.get("best_window_days", 60))
+    progress(f"optimized calibration window: days={calibration_window_days}")
     trifecta_v3_model = with_calibration_window_days(trifecta_v3_model, calibration_window_days)
     trifecta_v3_model = with_phase3_optimization_metadata(
         trifecta_v3_model,
         rerank_optimization=rerank_optimization,
         calibration_optimization=calibration_optimization,
     )
+    progress("fitting trifecta v2 calibrator")
     trifecta_v2_calibrator = fit_model_trifecta_calibrator(
         models,
         ensemble_weights,
@@ -380,6 +476,7 @@ def train_trifecta_v2_main() -> None:
         use_v2=True,
         rerank_top_n=eval_rerank_top_n,
     )
+    progress("fitting trifecta v3 calibrator")
     trifecta_v3_calibrator = fit_model_trifecta_calibrator(
         models,
         ensemble_weights,
@@ -396,6 +493,7 @@ def train_trifecta_v2_main() -> None:
         calibration_window_days=calibration_window_days,
     )
 
+    progress("saving model artifacts")
     save_artifacts(
         models=models,
         feature_columns=feature_columns,
@@ -423,6 +521,7 @@ def train_trifecta_v2_main() -> None:
         trifecta_v3_calibrator_path=artifacts["trifecta_v3_calibrator_path"],
     )
 
+    progress("evaluating flow and staged metrics")
     metrics = json_load_or_empty(artifacts["metrics_path"])
     metrics["flow_model_metrics"] = evaluate_flow_model(
         flow_model,
@@ -450,6 +549,7 @@ def train_trifecta_v2_main() -> None:
     if rerank_optimization:
         metrics["rerank_optimization"] = rerank_optimization
     metrics["calibration_optimization"] = calibration_optimization
+    progress("evaluating trifecta metrics")
     metrics["trifecta_v1_rerank_metrics"] = {
         "valid_calibrated": evaluate_trifecta(
             models,
@@ -546,8 +646,11 @@ def train_trifecta_v2_main() -> None:
             rerank_top_n=eval_rerank_top_n,
         ),
     }
+    progress(f"writing metrics: {artifacts['metrics_path']}")
     artifacts["metrics_path"].write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
+    progress("cleaning processed intermediate directories")
     cleanup_processed_intermediate_dirs(config)
+    progress("completed")
 
 
 def json_load_or_empty(path: Path) -> dict:

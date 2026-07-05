@@ -102,13 +102,21 @@ boatrace-train --config configs/train.yaml
 ### 三連単最適化学習
 
 ```bash
-boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 1000
+boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 3000
 ```
 
 rerank 最適化付き:
 
 ```bash
-boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 1000 --optimize-rerank
+boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 3000 --optimize-rerank
+```
+
+`--optimize-rerank` 実行中は標準出力に進捗が表示されます。rerank 最適化の途中経過は `artifacts/rerank_optimization_checkpoint.json` に逐次保存され、同じグリッド・同じ評価レース数で再実行すると未完了の組み合わせから再開します。
+
+最初から最適化をやり直す場合:
+
+```bash
+boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 3000 --optimize-rerank --reset-rerank-optimization
 ```
 
 ### full valid 再評価
@@ -285,6 +293,135 @@ artifacts_drive_file_url = "https://drive.google.com/file/d/your-artifacts-file-
 - `rowdata.zip` は不要です
 - `data.zip` と `artifacts.zip` は公開共有リンクで取得できる必要があります
 
+## Google Cloud + Google Drive
+
+Google Cloud VM で Google Drive をマウントして学習する場合は、`rclone` を使います。
+
+Conda を使う最小構成の環境セットアップ:
+
+```bash
+chmod +x sh/*.sh
+sh/gcloud_conda_min_setup.sh
+```
+
+`sh/gcloud_conda_min_setup.sh` は Debian パッケージ、Miniforge、Conda 環境、実行時依存関係を設定します。`environment.yml` は使わず、開発用の `pytest` / `ruff` は入れません。
+また、既定では `rclone` の Google Drive remote 設定確認と `$HOME/gdrive` へのマウントも実行します。remote 名は `gdrive` を想定しています。
+
+セットアップ後、シェルを開き直すか次を実行します。
+
+```bash
+source ~/.bashrc
+conda activate boatrace-predictions
+```
+
+初回のみ VM 上で Google Drive remote を作成します。
+
+```bash
+rclone config
+```
+
+`sh/gcloud_conda_min_setup.sh` 実行時に remote が未設定の場合は、この `rclone config` が自動で起動します。ブラウザなし VM では `Use auto config? n` を選び、表示された URL を手元 PC のブラウザで開いて認証コードを VM に貼り付けます。
+
+Drive 設定やマウントをセットアップから外す場合:
+
+```bash
+CONFIGURE_RCLONE=0 MOUNT_GDRIVE=0 sh/gcloud_conda_min_setup.sh
+```
+
+remote 名やマウント先を変える場合:
+
+```bash
+RCLONE_REMOTE_NAME="mydrive" GDRIVE_MOUNT_DIR="$HOME/gdrive" sh/gcloud_conda_min_setup.sh
+```
+
+remote 名を `gdrive` にした場合、次のコマンドで Drive を `$HOME/gdrive` にマウントします。
+
+```bash
+sh/gcloud_drive_mount.sh
+```
+
+remote 名やマウント先を変える場合:
+
+```bash
+RCLONE_REMOTE_PATH="gdrive:" GDRIVE_MOUNT_DIR="$HOME/gdrive" sh/gcloud_drive_mount.sh
+```
+
+Drive 側の zip 配置先は既定で `$HOME/gdrive/BoatRacePredictions` です。このフォルダに次の zip を置きます。
+
+- `rowdata.zip`
+- `data.zip`
+- `artifacts.zip`
+
+マウント済み Drive から zip を復元し、`rowdata` 差分を更新する場合:
+
+```bash
+DRIVE_PACKAGE_DIR="$HOME/gdrive/BoatRacePredictions" sh/gcloud_drive_restore_update.sh
+```
+
+復元対象を絞る場合:
+
+```bash
+RESTORE_ROWDATA=0 RESTORE_DATA=1 RESTORE_ARTIFACTS=1 sh/gcloud_drive_restore_update.sh
+```
+
+ビルド、学習、三連単最適化、zip 作成、Drive へのアップロードまで実行する場合:
+
+```bash
+DRIVE_PACKAGE_DIR="$HOME/gdrive/BoatRacePredictions" sh/gcloud_build_train_upload.sh
+```
+
+`sh/gcloud_build_train_upload.sh` は次を実行します。
+
+1. `boatrace-build --rowdata rowdata --output data/processed`
+2. `boatrace-train --config configs/train.yaml`
+3. `boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 3000 --optimize-rerank`
+4. `boatrace-package-export --output-dir "$DRIVE_PACKAGE_DIR"`
+
+Debian 環境で Drive マウントからアップロードまでを順番に実行する場合:
+
+```bash
+DRIVE_PACKAGE_DIR="$HOME/gdrive/BoatRacePredictions" sh/gcloud_debian_full_pipeline.sh
+```
+
+このスクリプトは次を順番に実行します。
+
+1. `sh/gcloud_drive_mount.sh`
+2. `sh/gcloud_drive_restore_update.sh`
+3. `sh/data_build.sh`
+4. `sh/train.sh`
+   - `boatrace-train-trifecta-v2` は `--optimize-rerank --reset-rerank-optimization` 付きで新規最適化
+5. `sh/gcloud_build_train_upload.sh`
+   - 前段でビルドと学習済みのため、zip 作成と Drive 出力のみ実行
+
+途中終了後に続きから実行する場合:
+
+```bash
+DRIVE_PACKAGE_DIR="$HOME/gdrive/BoatRacePredictions" sh/gcloud_debian_resume_pipeline.sh
+```
+
+再開用スクリプトは `.gcloud_pipeline_state/` の完了マーカーを見て完了済みステップをスキップします。Drive マウントは VM 再起動で外れることがあるため、再開時も毎回確認実行します。rerank 最適化は `artifacts/rerank_optimization_checkpoint.json` から再開します。
+
+主な環境変数:
+
+- `DRIVE_PACKAGE_DIR`: Drive 側の zip 配置先。既定は `$HOME/gdrive/BoatRacePredictions`
+- `MAX_RACES`: 三連単学習の `--max-races`。既定は `1000`
+- `EVAL_MAX_RACES`: 三連単評価の `--eval-max-races`。既定は `3000`
+- `OPTIMIZE_RERANK`: `1` で `--optimize-rerank` を有効化。既定は `1`
+- `RESET_RERANK_OPTIMIZATION`: `1` で rerank 最適化チェックポイントを破棄して再実行。既定は `0`
+- `EXPORT_ROWDATA` / `EXPORT_DATA` / `EXPORT_ARTIFACTS`: `0` で該当 zip の出力をスキップ
+
+zip のローカル復元だけを直接実行する場合:
+
+```bash
+boatrace-package-restore-local --project-root . --source-dir "$HOME/gdrive/BoatRacePredictions"
+```
+
+zip の作成と Drive への出力だけを直接実行する場合:
+
+```bash
+boatrace-package-export --project-root . --output-dir "$HOME/gdrive/BoatRacePredictions"
+```
+
 ## バッチ / シェル
 
 ### Windows
@@ -294,24 +431,49 @@ artifacts_drive_file_url = "https://drive.google.com/file/d/your-artifacts-file-
   - `boatrace-build`
 - `bat\train.bat`
   - `boatrace-train`
-  - `boatrace-train-trifecta-v2`
+  - `boatrace-train-trifecta-v2 --max-races 1000 --eval-max-races 3000`
 - `bat\opt.bat`
-  - `boatrace-train-trifecta-v2 --optimize-rerank`
+  - `boatrace-train-trifecta-v2 --max-races 1000 --eval-max-races 3000 --optimize-rerank`
+  - `artifacts/rerank_optimization_checkpoint.json` から再開
 - `bat\eval.bat`
   - `boatrace-eval-trifecta-full`
 - `bat\data_download.bat`
   - `boatrace-package-download`
 - `bat\ui.bat`
   - `boatrace-webui`
+- `bat\today_ui.bat`
+  - `boatrace-webui-today`
 
 ### Linux / Bash
 
 - `sh/data_build.sh`
 - `sh/train.sh`
+  - `boatrace-train`
+  - `boatrace-train-trifecta-v2 --max-races 1000 --eval-max-races 3000`
 - `sh/opt.sh`
+  - `boatrace-train-trifecta-v2 --max-races 1000 --eval-max-races 3000 --optimize-rerank`
+  - `artifacts/rerank_optimization_checkpoint.json` から再開
 - `sh/eval.sh`
 - `sh/data_download.sh`
 - `sh/ui.sh`
+- `sh/today_ui.sh`
+- `sh/gcloud_drive_mount.sh`
+  - `rclone mount` で Google Drive をマウント
+- `sh/gcloud_conda_min_setup.sh`
+  - Google Cloud Debian 用の最小 Conda 環境を構築
+- `sh/gcloud_drive_restore_update.sh`
+  - マウント済み Drive から `rowdata.zip` / `data.zip` / `artifacts.zip` を復元
+  - `boatrace-backfill-rowdata`
+- `sh/gcloud_build_train_upload.sh`
+  - `boatrace-build`
+  - `boatrace-train`
+  - `boatrace-train-trifecta-v2 --optimize-rerank`
+  - `boatrace-package-export`
+- `sh/gcloud_debian_full_pipeline.sh`
+  - Debian VM 向けの全工程実行
+  - rerank 最適化は新規実行
+- `sh/gcloud_debian_resume_pipeline.sh`
+  - `.gcloud_pipeline_state/` と rerank チェックポイントを使って続きから実行
 
 ## 学習期間ルール
 
@@ -352,9 +514,11 @@ artifacts_drive_file_url = "https://drive.google.com/file/d/your-artifacts-file-
 - 最低目安: `24GB`
 - 安全目安: `32GB`
 - 推奨: `48GB`
+- `--optimize-rerank` 付きの長時間実行では `32GB` 以上を推奨します。Cloud VM では `8 vCPU / 64GB` 程度を目安にしてください。
 
 ## 補足
 
 - `boatrace-build` は streaming build 化されており、一括 build よりメモリを抑えています
+- rerank 最適化の途中経過は `artifacts/rerank_optimization_checkpoint.json` に保存されます
 - 学習完了時には `data/processed/base_buckets` と `data/processed/history_months` を自動削除します
 - 予測専用で別 PC に持っていく場合は、最低限 `configs/`, `artifacts/`, `data/processed/training_table.parquet` が必要です

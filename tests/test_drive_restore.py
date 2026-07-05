@@ -97,6 +97,57 @@ def test_download_and_restore_packages_can_skip_targets(tmp_path, monkeypatch) -
     assert (project_root / "artifacts" / "new_artifact.txt").read_text(encoding="utf-8") == "artifact"
 
 
+def test_restore_packages_from_zip_files_uses_mounted_package_directory(tmp_path) -> None:
+    project_root = tmp_path / "project"
+    source_dir = tmp_path / "drive"
+    project_root.mkdir()
+    source_dir.mkdir()
+    (project_root / "data").mkdir()
+    (project_root / "data" / "old.txt").write_text("old", encoding="utf-8")
+
+    data_zip = source_dir / "data.zip"
+    with zipfile.ZipFile(data_zip, "w") as zf:
+        zf.writestr("data/new_data.txt", "data")
+
+    report = drive_restore.restore_packages_from_zip_files(
+        project_root=project_root,
+        source_dir=source_dir,
+        restore_rowdata=False,
+        restore_data=True,
+        restore_artifacts=False,
+    )
+
+    assert report.restored_targets == ["data"]
+    assert report.data_zip == data_zip
+    assert (project_root / "data" / "new_data.txt").read_text(encoding="utf-8") == "data"
+    assert not (project_root / "data" / "old.txt").exists()
+
+
+def test_export_package_archives_writes_top_level_directories(tmp_path) -> None:
+    project_root = tmp_path / "project"
+    output_dir = tmp_path / "drive"
+    (project_root / "data").mkdir(parents=True)
+    (project_root / "artifacts").mkdir()
+    (project_root / "data" / "processed.txt").write_text("data", encoding="utf-8")
+    (project_root / "artifacts" / "model.txt").write_text("model", encoding="utf-8")
+
+    report = drive_restore.export_package_archives(
+        project_root=project_root,
+        output_dir=output_dir,
+        export_rowdata=False,
+        export_data=True,
+        export_artifacts=True,
+    )
+
+    assert report.exported_targets == ["data", "artifacts"]
+    assert report.data_zip == output_dir / "data.zip"
+    assert report.artifacts_zip == output_dir / "artifacts.zip"
+    with zipfile.ZipFile(output_dir / "data.zip") as zf:
+        assert zf.read("data/processed.txt").decode("utf-8") == "data"
+    with zipfile.ZipFile(output_dir / "artifacts.zip") as zf:
+        assert zf.read("artifacts/model.txt").decode("utf-8") == "model"
+
+
 class _FakeResponse:
     def __init__(
         self,

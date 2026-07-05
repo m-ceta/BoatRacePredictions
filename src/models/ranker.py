@@ -5,7 +5,7 @@ import itertools
 import json
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import joblib
 import lightgbm as lgb
@@ -70,6 +70,7 @@ DEFAULT_ARTIFACT_PATHS = {
     "flow_meta_path": "artifacts/flow_classes.json",
     "trifecta_v2_model_path": "artifacts/trifecta_v2_model.joblib",
     "staged_dir": "artifacts/staged",
+    "rerank_optimization_checkpoint_path": "artifacts/rerank_optimization_checkpoint.json",
 }
 
 
@@ -1976,6 +1977,78 @@ def _phase3_tuning_objective(
     return float(objective), float(allowed_log_loss), float(log_loss_excess), bool(log_loss_excess <= 0.0)
 
 
+def _rerank_checkpoint_key(top_n: int, conservative_weight: float, rank_penalty_strength: float) -> str:
+    return f"{int(top_n)}|{float(conservative_weight):.12g}|{float(rank_penalty_strength):.12g}"
+
+
+def _rerank_checkpoint_grid(
+    top_n_grid: list[Any],
+    weight_grid: list[Any],
+    penalty_grid: list[Any],
+) -> dict[str, list[float]]:
+    return {
+        "top_n_grid": [float(value) for value in top_n_grid],
+        "weight_grid": [float(value) for value in weight_grid],
+        "rank_penalty_strength_grid": [float(value) for value in penalty_grid],
+    }
+
+
+def _empty_rerank_checkpoint(
+    *,
+    grid: dict[str, list[float]],
+    valid_races: int,
+    total_count: int,
+) -> dict[str, Any]:
+    return {
+        "version": 1,
+        "status": "running",
+        "grid": grid,
+        "valid_races": int(valid_races),
+        "total_count": int(total_count),
+        "completed_count": 0,
+        "completed": {},
+        "best": None,
+    }
+
+
+def _load_rerank_optimization_checkpoint(
+    checkpoint_path: Path | None,
+    *,
+    grid: dict[str, list[float]],
+    valid_races: int,
+    total_count: int,
+) -> dict[str, Any]:
+    if checkpoint_path is None or not checkpoint_path.exists():
+        return _empty_rerank_checkpoint(grid=grid, valid_races=valid_races, total_count=total_count)
+    try:
+        state = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return _empty_rerank_checkpoint(grid=grid, valid_races=valid_races, total_count=total_count)
+    if state.get("version") != 1 or state.get("grid") != grid or int(state.get("valid_races", -1)) != int(valid_races):
+        return _empty_rerank_checkpoint(grid=grid, valid_races=valid_races, total_count=total_count)
+    completed = state.get("completed")
+    if not isinstance(completed, dict):
+        state["completed"] = {}
+    state["total_count"] = int(total_count)
+    state["completed_count"] = len(state["completed"])
+    return state
+
+
+def _save_rerank_optimization_checkpoint(checkpoint_path: Path | None, state: dict[str, Any]) -> None:
+    if checkpoint_path is None:
+        return
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    state["completed_count"] = len(state.get("completed", {}))
+    temp_path = checkpoint_path.with_name(f"{checkpoint_path.name}.tmp")
+    temp_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp_path.replace(checkpoint_path)
+
+
+def _emit_progress(progress_callback: Callable[[str], None] | None, message: str) -> None:
+    if progress_callback is not None:
+        progress_callback(message)
+
+
 def optimize_rerank_inference_settings(
     models: dict[str, Any],
     weights: dict[str, float],
@@ -1991,10 +2064,13 @@ def optimize_rerank_inference_settings(
     conservative_weights: list[float] | None = None,
     rank_penalty_strengths: list[float] | None = None,
     config: dict | None = None,
+    checkpoint_path: Path | None = None,
+    progress_callback: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     rerank_settings = get_phase3_settings(config)["rerank"]
     if valid_df.empty or trifecta_v2_model is None or not is_trifecta_v2_bundle(trifecta_v2_model):
         default_top_n = get_default_rerank_top_n(config)
+        _emit_progress(progress_callback, "rerank optimization skipped")
         return {
             "best_top_n": float(default_top_n),
             "best_conservative_weight": get_conservative_rerank_weight(trifecta_v2_model),
@@ -2006,15 +2082,45 @@ def optimize_rerank_inference_settings(
     top_n_grid = top_n_candidates or list(rerank_settings["top_n_grid"])
     weight_grid = conservative_weights or list(rerank_settings["weight_grid"])
     penalty_grid = rank_penalty_strengths or list(rerank_settings["rank_penalty_strength_grid"])
-    best: dict[str, float] = {
+    total_count = len(top_n_grid) * len(weight_grid) * len(penalty_grid)
+    checkpoint_grid = _rerank_checkpoint_grid(top_n_grid, weight_grid, penalty_grid)
+    valid_races = int(valid_df["race_id"].nunique()) if "race_id" in valid_df.columns else int(len(valid_df))
+    checkpoint = _load_rerank_optimization_checkpoint(
+        checkpoint_path,
+        grid=checkpoint_grid,
+        valid_races=valid_races,
+        total_count=total_count,
+    )
+    if checkpoint.get("status") == "completed" and checkpoint.get("best"):
+        _emit_progress(
+            progress_callback,
+            f"rerank optimization already completed: {checkpoint.get('completed_count', total_count)}/{total_count}",
+        )
+        return dict(checkpoint["best"])
+
+    best: dict[str, float] = dict(checkpoint["best"]) if checkpoint.get("best") else {
         "best_top_n": float(top_n_grid[0]),
         "best_conservative_weight": float(weight_grid[0]),
         "best_rank_penalty_strength": float(penalty_grid[0]),
         "objective": float("-inf"),
     }
+    completed: dict[str, Any] = checkpoint["completed"]
+    _emit_progress(
+        progress_callback,
+        f"rerank optimization resumed: {len(completed)}/{total_count} completed",
+    )
     baseline_by_top_n: dict[int, dict[str, Any]] = {}
     for top_n in top_n_grid:
         top_n_int = int(top_n)
+        top_n_keys = [
+            _rerank_checkpoint_key(top_n_int, conservative_weight, rank_penalty_strength)
+            for conservative_weight in weight_grid
+            for rank_penalty_strength in penalty_grid
+        ]
+        if all(key in completed for key in top_n_keys):
+            _emit_progress(progress_callback, f"rerank optimization skip top_n={top_n_int}: already completed")
+            continue
+        _emit_progress(progress_callback, f"rerank optimization baseline top_n={top_n_int}")
         baseline_calibrator = fit_model_trifecta_calibrator(
             models,
             weights,
@@ -2046,6 +2152,17 @@ def optimize_rerank_inference_settings(
         )
         for conservative_weight in weight_grid:
             for rank_penalty_strength in penalty_grid:
+                checkpoint_key = _rerank_checkpoint_key(top_n_int, conservative_weight, rank_penalty_strength)
+                if checkpoint_key in completed:
+                    continue
+                _emit_progress(
+                    progress_callback,
+                    (
+                        f"rerank optimization {len(completed) + 1}/{total_count}: "
+                        f"top_n={top_n_int}, weight={float(conservative_weight):.4g}, "
+                        f"penalty={float(rank_penalty_strength):.4g}"
+                    ),
+                )
                 candidate_model = with_conservative_rerank_weight(trifecta_v2_model, conservative_weight)
                 candidate_model = with_rank_penalty_settings(
                     candidate_model,
@@ -2086,6 +2203,22 @@ def optimize_rerank_inference_settings(
                     baseline_by_top_n[top_n_int],
                     rerank_settings,
                 )
+                completed[checkpoint_key] = {
+                    "top_n": float(top_n_int),
+                    "conservative_weight": float(conservative_weight),
+                    "rank_penalty_strength": float(rank_penalty_strength),
+                    "objective": float(objective),
+                    "v1_log_loss": float(baseline_by_top_n[top_n_int].get("log_loss", 0.0)),
+                    "allowed_log_loss": float(allowed_log_loss),
+                    "log_loss_excess": float(log_loss_excess),
+                    "within_log_loss_guard": bool(within_guard),
+                    "top1_hit_rate": float(metrics.get("top1_hit_rate", 0.0)),
+                    "top3_hit_rate": float(metrics.get("top3_hit_rate", 0.0)),
+                    "top5_hit_rate": float(metrics.get("top5_hit_rate", 0.0)),
+                    "top10_hit_rate": float(metrics.get("top10_hit_rate", 0.0)),
+                    "log_loss": float(metrics.get("log_loss", 0.0)),
+                    "rerank_mrr": _rerank_metric_value(metrics, "rerank_mrr"),
+                }
                 if objective > best["objective"]:
                     best = {
                         "best_top_n": float(top_n_int),
@@ -2103,6 +2236,29 @@ def optimize_rerank_inference_settings(
                         "log_loss": float(metrics.get("log_loss", 0.0)),
                         "rerank_mrr": _rerank_metric_value(metrics, "rerank_mrr"),
                     }
+                checkpoint["best"] = best
+                checkpoint["status"] = "completed" if len(completed) >= total_count else "running"
+                _save_rerank_optimization_checkpoint(checkpoint_path, checkpoint)
+                _emit_progress(
+                    progress_callback,
+                    (
+                        f"rerank optimization saved {len(completed)}/{total_count}: "
+                        f"objective={float(objective):.6g}, best={float(best['objective']):.6g}"
+                    ),
+                )
+    checkpoint["best"] = best
+    checkpoint["status"] = "completed"
+    _save_rerank_optimization_checkpoint(checkpoint_path, checkpoint)
+    _emit_progress(
+        progress_callback,
+        (
+            "rerank optimization completed: "
+            f"best_top_n={int(best['best_top_n'])}, "
+            f"best_weight={float(best['best_conservative_weight']):.4g}, "
+            f"best_penalty={float(best['best_rank_penalty_strength']):.4g}, "
+            f"objective={float(best['objective']):.6g}"
+        ),
+    )
     return best
 
 

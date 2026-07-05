@@ -55,6 +55,22 @@ class DriveRestoreReport:
         }
 
 
+@dataclass(slots=True)
+class DrivePackageExportReport:
+    rowdata_zip: Path | None
+    data_zip: Path | None
+    artifacts_zip: Path | None
+    exported_targets: list[str]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "rowdata_zip": str(self.rowdata_zip) if self.rowdata_zip is not None else None,
+            "data_zip": str(self.data_zip) if self.data_zip is not None else None,
+            "artifacts_zip": str(self.artifacts_zip) if self.artifacts_zip is not None else None,
+            "exported_targets": self.exported_targets,
+        }
+
+
 def extract_drive_file_id(value: str) -> str:
     parsed = urlparse(value)
     if parsed.scheme and parsed.netloc:
@@ -160,6 +176,39 @@ def _extract_zip_to_temp(zip_path: Path, temp_dir: Path) -> Path:
     return extract_root
 
 
+def _resolve_zip_path(source_dir: Path, zip_path: Path | None, zip_name: str) -> Path:
+    return zip_path if zip_path is not None else source_dir / zip_name
+
+
+def _restore_target_from_zip(
+    *,
+    zip_path: Path,
+    target_name: str,
+    project_root: Path,
+    temp_dir: Path,
+) -> None:
+    if not zip_path.exists():
+        raise FileNotFoundError(f"{target_name} zip file was not found: {zip_path}")
+    _validate_zip_file(zip_path)
+    extract_root = _extract_zip_to_temp(zip_path, temp_dir)
+    _replace_directory_from_extracted(extract_root, target_name, project_root / target_name)
+
+
+def _zip_directory(source_dir: Path, zip_path: Path) -> Path:
+    if not source_dir.exists() or not source_dir.is_dir():
+        raise FileNotFoundError(f"Package source directory was not found: {source_dir}")
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = zip_path.with_name(f"{zip_path.name}.tmp")
+    if temp_path.exists():
+        temp_path.unlink()
+    with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
+        for path in sorted(source_dir.rglob("*")):
+            if path.is_file():
+                zf.write(path, path.relative_to(source_dir.parent))
+    temp_path.replace(zip_path)
+    return zip_path
+
+
 def _download_unique_archives(
     root: Path,
     requested: list[tuple[str, str, str]],
@@ -242,4 +291,94 @@ def download_and_restore_packages(
         data_zip=data_zip,
         artifacts_zip=artifacts_zip,
         restored_targets=restored_targets,
+    )
+
+
+def restore_packages_from_zip_files(
+    project_root: Path,
+    source_dir: Path | None = None,
+    rowdata_zip_path: Path | None = None,
+    data_zip_path: Path | None = None,
+    artifacts_zip_path: Path | None = None,
+    rowdata_zip_name: str = "rowdata.zip",
+    data_zip_name: str = "data.zip",
+    artifacts_zip_name: str = "artifacts.zip",
+    restore_rowdata: bool = True,
+    restore_data: bool = True,
+    restore_artifacts: bool = True,
+) -> DriveRestoreReport:
+    root = project_root.resolve()
+    source = (source_dir or root).resolve()
+    rowdata_zip = _resolve_zip_path(source, rowdata_zip_path, rowdata_zip_name) if restore_rowdata else None
+    data_zip = _resolve_zip_path(source, data_zip_path, data_zip_name) if restore_data else None
+    artifacts_zip = _resolve_zip_path(source, artifacts_zip_path, artifacts_zip_name) if restore_artifacts else None
+
+    restored_targets: list[str] = []
+    with TemporaryDirectory(dir=root) as temp_dir_str:
+        temp_dir = Path(temp_dir_str)
+        if restore_rowdata and rowdata_zip is not None:
+            _restore_target_from_zip(
+                zip_path=rowdata_zip,
+                target_name="rowdata",
+                project_root=root,
+                temp_dir=temp_dir,
+            )
+            restored_targets.append("rowdata")
+        if restore_data and data_zip is not None:
+            _restore_target_from_zip(
+                zip_path=data_zip,
+                target_name="data",
+                project_root=root,
+                temp_dir=temp_dir,
+            )
+            restored_targets.append("data")
+        if restore_artifacts and artifacts_zip is not None:
+            _restore_target_from_zip(
+                zip_path=artifacts_zip,
+                target_name="artifacts",
+                project_root=root,
+                temp_dir=temp_dir,
+            )
+            restored_targets.append("artifacts")
+
+    return DriveRestoreReport(
+        rowdata_zip=rowdata_zip,
+        data_zip=data_zip,
+        artifacts_zip=artifacts_zip,
+        restored_targets=restored_targets,
+    )
+
+
+def export_package_archives(
+    project_root: Path,
+    output_dir: Path,
+    rowdata_zip_name: str = "rowdata.zip",
+    data_zip_name: str = "data.zip",
+    artifacts_zip_name: str = "artifacts.zip",
+    export_rowdata: bool = True,
+    export_data: bool = True,
+    export_artifacts: bool = True,
+) -> DrivePackageExportReport:
+    root = project_root.resolve()
+    output = output_dir.resolve()
+    exported_targets: list[str] = []
+    rowdata_zip = output / rowdata_zip_name if export_rowdata else None
+    data_zip = output / data_zip_name if export_data else None
+    artifacts_zip = output / artifacts_zip_name if export_artifacts else None
+
+    if export_rowdata and rowdata_zip is not None:
+        _zip_directory(root / "rowdata", rowdata_zip)
+        exported_targets.append("rowdata")
+    if export_data and data_zip is not None:
+        _zip_directory(root / "data", data_zip)
+        exported_targets.append("data")
+    if export_artifacts and artifacts_zip is not None:
+        _zip_directory(root / "artifacts", artifacts_zip)
+        exported_targets.append("artifacts")
+
+    return DrivePackageExportReport(
+        rowdata_zip=rowdata_zip,
+        data_zip=data_zip,
+        artifacts_zip=artifacts_zip,
+        exported_targets=exported_targets,
     )

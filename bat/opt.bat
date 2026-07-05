@@ -32,8 +32,8 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [1/1] boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 1000 --eval-rerank-top-n 10 --optimize-rerank
-call boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 1000 --eval-rerank-top-n 10 --optimize-rerank
+echo [1/1] boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 3000 --optimize-rerank
+call boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 3000 --optimize-rerank
 if errorlevel 1 exit /b %errorlevel%
 
 echo opt.bat completed successfully.
