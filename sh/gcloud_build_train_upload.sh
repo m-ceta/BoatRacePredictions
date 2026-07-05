@@ -5,7 +5,7 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
 activate_conda_env
 
-DRIVE_PACKAGE_DIR="${DRIVE_PACKAGE_DIR:-${HOME}/gdrive/BoatRacePredictions}"
+DRIVE_PACKAGE_DIR="${DRIVE_PACKAGE_DIR:-${HOME}/gdrive/gcolab_workdir/btp}"
 MAX_RACES="${MAX_RACES:-1000}"
 EVAL_MAX_RACES="${EVAL_MAX_RACES:-3000}"
 OPTIMIZE_RERANK="${OPTIMIZE_RERANK:-1}"

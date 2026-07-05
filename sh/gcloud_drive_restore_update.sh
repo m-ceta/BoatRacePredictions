@@ -5,7 +5,7 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
 activate_conda_env
 
-DRIVE_PACKAGE_DIR="${DRIVE_PACKAGE_DIR:-${HOME}/gdrive/BoatRacePredictions}"
+DRIVE_PACKAGE_DIR="${DRIVE_PACKAGE_DIR:-${HOME}/gdrive/gcolab_workdir/btp}"
 RESTORE_ROWDATA="${RESTORE_ROWDATA:-1}"
 RESTORE_DATA="${RESTORE_DATA:-1}"
 RESTORE_ARTIFACTS="${RESTORE_ARTIFACTS:-1}"

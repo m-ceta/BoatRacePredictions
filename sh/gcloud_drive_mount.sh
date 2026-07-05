@@ -26,4 +26,4 @@ rclone mount "${RCLONE_REMOTE_PATH}" "${GDRIVE_MOUNT_DIR}" \
   --poll-interval 1m
 
 echo "Google Drive mounted: ${GDRIVE_MOUNT_DIR}"
-echo "Package directory default: ${GDRIVE_MOUNT_DIR}/BoatRacePredictions"
+echo "Package directory default: ${GDRIVE_MOUNT_DIR}/gcolab_workdir/btp"

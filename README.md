@@ -346,7 +346,7 @@ remote 名やマウント先を変える場合:
 RCLONE_REMOTE_PATH="gdrive:" GDRIVE_MOUNT_DIR="$HOME/gdrive" sh/gcloud_drive_mount.sh
 ```
 
-Drive 側の zip 配置先は既定で `$HOME/gdrive/BoatRacePredictions` です。このフォルダに次の zip を置きます。
+Drive 側の zip 配置先は既定で `$HOME/gdrive/gcolab_workdir/btp` です。このフォルダに次の zip を置きます。
 
 - `rowdata.zip`
 - `data.zip`
@@ -355,7 +355,7 @@ Drive 側の zip 配置先は既定で `$HOME/gdrive/BoatRacePredictions` です
 マウント済み Drive から zip を復元し、`rowdata` 差分を更新する場合:
 
 ```bash
-DRIVE_PACKAGE_DIR="$HOME/gdrive/BoatRacePredictions" sh/gcloud_drive_restore_update.sh
+DRIVE_PACKAGE_DIR="$HOME/gdrive/gcolab_workdir/btp" sh/gcloud_drive_restore_update.sh
 ```
 
 復元対象を絞る場合:
@@ -367,7 +367,7 @@ RESTORE_ROWDATA=0 RESTORE_DATA=1 RESTORE_ARTIFACTS=1 sh/gcloud_drive_restore_upd
 ビルド、学習、三連単最適化、zip 作成、Drive へのアップロードまで実行する場合:
 
 ```bash
-DRIVE_PACKAGE_DIR="$HOME/gdrive/BoatRacePredictions" sh/gcloud_build_train_upload.sh
+DRIVE_PACKAGE_DIR="$HOME/gdrive/gcolab_workdir/btp" sh/gcloud_build_train_upload.sh
 ```
 
 `sh/gcloud_build_train_upload.sh` は次を実行します。
@@ -380,7 +380,7 @@ DRIVE_PACKAGE_DIR="$HOME/gdrive/BoatRacePredictions" sh/gcloud_build_train_uploa
 Debian 環境で Drive マウントからアップロードまでを順番に実行する場合:
 
 ```bash
-DRIVE_PACKAGE_DIR="$HOME/gdrive/BoatRacePredictions" sh/gcloud_debian_full_pipeline.sh
+DRIVE_PACKAGE_DIR="$HOME/gdrive/gcolab_workdir/btp" sh/gcloud_debian_full_pipeline.sh
 ```
 
 このスクリプトは次を順番に実行します。
@@ -396,14 +396,14 @@ DRIVE_PACKAGE_DIR="$HOME/gdrive/BoatRacePredictions" sh/gcloud_debian_full_pipel
 途中終了後に続きから実行する場合:
 
 ```bash
-DRIVE_PACKAGE_DIR="$HOME/gdrive/BoatRacePredictions" sh/gcloud_debian_resume_pipeline.sh
+DRIVE_PACKAGE_DIR="$HOME/gdrive/gcolab_workdir/btp" sh/gcloud_debian_resume_pipeline.sh
 ```
 
 再開用スクリプトは `.gcloud_pipeline_state/` の完了マーカーを見て完了済みステップをスキップします。Drive マウントは VM 再起動で外れることがあるため、再開時も毎回確認実行します。rerank 最適化は `artifacts/rerank_optimization_checkpoint.json` から再開します。
 
 主な環境変数:
 
-- `DRIVE_PACKAGE_DIR`: Drive 側の zip 配置先。既定は `$HOME/gdrive/BoatRacePredictions`
+- `DRIVE_PACKAGE_DIR`: Drive 側の zip 配置先。既定は `$HOME/gdrive/gcolab_workdir/btp`
 - `MAX_RACES`: 三連単学習の `--max-races`。既定は `1000`
 - `EVAL_MAX_RACES`: 三連単評価の `--eval-max-races`。既定は `3000`
 - `OPTIMIZE_RERANK`: `1` で `--optimize-rerank` を有効化。既定は `1`
@@ -413,13 +413,13 @@ DRIVE_PACKAGE_DIR="$HOME/gdrive/BoatRacePredictions" sh/gcloud_debian_resume_pip
 zip のローカル復元だけを直接実行する場合:
 
 ```bash
-boatrace-package-restore-local --project-root . --source-dir "$HOME/gdrive/BoatRacePredictions"
+boatrace-package-restore-local --project-root . --source-dir "$HOME/gdrive/gcolab_workdir/btp"
 ```
 
 zip の作成と Drive への出力だけを直接実行する場合:
 
 ```bash
-boatrace-package-export --project-root . --output-dir "$HOME/gdrive/BoatRacePredictions"
+boatrace-package-export --project-root . --output-dir "$HOME/gdrive/gcolab_workdir/btp"
 ```
 
 ## バッチ / シェル
