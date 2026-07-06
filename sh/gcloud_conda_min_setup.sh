@@ -10,11 +10,54 @@ INSTALL_RCLONE="${INSTALL_RCLONE:-1}"
 CONDA_INIT="${CONDA_INIT:-1}"
 CONFIGURE_RCLONE="${CONFIGURE_RCLONE:-1}"
 MOUNT_GDRIVE="${MOUNT_GDRIVE:-1}"
+ENABLE_SWAP="${ENABLE_SWAP:-1}"
+SWAP_FILE="${SWAP_FILE:-/swapfile}"
+SWAP_SIZE="${SWAP_SIZE:-8G}"
+SWAP_MIN_FREE_GB="${SWAP_MIN_FREE_GB:-20}"
 RCLONE_REMOTE_NAME="${RCLONE_REMOTE_NAME:-gdrive}"
 RCLONE_REMOTE_PATH="${RCLONE_REMOTE_PATH:-${RCLONE_REMOTE_NAME}:}"
 GDRIVE_MOUNT_DIR="${GDRIVE_MOUNT_DIR:-${HOME}/gdrive}"
 
 cd "${PROJECT_ROOT}"
+
+setup_swap() {
+  if [[ "${ENABLE_SWAP}" != "1" ]]; then
+    echo "[extra] Skipped swap setup"
+    return
+  fi
+
+  if swapon --show=NAME --noheadings | grep -Fx "${SWAP_FILE}" >/dev/null 2>&1; then
+    echo "[extra] Swap already active: ${SWAP_FILE}"
+    return
+  fi
+
+  if [[ ! -f "${SWAP_FILE}" ]]; then
+    swap_dir="$(dirname "${SWAP_FILE}")"
+    free_kb="$(df -Pk "${swap_dir}" | awk 'NR==2 {print $4}')"
+    required_kb=$((SWAP_MIN_FREE_GB * 1024 * 1024))
+    if (( free_kb < required_kb )); then
+      echo "[extra] Skipped swap setup: ${swap_dir} has less than ${SWAP_MIN_FREE_GB}GB free"
+      return
+    fi
+
+    echo "[extra] Creating ${SWAP_SIZE} swap file: ${SWAP_FILE}"
+    if ! sudo fallocate -l "${SWAP_SIZE}" "${SWAP_FILE}" 2>/dev/null; then
+      swap_size_mb="$(numfmt --from=iec --to-unit=1048576 "${SWAP_SIZE}")"
+      sudo dd if=/dev/zero of="${SWAP_FILE}" bs=1M count="${swap_size_mb}" status=progress
+    fi
+  else
+    echo "[extra] Swap file already exists: ${SWAP_FILE}"
+  fi
+
+  sudo chmod 600 "${SWAP_FILE}"
+  sudo mkswap "${SWAP_FILE}" >/dev/null
+  sudo swapon "${SWAP_FILE}"
+
+  if ! grep -F "${SWAP_FILE} none swap sw 0 0" /etc/fstab >/dev/null 2>&1; then
+    echo "[extra] Persisting swap in /etc/fstab"
+    echo "${SWAP_FILE} none swap sw 0 0" | sudo tee -a /etc/fstab >/dev/null
+  fi
+}
 
 if [[ "${INSTALL_SYSTEM_PACKAGES}" == "1" ]]; then
   packages=(git curl ca-certificates build-essential zip unzip)
@@ -27,6 +70,8 @@ if [[ "${INSTALL_SYSTEM_PACKAGES}" == "1" ]]; then
 else
   echo "[1/5] Skipped Debian package installation"
 fi
+
+setup_swap
 
 if ! command -v conda >/dev/null 2>&1; then
   arch="$(uname -m)"

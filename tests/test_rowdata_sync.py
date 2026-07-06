@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 
 from src.rowdata_sync import (
     existing_rowdata_dates,
@@ -63,3 +63,8 @@ def test_infer_default_backfill_end_date_uses_yesterday_during_daytime() -> None
 def test_infer_default_backfill_end_date_uses_today_outside_daytime() -> None:
     assert infer_default_backfill_end_date(datetime(2026, 6, 4, 6, 59, 59)) == date(2026, 6, 4)
     assert infer_default_backfill_end_date(datetime(2026, 6, 4, 21, 0, 0)) == date(2026, 6, 4)
+
+
+def test_infer_default_backfill_end_date_converts_aware_datetime_to_jst() -> None:
+    assert infer_default_backfill_end_date(datetime(2026, 6, 4, 11, 59, 59, tzinfo=UTC)) == date(2026, 6, 3)
+    assert infer_default_backfill_end_date(datetime(2026, 6, 4, 12, 0, 0, tzinfo=UTC)) == date(2026, 6, 4)

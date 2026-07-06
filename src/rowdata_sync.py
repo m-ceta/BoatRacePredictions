@@ -3,11 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from src.live import extract_lzh_first_file_bytes, fetch_mbrace_daily_archive
 
 
 SUPPORTED_ROW_KINDS = ("B", "K")
+JST = ZoneInfo("Asia/Tokyo")
 
 
 @dataclass(slots=True)
@@ -87,7 +89,8 @@ def existing_rowdata_dates(rowdata_dir: str | Path, kind: str) -> set[date]:
 
 
 def infer_default_backfill_end_date(current_dt: datetime | None = None) -> date:
-    now = current_dt or datetime.now()
+    now = current_dt.astimezone(JST) if current_dt is not None and current_dt.tzinfo else current_dt
+    now = now or datetime.now(JST)
     # During daytime race operations, only backfill through yesterday by default.
     if 7 <= now.hour < 21:
         return now.date() - timedelta(days=1)
