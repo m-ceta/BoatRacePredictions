@@ -47,6 +47,7 @@ from src.models.ranker import (
     predict_trifecta_probabilities,
     predict_race_order,
     save_artifacts,
+    optimize_trifecta_v2_blend_weight,
     train_phase3_conditional_trifecta_model,
     train_trifecta_v2_model,
     optimize_rerank_inference_settings,
@@ -230,13 +231,22 @@ def train_main() -> None:
     parser.add_argument("--training-device", choices=["cpu", "gpu"], default=None)
     args = parser.parse_args()
 
+    progress = print_train_progress
+    progress("start")
+    progress("loading config and training splits")
     config = load_config(args.config)
     config = with_training_device_override(config, args.training_device)
     train_df, valid_df, test_df, config = load_training_splits_from_parquet(
         Path(config["data"]["training_table"]),
         config,
     )
+    progress(
+        "loaded splits: "
+        f"train_races={race_count(train_df)}, valid_races={race_count(valid_df)}, "
+        f"test_races={race_count(test_df)}"
+    )
 
+    progress("training base models")
     (
         models,
         feature_columns,
@@ -247,10 +257,11 @@ def train_main() -> None:
         flow_classes,
         staged_models,
         trifecta_v2_model,
-    ) = train_ranker_from_splits(train_df, valid_df, test_df, config)
+    ) = train_ranker_from_splits(train_df, valid_df, test_df, config, progress_callback=progress)
     del train_df, valid_df, test_df
     collect_garbage()
     artifacts = get_artifact_paths(config)
+    progress("saving base model artifacts")
     save_artifacts(
         models=models,
         feature_columns=feature_columns,
@@ -273,7 +284,9 @@ def train_main() -> None:
         trifecta_v2_model=trifecta_v2_model,
         trifecta_v2_model_path=artifacts["trifecta_v2_model_path"],
     )
+    progress("cleaning intermediate files")
     cleanup_processed_intermediate_dirs(config)
+    progress("completed")
 
 
 def predict_main() -> None:
@@ -314,6 +327,10 @@ def predict_main() -> None:
 
 def print_train_trifecta_v2_progress(message: str) -> None:
     print(f"[boatrace-train-trifecta-v2] {message}", flush=True)
+
+
+def print_train_progress(message: str) -> None:
+    print(f"[boatrace-train] {message}", flush=True)
 
 
 def race_count(df: pd.DataFrame) -> int:
@@ -369,6 +386,21 @@ def train_trifecta_v2_main() -> None:
     collect_garbage()
     progress("training staged models")
     staged_models = train_staged_models(train_df, valid_df, feature_columns, categorical_columns, config)
+    collect_garbage()
+    progress("optimizing trifecta v2 blend weight")
+    trifecta_v2_v1_weight = optimize_trifecta_v2_blend_weight(
+        models,
+        ensemble_weights,
+        valid_df,
+        feature_columns,
+        categorical_columns,
+        classifier_models=classifier_models,
+        flow_model=flow_model,
+        flow_classes=flow_classes,
+        staged_models=staged_models,
+    )
+    ensemble_weights["trifecta_v2_v1_weight"] = trifecta_v2_v1_weight
+    progress(f"optimized trifecta v2 blend weight: v1_weight={trifecta_v2_v1_weight:.4g}")
     collect_garbage()
     progress(f"training trifecta v2 model: max_races={args.max_races}")
     trifecta_v2_model = train_trifecta_v2_model(

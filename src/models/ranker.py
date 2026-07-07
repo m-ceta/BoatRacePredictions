@@ -28,14 +28,12 @@ from src.models.flow import (
     load_flow_model,
     predict_flow_probabilities,
     save_flow_model,
-    train_flow_model,
 )
 from src.models.staged import (
     evaluate_staged_models,
     load_staged_models,
     predict_staged_probabilities,
     save_staged_models,
-    train_staged_models,
 )
 from src.models.training_device import catboost_training_kwargs, train_lightgbm_with_optional_gpu
 from src.odds.expected_value import attach_expected_value_columns
@@ -470,16 +468,9 @@ def train_ranker(
     collect_garbage()
     classifier_models = train_classifiers(train_df, valid_df, feature_columns, categorical_columns, config)
     collect_garbage()
-    flow_model, flow_classes = train_flow_model(
-        train_df,
-        valid_df,
-        feature_columns,
-        categorical_columns,
-        config,
-    )
-    collect_garbage()
-    staged_models = train_staged_models(train_df, valid_df, feature_columns, categorical_columns, config)
-    collect_garbage()
+    flow_model = None
+    flow_classes = None
+    staged_models: dict[str, lgb.Booster] = {}
 
     models = {
         "catboost": catboost_model,
@@ -491,45 +482,6 @@ def train_ranker(
         feature_columns,
         categorical_columns,
     )
-    trifecta_v2_v1_weight = optimize_trifecta_v2_blend_weight(
-        models,
-        ensemble_weights,
-        valid_df,
-        feature_columns,
-        categorical_columns,
-        classifier_models=classifier_models,
-        flow_model=flow_model,
-        flow_classes=flow_classes,
-        staged_models=staged_models,
-    )
-    ensemble_weights["trifecta_v2_v1_weight"] = trifecta_v2_v1_weight
-    trifecta_v2_model = train_trifecta_v2_model(
-        train_df,
-        models=models,
-        ensemble_weights=ensemble_weights,
-        feature_columns=feature_columns,
-        categorical_columns=categorical_columns,
-        classifier_models=classifier_models,
-        flow_model=flow_model,
-        flow_classes=flow_classes,
-        staged_models=staged_models,
-        config=config,
-    )
-    collect_garbage()
-    trifecta_phase3_model = train_phase3_conditional_trifecta_model(
-        train_df,
-        models=models,
-        ensemble_weights=ensemble_weights,
-        feature_columns=feature_columns,
-        categorical_columns=categorical_columns,
-        classifier_models=classifier_models,
-        flow_model=flow_model,
-        flow_classes=flow_classes,
-        staged_models=staged_models,
-        base_model=trifecta_v2_model,
-        config=config,
-    )
-    collect_garbage()
     trifecta_calibrator = fit_trifecta_calibrator(
         models,
         ensemble_weights,
@@ -580,7 +532,6 @@ def train_ranker(
             flow_model=flow_model,
             flow_classes=flow_classes,
             staged_models=staged_models,
-            trifecta_v2_model=trifecta_v2_model,
             use_v2=False,
         ),
         "valid_calibrated": evaluate_trifecta(
@@ -594,7 +545,6 @@ def train_ranker(
             flow_model=flow_model,
             flow_classes=flow_classes,
             staged_models=staged_models,
-            trifecta_v2_model=trifecta_v2_model,
             use_v2=False,
         ),
         "test_raw": evaluate_trifecta(
@@ -608,7 +558,6 @@ def train_ranker(
             flow_model=flow_model,
             flow_classes=flow_classes,
             staged_models=staged_models,
-            trifecta_v2_model=trifecta_v2_model,
             use_v2=False,
         ),
         "test_calibrated": evaluate_trifecta(
@@ -622,124 +571,7 @@ def train_ranker(
             flow_model=flow_model,
             flow_classes=flow_classes,
             staged_models=staged_models,
-            trifecta_v2_model=trifecta_v2_model,
             use_v2=False,
-        ),
-    }
-    trifecta_v2_metrics = {
-        "valid_raw": evaluate_trifecta(
-            models,
-            ensemble_weights,
-            None,
-            valid_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
-            trifecta_v2_model=trifecta_v2_model,
-            use_v2=True,
-        ),
-        "valid_calibrated": evaluate_trifecta(
-            models,
-            ensemble_weights,
-            trifecta_calibrator,
-            valid_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
-            trifecta_v2_model=trifecta_v2_model,
-            use_v2=True,
-        ),
-        "test_raw": evaluate_trifecta(
-            models,
-            ensemble_weights,
-            None,
-            test_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
-            trifecta_v2_model=trifecta_v2_model,
-            use_v2=True,
-        ),
-        "test_calibrated": evaluate_trifecta(
-            models,
-            ensemble_weights,
-            trifecta_calibrator,
-            test_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
-            trifecta_v2_model=trifecta_v2_model,
-            use_v2=True,
-        ),
-    }
-    trifecta_v3_metrics = {
-        "valid_raw": evaluate_trifecta(
-            models,
-            ensemble_weights,
-            None,
-            valid_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
-            trifecta_v2_model=trifecta_phase3_model,
-            use_v2=True,
-        ),
-        "valid_calibrated": evaluate_trifecta(
-            models,
-            ensemble_weights,
-            trifecta_calibrator,
-            valid_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
-            trifecta_v2_model=trifecta_phase3_model,
-            use_v2=True,
-        ),
-        "test_raw": evaluate_trifecta(
-            models,
-            ensemble_weights,
-            None,
-            test_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
-            trifecta_v2_model=trifecta_phase3_model,
-            use_v2=True,
-        ),
-        "test_calibrated": evaluate_trifecta(
-            models,
-            ensemble_weights,
-            trifecta_calibrator,
-            test_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
-            trifecta_v2_model=trifecta_phase3_model,
-            use_v2=True,
         ),
     }
     classifier_metrics = evaluate_classifier_models(
@@ -774,15 +606,9 @@ def train_ranker(
         "trifecta": trifecta_v1_metrics,
         "ranker_metrics": ranker_metrics,
         "trifecta_v1_metrics": trifecta_v1_metrics,
-        "trifecta_v2_metrics": trifecta_v2_metrics,
-        "trifecta_v3_metrics": trifecta_v3_metrics,
         "classifier_metrics": classifier_metrics,
         "flow_model_metrics": flow_metrics,
         "staged_model_metrics": staged_metrics,
-        "expected_value_backtest_metrics": trifecta_v3_metrics.get("test_calibrated", {}).get(
-            "expected_value_backtest",
-            {},
-        ),
     }
     return (
         models,
@@ -793,7 +619,7 @@ def train_ranker(
         flow_model,
         flow_classes,
         staged_models,
-        trifecta_phase3_model,
+        None,
     )
 
 
@@ -802,6 +628,7 @@ def train_ranker_from_splits(
     valid_df: pd.DataFrame,
     test_df: pd.DataFrame,
     config: dict,
+    progress_callback: Callable[[str], None] | None = None,
 ) -> tuple[
     dict[str, Any],
     list[str],
@@ -813,6 +640,11 @@ def train_ranker_from_splits(
     dict[str, lgb.Booster],
     Any | None,
 ]:
+    def progress(message: str) -> None:
+        if progress_callback is not None:
+            progress_callback(message)
+
+    progress("inferring feature columns")
     schema_frames = [train_df.head(200)]
     if not valid_df.empty:
         schema_frames.append(valid_df.head(200))
@@ -823,8 +655,11 @@ def train_ranker_from_splits(
     categorical_columns = infer_categorical_columns(schema_df, feature_columns)
     del schema_df, schema_frames
     collect_garbage()
+    progress(f"inferred features: numeric_and_categorical={len(feature_columns)}, categorical={len(categorical_columns)}")
 
+    progress("training catboost ranker")
     catboost_model = train_catboost(train_df, valid_df, feature_columns, categorical_columns, config)
+    progress("evaluating catboost ranker")
     catboost_metrics = evaluate_model_bundle(
         catboost_model,
         "catboost",
@@ -836,7 +671,9 @@ def train_ranker_from_splits(
     )
     collect_garbage()
 
+    progress("training lightgbm ranker")
     lightgbm_model = train_lightgbm(train_df, valid_df, feature_columns, categorical_columns, config)
+    progress("evaluating lightgbm ranker")
     lightgbm_metrics = evaluate_model_bundle(
         lightgbm_model,
         "lightgbm",
@@ -852,12 +689,14 @@ def train_ranker_from_splits(
         "catboost": catboost_model,
         "lightgbm": lightgbm_model,
     }
+    progress("optimizing ensemble weights")
     ensemble_weights = optimize_ensemble_weights(
         models,
         valid_df,
         feature_columns,
         categorical_columns,
     )
+    progress("evaluating ensemble")
     ensemble_metrics = evaluate_ensemble(
         models,
         ensemble_weights,
@@ -869,7 +708,9 @@ def train_ranker_from_splits(
     )
     collect_garbage()
 
+    progress("training classifier models")
     classifier_models = train_classifiers(train_df, valid_df, feature_columns, categorical_columns, config)
+    progress("evaluating classifier models")
     classifier_metrics = evaluate_classifier_models(
         classifier_models,
         train_df,
@@ -880,75 +721,14 @@ def train_ranker_from_splits(
     )
     collect_garbage()
 
-    flow_model, flow_classes = train_flow_model(
-        train_df,
-        valid_df,
-        feature_columns,
-        categorical_columns,
-        config,
-    )
-    flow_metrics = evaluate_flow_model(
-        flow_model,
-        flow_classes,
-        train_df,
-        valid_df,
-        test_df,
-        feature_columns,
-        categorical_columns,
-    )
-    collect_garbage()
+    flow_model = None
+    flow_classes = None
+    staged_models: dict[str, lgb.Booster] = {}
+    flow_metrics = {"status": "skipped_by_base_train"}
+    staged_metrics = {"status": "skipped_by_base_train"}
+    progress("skipping flow and staged models in base train")
 
-    staged_models = train_staged_models(train_df, valid_df, feature_columns, categorical_columns, config)
-    staged_metrics = evaluate_staged_models(
-        staged_models,
-        train_df,
-        valid_df,
-        test_df,
-        feature_columns,
-        categorical_columns,
-    )
-    collect_garbage()
-
-    trifecta_v2_v1_weight = optimize_trifecta_v2_blend_weight(
-        models,
-        ensemble_weights,
-        valid_df,
-        feature_columns,
-        categorical_columns,
-        classifier_models=classifier_models,
-        flow_model=flow_model,
-        flow_classes=flow_classes,
-        staged_models=staged_models,
-    )
-    ensemble_weights["trifecta_v2_v1_weight"] = trifecta_v2_v1_weight
-    trifecta_v2_model = train_trifecta_v2_model(
-        train_df,
-        models=models,
-        ensemble_weights=ensemble_weights,
-        feature_columns=feature_columns,
-        categorical_columns=categorical_columns,
-        classifier_models=classifier_models,
-        flow_model=flow_model,
-        flow_classes=flow_classes,
-        staged_models=staged_models,
-        config=config,
-    )
-    collect_garbage()
-    trifecta_phase3_model = train_phase3_conditional_trifecta_model(
-        train_df,
-        models=models,
-        ensemble_weights=ensemble_weights,
-        feature_columns=feature_columns,
-        categorical_columns=categorical_columns,
-        classifier_models=classifier_models,
-        flow_model=flow_model,
-        flow_classes=flow_classes,
-        staged_models=staged_models,
-        base_model=trifecta_v2_model,
-        config=config,
-    )
-    collect_garbage()
-
+    progress("fitting trifecta v1 calibrator")
     trifecta_calibrator = fit_trifecta_calibrator(
         models,
         ensemble_weights,
@@ -958,6 +738,7 @@ def train_ranker_from_splits(
     )
     collect_garbage()
 
+    progress("evaluating trifecta v1 metrics")
     trifecta_v1_metrics = {
         "valid_raw": evaluate_trifecta(
             models,
@@ -970,7 +751,6 @@ def train_ranker_from_splits(
             flow_model=flow_model,
             flow_classes=flow_classes,
             staged_models=staged_models,
-            trifecta_v2_model=trifecta_v2_model,
             use_v2=False,
         ),
         "valid_calibrated": evaluate_trifecta(
@@ -984,7 +764,6 @@ def train_ranker_from_splits(
             flow_model=flow_model,
             flow_classes=flow_classes,
             staged_models=staged_models,
-            trifecta_v2_model=trifecta_v2_model,
             use_v2=False,
         ),
         "test_raw": evaluate_trifecta(
@@ -998,7 +777,6 @@ def train_ranker_from_splits(
             flow_model=flow_model,
             flow_classes=flow_classes,
             staged_models=staged_models,
-            trifecta_v2_model=trifecta_v2_model,
             use_v2=False,
         ),
         "test_calibrated": evaluate_trifecta(
@@ -1012,124 +790,7 @@ def train_ranker_from_splits(
             flow_model=flow_model,
             flow_classes=flow_classes,
             staged_models=staged_models,
-            trifecta_v2_model=trifecta_v2_model,
             use_v2=False,
-        ),
-    }
-    trifecta_v2_metrics = {
-        "valid_raw": evaluate_trifecta(
-            models,
-            ensemble_weights,
-            None,
-            valid_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
-            trifecta_v2_model=trifecta_v2_model,
-            use_v2=True,
-        ),
-        "valid_calibrated": evaluate_trifecta(
-            models,
-            ensemble_weights,
-            trifecta_calibrator,
-            valid_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
-            trifecta_v2_model=trifecta_v2_model,
-            use_v2=True,
-        ),
-        "test_raw": evaluate_trifecta(
-            models,
-            ensemble_weights,
-            None,
-            test_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
-            trifecta_v2_model=trifecta_v2_model,
-            use_v2=True,
-        ),
-        "test_calibrated": evaluate_trifecta(
-            models,
-            ensemble_weights,
-            trifecta_calibrator,
-            test_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
-            trifecta_v2_model=trifecta_v2_model,
-            use_v2=True,
-        ),
-    }
-    trifecta_v3_metrics = {
-        "valid_raw": evaluate_trifecta(
-            models,
-            ensemble_weights,
-            None,
-            valid_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
-            trifecta_v2_model=trifecta_phase3_model,
-            use_v2=True,
-        ),
-        "valid_calibrated": evaluate_trifecta(
-            models,
-            ensemble_weights,
-            trifecta_calibrator,
-            valid_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
-            trifecta_v2_model=trifecta_phase3_model,
-            use_v2=True,
-        ),
-        "test_raw": evaluate_trifecta(
-            models,
-            ensemble_weights,
-            None,
-            test_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
-            trifecta_v2_model=trifecta_phase3_model,
-            use_v2=True,
-        ),
-        "test_calibrated": evaluate_trifecta(
-            models,
-            ensemble_weights,
-            trifecta_calibrator,
-            test_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
-            trifecta_v2_model=trifecta_phase3_model,
-            use_v2=True,
         ),
     }
     collect_garbage()
@@ -1145,16 +806,11 @@ def train_ranker_from_splits(
         "trifecta": trifecta_v1_metrics,
         "ranker_metrics": ranker_metrics,
         "trifecta_v1_metrics": trifecta_v1_metrics,
-        "trifecta_v2_metrics": trifecta_v2_metrics,
-        "trifecta_v3_metrics": trifecta_v3_metrics,
         "classifier_metrics": classifier_metrics,
         "flow_model_metrics": flow_metrics,
         "staged_model_metrics": staged_metrics,
-        "expected_value_backtest_metrics": trifecta_v3_metrics.get("test_calibrated", {}).get(
-            "expected_value_backtest",
-            {},
-        ),
     }
+    progress("base model training complete")
     return (
         models,
         feature_columns,
@@ -1164,7 +820,7 @@ def train_ranker_from_splits(
         flow_model,
         flow_classes,
         staged_models,
-        trifecta_phase3_model,
+        None,
     )
 
 
