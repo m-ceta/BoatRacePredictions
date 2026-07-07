@@ -11,11 +11,15 @@ cd "${PROJECT_ROOT}"
 rm -rf "${STATE_DIR}"
 mkdir -p "${STATE_DIR}"
 
+log_time() {
+  TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M:%S JST'
+}
+
 run_pipeline_step() {
   local label="$1"
   local marker="$2"
   shift 2
-  echo "${label} $*"
+  echo "[$(log_time)] ${label} $*"
   "$@"
   touch "${STATE_DIR}/${marker}"
 }

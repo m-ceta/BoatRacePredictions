@@ -7,6 +7,10 @@ ENV_NAME="${ENV_NAME:-boatrace-predictions}"
 
 cd "${PROJECT_ROOT}"
 
+log_time() {
+  TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M:%S JST'
+}
+
 activate_conda_env() {
   if ! command -v conda >/dev/null 2>&1; then
     echo "Conda was not found on PATH." >&2
@@ -28,6 +32,6 @@ activate_conda_env() {
 run_step() {
   local label="$1"
   shift
-  echo "${label} $*"
+  echo "[$(log_time)] ${label} $*"
   "$@"
 }

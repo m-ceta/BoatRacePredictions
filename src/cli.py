@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import json
 from pathlib import Path
+from typing import Callable
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -69,17 +72,30 @@ from src.models.flow import evaluate_flow_model, train_flow_model
 from src.models.staged import evaluate_staged_models, train_staged_models
 
 
+LOG_TZ = ZoneInfo("Asia/Tokyo")
+
+
+def current_log_time() -> str:
+    return datetime.now(LOG_TZ).strftime("%Y-%m-%d %H:%M:%S JST")
+
+
+def print_progress(command_name: str, message: str) -> None:
+    print(f"[{current_log_time()}] [{command_name}] {message}", flush=True)
+
+
 def build_dataset_main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--rowdata", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--max-date", type=str, default=None)
     args = parser.parse_args()
+    print_progress("boatrace-build", f"start: rowdata={args.rowdata}, output={args.output}, max_date={args.max_date}")
     summary = build_dataset_from_rowdata_streaming(
         rowdata_dir=args.rowdata,
         output_dir=args.output,
         max_date=args.max_date,
     )
+    print_progress("boatrace-build", "completed")
     print(json.dumps(summary.to_dict(), ensure_ascii=False, indent=2))
 
 
@@ -103,6 +119,10 @@ def backfill_rowdata_main() -> None:
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
+    print_progress(
+        "boatrace-backfill-rowdata",
+        f"start: rowdata={args.rowdata}, start={args.start}, end={args.end}, kinds={args.kinds}, overwrite={args.overwrite}",
+    )
     report = backfill_rowdata_files(
         rowdata_dir=args.rowdata,
         start_date=args.start,
@@ -110,6 +130,7 @@ def backfill_rowdata_main() -> None:
         kinds=args.kinds,
         overwrite=args.overwrite,
     )
+    print_progress("boatrace-backfill-rowdata", "completed")
     print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
 
 
@@ -326,11 +347,15 @@ def predict_main() -> None:
 
 
 def print_train_trifecta_v2_progress(message: str) -> None:
-    print(f"[boatrace-train-trifecta-v2] {message}", flush=True)
+    print_progress("boatrace-train-trifecta-v2", message)
 
 
 def print_train_progress(message: str) -> None:
-    print(f"[boatrace-train] {message}", flush=True)
+    print_progress("boatrace-train", message)
+
+
+def print_eval_trifecta_full_progress(message: str) -> None:
+    print_progress("boatrace-eval-trifecta-full", message)
 
 
 def race_count(df: pd.DataFrame) -> int:
@@ -710,21 +735,38 @@ def evaluate_trifecta_full_valid_main() -> None:
     parser.add_argument("--date-to", type=str, default=None)
     args = parser.parse_args()
 
+    progress = print_eval_trifecta_full_progress
+    progress("start")
+    progress("loading config and training splits")
     config = load_config(args.config)
     artifacts = get_artifact_paths(config)
     train_df, valid_df, test_df = load_training_splits(Path(config["data"]["training_table"]), config)
+    progress(
+        "loaded splits: "
+        f"train_races={race_count(train_df)}, valid_races={race_count(valid_df)}, "
+        f"test_races={race_count(test_df)}"
+    )
     if args.date_from is not None:
+        progress(f"filtering date_from={args.date_from}")
         valid_df = valid_df[valid_df["race_date"] >= pd.Timestamp(args.date_from)].copy()
         if not test_df.empty and "race_date" in test_df.columns:
             test_df = test_df[test_df["race_date"] >= pd.Timestamp(args.date_from)].copy()
     if args.date_to is not None:
+        progress(f"filtering date_to={args.date_to}")
         valid_df = valid_df[valid_df["race_date"] <= pd.Timestamp(args.date_to)].copy()
         if not test_df.empty and "race_date" in test_df.columns:
             test_df = test_df[test_df["race_date"] <= pd.Timestamp(args.date_to)].copy()
+    progress(
+        "evaluation scope: "
+        f"valid_races={race_count(valid_df)}, test_races={race_count(test_df)}, chunk={args.chunk}"
+    )
+    progress("inferring feature columns")
     schema_df = pd.concat([train_df.head(200), valid_df.head(200), test_df.head(200)], ignore_index=True)
     feature_columns = infer_feature_columns(schema_df)
     categorical_columns = infer_categorical_columns(schema_df, feature_columns)
+    progress(f"inferred features: numeric_and_categorical={len(feature_columns)}, categorical={len(categorical_columns)}")
 
+    progress("loading model artifacts")
     models = load_models(config)
     classifier_models = load_classifier_artifacts(config)
     flow_model, flow_classes = load_flow_artifacts(config)
@@ -734,7 +776,9 @@ def evaluate_trifecta_full_valid_main() -> None:
     v1_calibrator = load_trifecta_calibrator(artifacts["trifecta_calibrator_path"])
     v3_calibrator = load_optional_trifecta_calibrator(artifacts["trifecta_v3_calibrator_path"])
     rerank_top_n = get_rerank_top_n(trifecta_v3_model, get_default_rerank_top_n(config))
+    progress(f"loaded model artifacts: rerank_top_n={rerank_top_n}")
 
+    progress("evaluating valid chunks")
     valid_metrics = evaluate_trifecta_in_chunks(
         valid_df,
         models=models,
@@ -749,7 +793,10 @@ def evaluate_trifecta_full_valid_main() -> None:
         v1_calibrator=v1_calibrator,
         v3_calibrator=v3_calibrator,
         rerank_top_n=rerank_top_n,
+        split_name="valid",
+        progress_callback=progress,
     )
+    progress("evaluating test chunks")
     test_metrics = evaluate_trifecta_in_chunks(
         test_df,
         models=models,
@@ -764,8 +811,11 @@ def evaluate_trifecta_full_valid_main() -> None:
         v1_calibrator=v1_calibrator,
         v3_calibrator=v3_calibrator,
         rerank_top_n=rerank_top_n,
+        split_name="test",
+        progress_callback=progress,
     )
 
+    progress(f"writing metrics: {artifacts['metrics_path']}")
     metrics = json_load_or_empty(artifacts["metrics_path"])
     metrics["trifecta_evaluation_scope"] = {
         "valid_races": int(valid_df["race_id"].nunique()) if not valid_df.empty else 0,
@@ -781,6 +831,7 @@ def evaluate_trifecta_full_valid_main() -> None:
     metrics["trifecta_v1_rerank_metrics"]["test_calibrated"] = test_metrics["v1"].get("valid_calibrated", {})
     metrics["trifecta_v3_metrics"]["test_calibrated"] = test_metrics["phase3"].get("valid_calibrated", {})
     artifacts["metrics_path"].write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
+    progress("completed")
 
 
 def iter_month_chunks(df: pd.DataFrame) -> list[pd.DataFrame]:
@@ -839,11 +890,22 @@ def evaluate_trifecta_in_chunks(
     v1_calibrator,
     v3_calibrator,
     rerank_top_n: int,
+    split_name: str = "valid",
+    progress_callback: Callable[[str], None] | None = None,
 ) -> dict[str, dict]:
     chunks = iter_month_chunks(df)
     v1_chunk_metrics: list[dict] = []
     v3_chunk_metrics: list[dict] = []
-    for chunk in chunks:
+    if progress_callback is not None:
+        progress_callback(f"{split_name}: chunks={len(chunks)}")
+    for idx, chunk in enumerate(chunks, start=1):
+        chunk_start = pd.to_datetime(chunk["race_date"]).min().date() if not chunk.empty else None
+        chunk_end = pd.to_datetime(chunk["race_date"]).max().date() if not chunk.empty else None
+        if progress_callback is not None:
+            progress_callback(
+                f"{split_name}: chunk {idx}/{len(chunks)} start "
+                f"races={race_count(chunk)}, date_range={chunk_start}..{chunk_end}"
+            )
         v1_chunk_metrics.append(
             evaluate_trifecta(
                 models,
@@ -861,6 +923,8 @@ def evaluate_trifecta_in_chunks(
                 rerank_top_n=rerank_top_n,
             )
         )
+        if progress_callback is not None:
+            progress_callback(f"{split_name}: chunk {idx}/{len(chunks)} v1 complete")
         v3_chunk_metrics.append(
             evaluate_trifecta(
                 models,
@@ -878,6 +942,8 @@ def evaluate_trifecta_in_chunks(
                 rerank_top_n=rerank_top_n,
             )
         )
+        if progress_callback is not None:
+            progress_callback(f"{split_name}: chunk {idx}/{len(chunks)} v3 complete")
     return {
         "v1": {"valid_calibrated": aggregate_metric_dicts(v1_chunk_metrics)},
         "phase3": {"valid_calibrated": aggregate_metric_dicts(v3_chunk_metrics)},
