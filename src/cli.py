@@ -832,6 +832,12 @@ def evaluate_trifecta_full_valid_main() -> None:
     metrics["trifecta_v3_metrics"]["test_calibrated"] = test_metrics["phase3"].get("valid_calibrated", {})
     artifacts["metrics_path"].write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
     progress("completed")
+    result = {
+        "trifecta_evaluation_scope": metrics["trifecta_evaluation_scope"],
+        "trifecta_v1_rerank_metrics": metrics["trifecta_v1_rerank_metrics"],
+        "trifecta_v3_metrics": metrics["trifecta_v3_metrics"],
+    }
+    print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 def iter_month_chunks(df: pd.DataFrame) -> list[pd.DataFrame]:

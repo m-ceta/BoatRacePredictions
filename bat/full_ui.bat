@@ -5,9 +5,9 @@ call "%~dp0_common.bat"
 call "%~dp0_common.bat" :activate_conda
 if errorlevel 1 exit /b %errorlevel%
 
-echo [1/1] boatrace-webui-today
-call boatrace-webui-today
+echo [1/1] boatrace-webui
+call boatrace-webui
 if errorlevel 1 exit /b %errorlevel%
 
-echo today_ui.bat completed successfully.
+echo full_ui.bat completed successfully.
 exit /b 0

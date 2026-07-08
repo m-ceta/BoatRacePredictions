@@ -142,7 +142,7 @@ fi
 
 if [[ "${INSTALL_RCLONE}" == "1" && "${MOUNT_GDRIVE}" == "1" ]]; then
   echo "[extra] Mounting Google Drive"
-  RCLONE_REMOTE_PATH="${RCLONE_REMOTE_PATH}" GDRIVE_MOUNT_DIR="${GDRIVE_MOUNT_DIR}" bash "${SCRIPT_DIR}/gcloud_drive_mount.sh"
+  RCLONE_REMOTE_PATH="${RCLONE_REMOTE_PATH}" GDRIVE_MOUNT_DIR="${GDRIVE_MOUNT_DIR}" bash "${SCRIPT_DIR}/drive_mount.sh"
 fi
 
 echo

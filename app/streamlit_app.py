@@ -541,7 +541,6 @@ def render_trifecta_train_tab() -> None:
         )
         max_races = st.number_input("max-races", min_value=100, max_value=10000, value=1000, step=100)
         eval_max_races = st.number_input("eval-max-races", min_value=100, max_value=10000, value=1000, step=100)
-        eval_rerank_top_n = st.number_input("eval-rerank-top-n", min_value=3, max_value=120, value=10, step=1)
         optimize_rerank = st.checkbox("optimize-rerank を有効化", value=True)
         submitted = st.form_submit_button("三連単最適化学習を実行")
 
@@ -559,8 +558,6 @@ def render_trifecta_train_tab() -> None:
         str(int(max_races)),
         "--eval-max-races",
         str(int(eval_max_races)),
-        "--eval-rerank-top-n",
-        str(int(eval_rerank_top_n)),
     ]
     if optimize_rerank:
         args.append("--optimize-rerank")

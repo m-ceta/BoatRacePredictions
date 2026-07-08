@@ -5,6 +5,6 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
 activate_conda_env
 
-run_step "[1/1]" boatrace-package-download
+run_step "[1/1]" boatrace-webui
 
-echo "data_download.sh completed successfully."
+echo "full_ui.sh completed successfully."

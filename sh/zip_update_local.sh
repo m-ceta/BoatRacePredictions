@@ -35,4 +35,4 @@ else
   echo "[2/2] skipped rowdata update"
 fi
 
-echo "gcloud_drive_restore_update.sh completed successfully."
+echo "zip_update_local.sh completed successfully."
