@@ -8,6 +8,7 @@ if errorlevel 1 exit /b %errorlevel%
 if not defined PIPELINE_STATE_DIR set "PIPELINE_STATE_DIR=%CD%\.gcloud_pipeline_state"
 if not defined MAX_RACES set "MAX_RACES=1000"
 if not defined EVAL_MAX_RACES set "EVAL_MAX_RACES=3000"
+if not defined OPTIMIZE_RERANK_WORKERS set "OPTIMIZE_RERANK_WORKERS=2"
 
 if not exist "%PIPELINE_STATE_DIR%" mkdir "%PIPELINE_STATE_DIR%"
 
@@ -36,7 +37,7 @@ if exist "%PIPELINE_STATE_DIR%\04_train.done" (
 ) else (
     call "%~dp0_common.bat" :run_step "[4/6] train with resumable rerank optimization" boatrace-train --config configs/train.yaml
     if errorlevel 1 exit /b %errorlevel%
-    call "%~dp0_common.bat" :run_step "[4/6] train trifecta v2/v3" boatrace-train-trifecta-v2 --config configs/train.yaml --max-races %MAX_RACES% --eval-max-races %EVAL_MAX_RACES% --optimize-rerank
+    call "%~dp0_common.bat" :run_step "[4/6] train trifecta v2/v3" boatrace-train-trifecta-v2 --config configs/train.yaml --max-races %MAX_RACES% --eval-max-races %EVAL_MAX_RACES% --optimize-rerank --optimize-rerank-workers %OPTIMIZE_RERANK_WORKERS%
     if errorlevel 1 exit /b %errorlevel%
     type nul > "%PIPELINE_STATE_DIR%\04_train.done"
 )

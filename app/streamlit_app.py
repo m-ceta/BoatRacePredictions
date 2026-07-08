@@ -542,6 +542,14 @@ def render_trifecta_train_tab() -> None:
         max_races = st.number_input("max-races", min_value=100, max_value=10000, value=1000, step=100)
         eval_max_races = st.number_input("eval-max-races", min_value=100, max_value=10000, value=1000, step=100)
         optimize_rerank = st.checkbox("optimize-rerank を有効化", value=True)
+        optimize_rerank_workers = st.number_input(
+            "optimize-rerank-workers",
+            min_value=0,
+            max_value=64,
+            value=1,
+            step=1,
+            help="rerank 最適化の並列数です。1 は逐次、0 は CPUコア数 - 1 を自動使用します。",
+        )
         submitted = st.form_submit_button("三連単最適化学習を実行")
 
     if not submitted:
@@ -561,6 +569,7 @@ def render_trifecta_train_tab() -> None:
     ]
     if optimize_rerank:
         args.append("--optimize-rerank")
+        args.extend(["--optimize-rerank-workers", str(int(optimize_rerank_workers))])
 
     return_code, output_text = _run_python_cli("三連単最適化学習", args)
     _render_command_result("三連単最適化学習", return_code, output_text)

@@ -6,6 +6,7 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 STATE_DIR="${PIPELINE_STATE_DIR:-${PROJECT_ROOT}/.gcloud_pipeline_state}"
 MAX_RACES="${MAX_RACES:-1000}"
 EVAL_MAX_RACES="${EVAL_MAX_RACES:-3000}"
+OPTIMIZE_RERANK_WORKERS="${OPTIMIZE_RERANK_WORKERS:-2}"
 
 cd "${PROJECT_ROOT}"
 mkdir -p "${STATE_DIR}"
@@ -34,6 +35,7 @@ run_train_with_resumable_rerank_optimization() {
     --max-races "${MAX_RACES}"
     --eval-max-races "${EVAL_MAX_RACES}"
     --optimize-rerank
+    --optimize-rerank-workers "${OPTIMIZE_RERANK_WORKERS}"
   )
   boatrace-train-trifecta-v2 "${train_args[@]}"
 }

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import gc
 import itertools
 import json
+import os
 import shutil
 from pathlib import Path
 from typing import Any, Callable
@@ -1705,6 +1707,14 @@ def _emit_progress(progress_callback: Callable[[str], None] | None, message: str
         progress_callback(message)
 
 
+def _resolve_rerank_optimization_workers(workers: int | None) -> int:
+    if workers is None:
+        return 1
+    if int(workers) <= 0:
+        return max((os.cpu_count() or 1) - 1, 1)
+    return max(int(workers), 1)
+
+
 def optimize_rerank_inference_settings(
     models: dict[str, Any],
     weights: dict[str, float],
@@ -1722,6 +1732,7 @@ def optimize_rerank_inference_settings(
     config: dict | None = None,
     checkpoint_path: Path | None = None,
     progress_callback: Callable[[str], None] | None = None,
+    workers: int | None = None,
 ) -> dict[str, Any]:
     rerank_settings = get_phase3_settings(config)["rerank"]
     if valid_df.empty or trifecta_v2_model is None or not is_trifecta_v2_bundle(trifecta_v2_model):
@@ -1761,11 +1772,112 @@ def optimize_rerank_inference_settings(
         "objective": float("-inf"),
     }
     completed: dict[str, Any] = checkpoint["completed"]
+    worker_count = _resolve_rerank_optimization_workers(workers)
     _emit_progress(
         progress_callback,
         f"rerank optimization resumed: {len(completed)}/{total_count} completed",
     )
+    _emit_progress(progress_callback, f"rerank optimization workers: {worker_count}")
     baseline_by_top_n: dict[int, dict[str, Any]] = {}
+
+    def evaluate_candidate(
+        top_n_int: int,
+        conservative_weight: float,
+        rank_penalty_strength: float,
+    ) -> tuple[str, dict[str, Any], dict[str, float]]:
+        checkpoint_key = _rerank_checkpoint_key(top_n_int, conservative_weight, rank_penalty_strength)
+        candidate_model = with_conservative_rerank_weight(trifecta_v2_model, conservative_weight)
+        candidate_model = with_rank_penalty_settings(
+            candidate_model,
+            rank_penalty_strength,
+            get_rank_penalty_start(trifecta_v2_model),
+        )
+        calibrator = fit_model_trifecta_calibrator(
+            models,
+            weights,
+            valid_df,
+            feature_columns,
+            categorical_columns,
+            classifier_models=classifier_models,
+            flow_model=flow_model,
+            flow_classes=flow_classes,
+            staged_models=staged_models,
+            trifecta_v2_model=candidate_model,
+            use_v2=True,
+            rerank_top_n=top_n_int,
+        )
+        metrics = evaluate_trifecta(
+            models,
+            weights,
+            calibrator,
+            valid_df,
+            feature_columns,
+            categorical_columns,
+            classifier_models=classifier_models,
+            flow_model=flow_model,
+            flow_classes=flow_classes,
+            staged_models=staged_models,
+            trifecta_v2_model=candidate_model,
+            use_v2=True,
+            rerank_top_n=top_n_int,
+        )
+        baseline_metrics = baseline_by_top_n[top_n_int]
+        objective, allowed_log_loss, log_loss_excess, within_guard = _phase3_tuning_objective(
+            metrics,
+            baseline_metrics,
+            rerank_settings,
+        )
+        completed_record = {
+            "top_n": float(top_n_int),
+            "conservative_weight": float(conservative_weight),
+            "rank_penalty_strength": float(rank_penalty_strength),
+            "objective": float(objective),
+            "v1_log_loss": float(baseline_metrics.get("log_loss", 0.0)),
+            "allowed_log_loss": float(allowed_log_loss),
+            "log_loss_excess": float(log_loss_excess),
+            "within_log_loss_guard": bool(within_guard),
+            "top1_hit_rate": float(metrics.get("top1_hit_rate", 0.0)),
+            "top3_hit_rate": float(metrics.get("top3_hit_rate", 0.0)),
+            "top5_hit_rate": float(metrics.get("top5_hit_rate", 0.0)),
+            "top10_hit_rate": float(metrics.get("top10_hit_rate", 0.0)),
+            "log_loss": float(metrics.get("log_loss", 0.0)),
+            "rerank_mrr": _rerank_metric_value(metrics, "rerank_mrr"),
+        }
+        best_record = {
+            "best_top_n": float(top_n_int),
+            "best_conservative_weight": float(conservative_weight),
+            "best_rank_penalty_strength": float(rank_penalty_strength),
+            "objective": float(objective),
+            "v1_log_loss": float(baseline_metrics.get("log_loss", 0.0)),
+            "allowed_log_loss": float(allowed_log_loss),
+            "log_loss_excess": float(log_loss_excess),
+            "within_log_loss_guard": float(within_guard),
+            "top1_hit_rate": float(metrics.get("top1_hit_rate", 0.0)),
+            "top3_hit_rate": float(metrics.get("top3_hit_rate", 0.0)),
+            "top5_hit_rate": float(metrics.get("top5_hit_rate", 0.0)),
+            "top10_hit_rate": float(metrics.get("top10_hit_rate", 0.0)),
+            "log_loss": float(metrics.get("log_loss", 0.0)),
+            "rerank_mrr": _rerank_metric_value(metrics, "rerank_mrr"),
+        }
+        return checkpoint_key, completed_record, best_record
+
+    def save_candidate_result(checkpoint_key: str, completed_record: dict[str, Any], best_record: dict[str, float]) -> None:
+        nonlocal best
+        completed[checkpoint_key] = completed_record
+        objective = float(completed_record["objective"])
+        if objective > best["objective"]:
+            best = best_record
+        checkpoint["best"] = best
+        checkpoint["status"] = "completed" if len(completed) >= total_count else "running"
+        _save_rerank_optimization_checkpoint(checkpoint_path, checkpoint)
+        _emit_progress(
+            progress_callback,
+            (
+                f"rerank optimization saved {len(completed)}/{total_count}: "
+                f"objective={objective:.6g}, best={float(best['objective']):.6g}"
+            ),
+        )
+
     for top_n in top_n_grid:
         top_n_int = int(top_n)
         top_n_keys = [
@@ -1806,11 +1918,14 @@ def optimize_rerank_inference_settings(
             use_v2=False,
             rerank_top_n=top_n_int,
         )
-        for conservative_weight in weight_grid:
-            for rank_penalty_strength in penalty_grid:
-                checkpoint_key = _rerank_checkpoint_key(top_n_int, conservative_weight, rank_penalty_strength)
-                if checkpoint_key in completed:
-                    continue
+        pending_candidates = [
+            (float(conservative_weight), float(rank_penalty_strength))
+            for conservative_weight in weight_grid
+            for rank_penalty_strength in penalty_grid
+            if _rerank_checkpoint_key(top_n_int, conservative_weight, rank_penalty_strength) not in completed
+        ]
+        if worker_count <= 1 or len(pending_candidates) <= 1:
+            for conservative_weight, rank_penalty_strength in pending_candidates:
                 _emit_progress(
                     progress_callback,
                     (
@@ -1819,89 +1934,38 @@ def optimize_rerank_inference_settings(
                         f"penalty={float(rank_penalty_strength):.4g}"
                     ),
                 )
-                candidate_model = with_conservative_rerank_weight(trifecta_v2_model, conservative_weight)
-                candidate_model = with_rank_penalty_settings(
-                    candidate_model,
+                checkpoint_key, completed_record, best_record = evaluate_candidate(
+                    top_n_int,
+                    conservative_weight,
                     rank_penalty_strength,
-                    get_rank_penalty_start(trifecta_v2_model),
                 )
-                calibrator = fit_model_trifecta_calibrator(
-                    models,
-                    weights,
-                    valid_df,
-                    feature_columns,
-                    categorical_columns,
-                    classifier_models=classifier_models,
-                    flow_model=flow_model,
-                    flow_classes=flow_classes,
-                    staged_models=staged_models,
-                    trifecta_v2_model=candidate_model,
-                    use_v2=True,
-                    rerank_top_n=top_n_int,
-                )
-                metrics = evaluate_trifecta(
-                    models,
-                    weights,
-                    calibrator,
-                    valid_df,
-                    feature_columns,
-                    categorical_columns,
-                    classifier_models=classifier_models,
-                    flow_model=flow_model,
-                    flow_classes=flow_classes,
-                    staged_models=staged_models,
-                    trifecta_v2_model=candidate_model,
-                    use_v2=True,
-                    rerank_top_n=top_n_int,
-                )
-                objective, allowed_log_loss, log_loss_excess, within_guard = _phase3_tuning_objective(
-                    metrics,
-                    baseline_by_top_n[top_n_int],
-                    rerank_settings,
-                )
-                completed[checkpoint_key] = {
-                    "top_n": float(top_n_int),
-                    "conservative_weight": float(conservative_weight),
-                    "rank_penalty_strength": float(rank_penalty_strength),
-                    "objective": float(objective),
-                    "v1_log_loss": float(baseline_by_top_n[top_n_int].get("log_loss", 0.0)),
-                    "allowed_log_loss": float(allowed_log_loss),
-                    "log_loss_excess": float(log_loss_excess),
-                    "within_log_loss_guard": bool(within_guard),
-                    "top1_hit_rate": float(metrics.get("top1_hit_rate", 0.0)),
-                    "top3_hit_rate": float(metrics.get("top3_hit_rate", 0.0)),
-                    "top5_hit_rate": float(metrics.get("top5_hit_rate", 0.0)),
-                    "top10_hit_rate": float(metrics.get("top10_hit_rate", 0.0)),
-                    "log_loss": float(metrics.get("log_loss", 0.0)),
-                    "rerank_mrr": _rerank_metric_value(metrics, "rerank_mrr"),
+                save_candidate_result(checkpoint_key, completed_record, best_record)
+        else:
+            top_n_workers = min(worker_count, len(pending_candidates))
+            _emit_progress(
+                progress_callback,
+                f"rerank optimization parallel top_n={top_n_int}: workers={top_n_workers}, candidates={len(pending_candidates)}",
+            )
+            with ThreadPoolExecutor(max_workers=top_n_workers) as executor:
+                future_to_candidate = {
+                    executor.submit(evaluate_candidate, top_n_int, conservative_weight, rank_penalty_strength): (
+                        conservative_weight,
+                        rank_penalty_strength,
+                    )
+                    for conservative_weight, rank_penalty_strength in pending_candidates
                 }
-                if objective > best["objective"]:
-                    best = {
-                        "best_top_n": float(top_n_int),
-                        "best_conservative_weight": float(conservative_weight),
-                        "best_rank_penalty_strength": float(rank_penalty_strength),
-                        "objective": float(objective),
-                        "v1_log_loss": float(baseline_by_top_n[top_n_int].get("log_loss", 0.0)),
-                        "allowed_log_loss": float(allowed_log_loss),
-                        "log_loss_excess": float(log_loss_excess),
-                        "within_log_loss_guard": float(within_guard),
-                        "top1_hit_rate": float(metrics.get("top1_hit_rate", 0.0)),
-                        "top3_hit_rate": float(metrics.get("top3_hit_rate", 0.0)),
-                        "top5_hit_rate": float(metrics.get("top5_hit_rate", 0.0)),
-                        "top10_hit_rate": float(metrics.get("top10_hit_rate", 0.0)),
-                        "log_loss": float(metrics.get("log_loss", 0.0)),
-                        "rerank_mrr": _rerank_metric_value(metrics, "rerank_mrr"),
-                    }
-                checkpoint["best"] = best
-                checkpoint["status"] = "completed" if len(completed) >= total_count else "running"
-                _save_rerank_optimization_checkpoint(checkpoint_path, checkpoint)
-                _emit_progress(
-                    progress_callback,
-                    (
-                        f"rerank optimization saved {len(completed)}/{total_count}: "
-                        f"objective={float(objective):.6g}, best={float(best['objective']):.6g}"
-                    ),
-                )
+                for future in as_completed(future_to_candidate):
+                    conservative_weight, rank_penalty_strength = future_to_candidate[future]
+                    _emit_progress(
+                        progress_callback,
+                        (
+                            f"rerank optimization completed candidate: "
+                            f"top_n={top_n_int}, weight={float(conservative_weight):.4g}, "
+                            f"penalty={float(rank_penalty_strength):.4g}"
+                        ),
+                    )
+                    checkpoint_key, completed_record, best_record = future.result()
+                    save_candidate_result(checkpoint_key, completed_record, best_record)
     checkpoint["best"] = best
     checkpoint["status"] = "completed"
     _save_rerank_optimization_checkpoint(checkpoint_path, checkpoint)

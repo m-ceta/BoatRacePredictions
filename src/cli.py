@@ -369,6 +369,12 @@ def train_trifecta_v2_main() -> None:
     parser.add_argument("--max-races", type=int, default=1000)
     parser.add_argument("--eval-max-races", type=int, default=3000)
     parser.add_argument("--optimize-rerank", action="store_true")
+    parser.add_argument(
+        "--optimize-rerank-workers",
+        type=int,
+        default=1,
+        help="rerank optimization parallel workers. 1 keeps sequential execution, 0 uses cpu_count - 1.",
+    )
     parser.add_argument("--reset-rerank-optimization", action="store_true")
     args = parser.parse_args()
 
@@ -479,6 +485,7 @@ def train_trifecta_v2_main() -> None:
             config=config,
             checkpoint_path=rerank_checkpoint_path,
             progress_callback=progress,
+            workers=args.optimize_rerank_workers,
         )
         optimized_top_n = int(rerank_optimization.get("best_top_n", eval_rerank_top_n))
         optimized_weight = float(rerank_optimization.get("best_conservative_weight", 0.92))

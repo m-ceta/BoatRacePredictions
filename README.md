@@ -157,6 +157,18 @@ rerank 最適化付き:
 boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 3000 --optimize-rerank
 ```
 
+rerank 最適化の候補評価を並列化する場合:
+
+```bash
+boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 3000 --optimize-rerank --optimize-rerank-workers 4
+```
+
+利用可能コア数から 1 を引いた数で自動指定する場合:
+
+```bash
+boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 3000 --optimize-rerank --optimize-rerank-workers 0
+```
+
 最適化を最初からやり直す場合:
 
 ```bash
@@ -168,6 +180,7 @@ boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-m
 - `--max-races`: v2/v3 学習に使う最大レース数です。
 - `--eval-max-races`: 最適化・評価に使う最大レース数です。
 - `--optimize-rerank`: rerank 重み、top_n、ペナルティ、校正窓を最適化します。
+- `--optimize-rerank-workers`: rerank 最適化の候補評価並列数です。既定は `1`、`0` は `CPUコア数 - 1` です。
 - `--reset-rerank-optimization`: `artifacts/rerank_optimization_checkpoint.json` を破棄して再最適化します。
 
 補足:
@@ -401,6 +414,7 @@ sh/train_full_resume.sh
 - `PIPELINE_STATE_DIR`: 再開用マーカーの保存先です。既定は `.gcloud_pipeline_state` です。
 - `MAX_RACES`: 三連単 v2/v3 学習の `--max-races` です。既定は `1000` です。
 - `EVAL_MAX_RACES`: 三連単 v2/v3 評価の `--eval-max-races` です。既定は `3000` です。
+- `OPTIMIZE_RERANK_WORKERS`: rerank 最適化の並列数です。`train_full` / `train_full_resume` の既定は `2`、`0` は `CPUコア数 - 1` です。
 - `RESTORE_ROWDATA` / `RESTORE_DATA` / `RESTORE_ARTIFACTS`: `0` で復元をスキップします。
 - `UPDATE_ROWDATA`: `0` で zip 復元後の rowdata 更新をスキップします。
 - `EXPORT_ROWDATA` / `EXPORT_DATA` / `EXPORT_ARTIFACTS`: `0` で zip 出力をスキップします。
