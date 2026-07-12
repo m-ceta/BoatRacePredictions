@@ -53,7 +53,7 @@ from src.models.ranker import (
     optimize_trifecta_v2_blend_weight,
     train_phase3_conditional_trifecta_model,
     train_trifecta_v2_model,
-    optimize_rerank_inference_settings,
+    optimize_rerank_inference_settings_two_stage,
     optimize_phase3_calibration_window,
     with_conservative_rerank_weight,
     with_calibration_window_days,
@@ -366,7 +366,7 @@ def train_trifecta_v2_main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--training-device", choices=["cpu", "gpu"], default=None)
-    parser.add_argument("--max-races", type=int, default=1000)
+    parser.add_argument("--max-races", type=int, default=10000)
     parser.add_argument("--eval-max-races", type=int, default=3000)
     parser.add_argument("--optimize-rerank", action="store_true")
     parser.add_argument(
@@ -467,11 +467,13 @@ def train_trifecta_v2_main() -> None:
     rerank_optimization = {}
     if args.optimize_rerank and not eval_valid_df.empty:
         rerank_checkpoint_path = artifacts["rerank_optimization_checkpoint_path"]
-        if args.reset_rerank_optimization and rerank_checkpoint_path.exists():
-            progress(f"resetting rerank optimization checkpoint: {rerank_checkpoint_path}")
-            rerank_checkpoint_path.unlink()
+        if args.reset_rerank_optimization:
+            checkpoint_pattern = f"{rerank_checkpoint_path.stem}*{rerank_checkpoint_path.suffix}"
+            for existing_checkpoint in rerank_checkpoint_path.parent.glob(checkpoint_pattern):
+                progress(f"resetting rerank optimization checkpoint: {existing_checkpoint}")
+                existing_checkpoint.unlink()
         progress(f"optimizing rerank settings: checkpoint={rerank_checkpoint_path}")
-        rerank_optimization = optimize_rerank_inference_settings(
+        rerank_optimization = optimize_rerank_inference_settings_two_stage(
             models,
             ensemble_weights,
             eval_valid_df,
@@ -870,7 +872,7 @@ def aggregate_metric_dicts(metric_dicts: list[dict]) -> dict:
             aggregated[key] = aggregate_metric_dicts(values)
             continue
         weight_key = "coverage_races" if key in {"rerank_top1_hit_rate", "rerank_mrr", "baseline_mrr", "mean_rank_improvement"} else "race_count"
-        if key == "coverage_races":
+        if key in {"coverage_races", "covered_races"}:
             aggregated[key] = float(sum(float(v) for v in values))
             continue
         if key == "race_count":

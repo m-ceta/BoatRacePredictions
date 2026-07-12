@@ -96,12 +96,16 @@ DEFAULT_PHASE3_SETTINGS = {
         "num_boost_round": 120,
     },
     "rerank": {
-        "default_conservative_weight": 0.95,
-        "weight_grid": [0.95, 0.97, 0.98, 0.99],
-        "top_n_grid": [10, 16, 24, 32],
+        "default_conservative_weight": 0.9,
+        "weight_grid": [0.5, 0.7, 0.8, 0.9, 0.95],
+        "top_n_grid": [10, 24, 32, 60],
         "rank_penalty_strength_grid": [0.0, 0.01, 0.02, 0.03],
         "default_rank_penalty_strength": 0.02,
         "rank_penalty_start": 5,
+        "scenario_candidate_top_n": 6,
+        "coarse_eval_max_races": 750,
+        "coarse_penalty_grid": [0.0],
+        "fine_top_k": 5,
         "log_loss_max_delta_vs_v1": 0.03,
         "objective_top5_weight": 0.35,
         "objective_top3_weight": 0.25,
@@ -357,6 +361,12 @@ def get_rerank_top_n(model: Any, fallback: int | None = None) -> int | None:
     if is_trifecta_v2_bundle(model) and model.get("rerank_top_n") is not None:
         return int(model["rerank_top_n"])
     return None if fallback is None else int(fallback)
+
+
+def get_scenario_candidate_top_n(model: Any) -> int:
+    if is_trifecta_v2_bundle(model):
+        return max(int(model.get("scenario_candidate_top_n", 0) or 0), 0)
+    return 0
 
 
 def with_conservative_rerank_weight(model: Any, weight: float) -> Any:
@@ -1303,7 +1313,12 @@ def build_trifecta_prediction_frame(
         v2 = v2.rename(columns={"raw_probability": "raw_probability_v2"})
         candidate_mask = None
         if rerank_top_n is not None and rerank_top_n > 0:
-            candidate_mask = select_rerank_candidate_mask_from_v1(v1, top_n=rerank_top_n)
+            candidate_mask = select_rerank_candidate_mask(
+                v1,
+                race_df,
+                top_n=rerank_top_n,
+                scenario_top_n=get_scenario_candidate_top_n(trifecta_v2_model),
+            )
             if use_v2:
                 v1 = v1.loc[candidate_mask].reset_index(drop=True)
                 v2 = v2.loc[candidate_mask].reset_index(drop=True)
@@ -1341,7 +1356,11 @@ def build_trifecta_prediction_frame(
         if "is_actual" in v1.columns:
             merged["is_actual"] = v1["is_actual"].to_numpy()
         if rerank_top_n is not None and rerank_top_n > 0 and not use_v2:
-            merged = restrict_trifecta_candidates_for_rerank(merged, top_n=rerank_top_n)
+            merged = merged.loc[candidate_mask].copy().reset_index(drop=True)
+            for probability_col in ("probability_v1", "probability_v2"):
+                denom = float(merged[probability_col].sum())
+                if denom > 0:
+                    merged[probability_col] = merged[probability_col] / denom
         merged["probability"] = merged["probability_v2"] if use_v2 else merged["probability_v1"]
         rows.append(merged.sort_values("probability", ascending=False).reset_index(drop=True))
 
@@ -1397,6 +1416,38 @@ def select_rerank_candidate_mask_from_v1(v1_df: pd.DataFrame, top_n: int = 24) -
         return pd.Series(dtype=bool)
     ordered = v1_df["raw_probability_v1"].rank(ascending=False, method="first") <= int(top_n)
     return ordered.astype(bool)
+
+
+def select_rerank_candidate_mask(
+    v1_df: pd.DataFrame,
+    race_df: pd.DataFrame,
+    top_n: int,
+    scenario_top_n: int = 0,
+) -> pd.Series:
+    selected = select_rerank_candidate_mask_from_v1(v1_df, top_n=top_n)
+    if scenario_top_n <= 0 or v1_df.empty or race_df.empty:
+        return selected
+
+    scenario = _phase3_scenario_context(race_df.set_index("lane"))
+    scenario_scores: list[float] = []
+    for trifecta in v1_df["trifecta"].astype(str):
+        first, second, third = [int(value) for value in trifecta.split("-")]
+        features = _phase3_line_features(scenario, first, second, third)
+        score = (
+            features["escape_line_fit"]
+            + features["sashi_line_fit"]
+            + features["makuri_line_fit"]
+            + features["makurizashi_line_fit"]
+            + features["outer_follow_fit"]
+            + features["attack_line_fit"]
+            - features["scenario_mismatch_penalty"]
+        )
+        scenario_scores.append(float(score))
+    scenario_selected = (
+        pd.Series(scenario_scores, index=v1_df.index).rank(ascending=False, method="first")
+        <= int(scenario_top_n)
+    )
+    return (selected | scenario_selected).astype(bool)
 
 
 def merge_odds_into_trifecta(trifecta_df: pd.DataFrame, odds_df: pd.DataFrame | None) -> pd.DataFrame:
@@ -1715,6 +1766,130 @@ def _resolve_rerank_optimization_workers(workers: int | None) -> int:
     return max(int(workers), 1)
 
 
+def _rerank_result_with_candidates(
+    best: dict[str, Any],
+    completed: dict[str, Any],
+) -> dict[str, Any]:
+    result = dict(best)
+    result["ranked_candidates"] = sorted(
+        (dict(record) for record in completed.values()),
+        key=lambda record: float(record.get("objective", float("-inf"))),
+        reverse=True,
+    )
+    return result
+
+
+def _sample_races_for_rerank_search(df: pd.DataFrame, max_races: int) -> pd.DataFrame:
+    if df.empty or max_races <= 0 or "race_id" not in df.columns:
+        return df.copy()
+    races = df[["race_id"]].drop_duplicates().reset_index(drop=True)
+    if len(races) <= max_races:
+        return df.copy()
+    indices = np.linspace(0, len(races) - 1, num=max_races, dtype=int)
+    selected_ids = set(races.iloc[np.unique(indices)]["race_id"].tolist())
+    return df[df["race_id"].isin(selected_ids)].copy()
+
+
+def _stage_checkpoint_path(checkpoint_path: Path | None, suffix: str) -> Path | None:
+    if checkpoint_path is None:
+        return None
+    return checkpoint_path.with_name(f"{checkpoint_path.stem}_{suffix}{checkpoint_path.suffix}")
+
+
+def optimize_rerank_inference_settings_two_stage(
+    models: dict[str, Any],
+    weights: dict[str, float],
+    valid_df: pd.DataFrame,
+    feature_columns: list[str],
+    categorical_columns: list[str],
+    classifier_models: dict[str, lgb.Booster] | None = None,
+    flow_model: lgb.Booster | None = None,
+    flow_classes: list[str] | None = None,
+    staged_models: dict[str, lgb.Booster] | None = None,
+    trifecta_v2_model: Any | None = None,
+    config: dict | None = None,
+    checkpoint_path: Path | None = None,
+    progress_callback: Callable[[str], None] | None = None,
+    workers: int | None = None,
+) -> dict[str, Any]:
+    settings = get_phase3_settings(config)["rerank"]
+    coarse_df = _sample_races_for_rerank_search(
+        valid_df,
+        int(settings.get("coarse_eval_max_races", 750)),
+    )
+    _emit_progress(
+        progress_callback,
+        "rerank coarse search: "
+        f"races={int(coarse_df['race_id'].nunique()) if 'race_id' in coarse_df.columns else len(coarse_df)}",
+    )
+    coarse = optimize_rerank_inference_settings(
+        models,
+        weights,
+        coarse_df,
+        feature_columns,
+        categorical_columns,
+        classifier_models=classifier_models,
+        flow_model=flow_model,
+        flow_classes=flow_classes,
+        staged_models=staged_models,
+        trifecta_v2_model=trifecta_v2_model,
+        top_n_candidates=list(settings["top_n_grid"]),
+        conservative_weights=list(settings["weight_grid"]),
+        rank_penalty_strengths=list(settings.get("coarse_penalty_grid", [0.0])),
+        config=config,
+        checkpoint_path=_stage_checkpoint_path(checkpoint_path, "coarse"),
+        progress_callback=progress_callback,
+        workers=workers,
+    )
+    fine_top_k = max(int(settings.get("fine_top_k", 5)), 1)
+    shortlisted = list(coarse.get("ranked_candidates", []))[:fine_top_k]
+    if not shortlisted:
+        return coarse
+
+    grouped_weights: dict[int, list[float]] = {}
+    for record in shortlisted:
+        top_n = int(record["top_n"])
+        weight = float(record["conservative_weight"])
+        grouped_weights.setdefault(top_n, [])
+        if weight not in grouped_weights[top_n]:
+            grouped_weights[top_n].append(weight)
+
+    _emit_progress(
+        progress_callback,
+        f"rerank fine search: races={int(valid_df['race_id'].nunique())}, shortlisted={len(shortlisted)}",
+    )
+    fine_results: list[dict[str, Any]] = []
+    for top_n, fine_weights in grouped_weights.items():
+        fine_results.append(
+            optimize_rerank_inference_settings(
+                models,
+                weights,
+                valid_df,
+                feature_columns,
+                categorical_columns,
+                classifier_models=classifier_models,
+                flow_model=flow_model,
+                flow_classes=flow_classes,
+                staged_models=staged_models,
+                trifecta_v2_model=trifecta_v2_model,
+                top_n_candidates=[top_n],
+                conservative_weights=fine_weights,
+                rank_penalty_strengths=list(settings["rank_penalty_strength_grid"]),
+                config=config,
+                checkpoint_path=_stage_checkpoint_path(checkpoint_path, f"fine_{top_n}"),
+                progress_callback=progress_callback,
+                workers=workers,
+            )
+        )
+    best = max(fine_results, key=lambda result: float(result.get("objective", float("-inf"))))
+    result = dict(best)
+    result["search_mode"] = "two_stage"
+    result["coarse_races"] = int(coarse_df["race_id"].nunique())
+    result["fine_races"] = int(valid_df["race_id"].nunique())
+    result["coarse_shortlist"] = shortlisted
+    return result
+
+
 def optimize_rerank_inference_settings(
     models: dict[str, Any],
     weights: dict[str, float],
@@ -1763,7 +1938,7 @@ def optimize_rerank_inference_settings(
             progress_callback,
             f"rerank optimization already completed: {checkpoint.get('completed_count', total_count)}/{total_count}",
         )
-        return dict(checkpoint["best"])
+        return _rerank_result_with_candidates(checkpoint["best"], checkpoint["completed"])
 
     best: dict[str, float] = dict(checkpoint["best"]) if checkpoint.get("best") else {
         "best_top_n": float(top_n_grid[0]),
@@ -1979,7 +2154,7 @@ def optimize_rerank_inference_settings(
             f"objective={float(best['objective']):.6g}"
         ),
     )
-    return best
+    return _rerank_result_with_candidates(best, completed)
 
 
 def optimize_phase3_calibration_window(
@@ -2145,6 +2320,25 @@ def evaluate_trifecta(
             probability_col="probability",
             baseline_col="probability_v1",
         )
+    scenario_by_race = {
+        str(race_id): _phase3_scenario_label(_phase3_scenario_context(race_df.set_index("lane")))
+        for race_id, race_df in race_probs.groupby("race_id", sort=False)
+    }
+    scenario_metrics: dict[str, Any] = {}
+    for scenario_label in sorted(set(scenario_by_race.values())):
+        race_ids = {
+            race_id for race_id, label in scenario_by_race.items() if label == scenario_label
+        }
+        scenario_frame = trifecta[trifecta["race_id"].astype(str).isin(race_ids)].copy()
+        scenario_result = compute_trifecta_metrics(scenario_frame, probability_col="probability")
+        if rerank_top_n is not None:
+            scenario_result["rerank_metrics"] = compute_trifecta_rerank_metrics(
+                scenario_frame,
+                probability_col="probability",
+                baseline_col="probability_v1",
+            )
+        scenario_metrics[scenario_label] = scenario_result
+    metrics["scenario_metrics"] = scenario_metrics
     return metrics
 
 
@@ -2570,15 +2764,42 @@ def train_phase3_conditional_trifecta_model(
         actual_order = actual_trifecta_order(race_df)
         if actual_order is None:
             continue
-        second_frame = build_phase3_second_feature_frame(race_df, actual_order[0])
-        if not second_frame.empty:
-            second_rows.append(second_frame)
-            second_labels.append((second_frame["second_lane"].astype(int) == int(actual_order[1])).astype(int).to_numpy())
+        first_ranked = (
+            race_df.sort_values("win_probability_like", ascending=False)["lane"]
+            .astype(int)
+            .head(3)
+            .tolist()
+        )
+        first_candidates = list(dict.fromkeys([*first_ranked, int(actual_order[0])]))
+        for first_lane in first_candidates:
+            second_target = next((lane for lane in actual_order if lane != first_lane), None)
+            second_frame = build_phase3_second_feature_frame(race_df, first_lane)
+            if second_target is not None and not second_frame.empty:
+                second_rows.append(second_frame)
+                second_labels.append(
+                    (second_frame["second_lane"].astype(int) == int(second_target)).astype(int).to_numpy()
+                )
 
-        third_frame = build_phase3_third_feature_frame(race_df, actual_order[0], actual_order[1])
-        if not third_frame.empty:
-            third_rows.append(third_frame)
-            third_labels.append((third_frame["third_lane"].astype(int) == int(actual_order[2])).astype(int).to_numpy())
+            second_ranked = (
+                second_frame.sort_values("second_top2_prob", ascending=False)["second_lane"]
+                .astype(int)
+                .head(3)
+                .tolist()
+                if not second_frame.empty
+                else []
+            )
+            second_candidates = list(dict.fromkeys([*second_ranked, int(second_target)]))
+            for second_lane in second_candidates:
+                third_target = next(
+                    (lane for lane in actual_order if lane not in {first_lane, second_lane}),
+                    None,
+                )
+                third_frame = build_phase3_third_feature_frame(race_df, first_lane, second_lane)
+                if third_target is not None and not third_frame.empty:
+                    third_rows.append(third_frame)
+                    third_labels.append(
+                        (third_frame["third_lane"].astype(int) == int(third_target)).astype(int).to_numpy()
+                    )
 
     if not second_rows or not third_rows:
         return base_model
@@ -2639,6 +2860,9 @@ def train_phase3_conditional_trifecta_model(
     bundle["rank_penalty_strength"] = float(phase3_settings["rerank"]["default_rank_penalty_strength"])
     bundle["rank_penalty_start"] = int(phase3_settings["rerank"]["rank_penalty_start"])
     bundle["rerank_top_n"] = get_default_rerank_top_n(config)
+    bundle["scenario_candidate_top_n"] = int(
+        phase3_settings["rerank"].get("scenario_candidate_top_n", 0)
+    )
     return bundle
 
 
@@ -2803,6 +3027,20 @@ def _phase3_scenario_context(lane_frame: pd.DataFrame) -> dict[str, float]:
         "attack_lane": float(attack_lane),
         "attack_pressure": attack_pressure,
     }
+
+
+def _phase3_scenario_label(scenario: dict[str, float]) -> str:
+    candidates = {
+        "escape": float(scenario.get("escape_strength", 0.0)),
+        "sashi": float(scenario.get("sashi_pressure_2", 0.0)),
+        "makuri": float(scenario.get("makuri_pressure_3_4", 0.0)),
+        "makurizashi": float(scenario.get("makurizashi_pressure", 0.0)),
+        "outer_attack": float(scenario.get("outer_sweep_risk", 0.0)),
+    }
+    label, strength = max(candidates.items(), key=lambda item: item[1])
+    if strength < 0.25 or float(scenario.get("inner_collapse_risk", 0.0)) > 0.65:
+        return "mixed"
+    return label
 
 
 def _phase3_line_features(

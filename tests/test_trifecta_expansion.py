@@ -14,6 +14,7 @@ from src.models.ranker import (
     predict_race_order,
     predict_trifecta_probabilities,
     restrict_trifecta_candidates_for_rerank,
+    select_rerank_candidate_mask,
     select_rerank_candidate_mask_from_v1,
     with_rerank_top_n,
 )
@@ -247,3 +248,37 @@ def test_phase3_scenario_features_are_added_to_rerank_frames() -> None:
     assert expected.issubset(second_features.columns)
     assert expected.issubset(third_features.columns)
     assert trifecta_features.loc[0, "escape_line_fit"] > 0.0
+
+
+def test_scenario_candidates_expand_v1_top_n_without_actual_result() -> None:
+    race_df = pd.DataFrame(
+        {
+            "race_id": ["R1"] * 6,
+            "lane": [1, 2, 3, 4, 5, 6],
+            "win_probability_like": [0.38, 0.18, 0.17, 0.14, 0.08, 0.05],
+            "win_prob": [0.40, 0.16, 0.16, 0.15, 0.08, 0.05],
+            "top2_prob": [0.60, 0.33, 0.35, 0.39, 0.20, 0.13],
+            "top3_prob": [0.72, 0.48, 0.52, 0.58, 0.39, 0.25],
+            "flow_prob_nige": [0.20, 0.01, 0.01, 0.01, 0.01, 0.01],
+            "flow_prob_sashi": [0.01, 0.10, 0.05, 0.04, 0.02, 0.01],
+            "flow_prob_makuri": [0.01, 0.03, 0.25, 0.75, 0.15, 0.05],
+            "flow_prob_makurizashi": [0.01, 0.03, 0.20, 0.65, 0.18, 0.08],
+        }
+    )
+    v1 = pd.DataFrame(
+        {
+            "trifecta": ["1-2-3", "1-3-2", "4-1-3"],
+            "raw_probability_v1": [0.5, 0.4, 0.01],
+        }
+    )
+
+    selected = select_rerank_candidate_mask(
+        v1,
+        race_df,
+        top_n=1,
+        scenario_top_n=1,
+    )
+
+    assert selected.sum() == 2
+    assert selected.iloc[0]
+    assert selected.iloc[2]

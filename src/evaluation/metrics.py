@@ -23,6 +23,7 @@ def compute_trifecta_metrics(
 
     race_count = int(trifecta_df["race_id"].nunique())
     top_hits = {1: 0, 3: 0, 5: 0, 10: 0}
+    covered_races = 0
     log_losses: list[float] = []
     brier_scores: list[float] = []
     actual_probabilities: list[float] = []
@@ -34,6 +35,7 @@ def compute_trifecta_metrics(
         if len(actual_positions) != 1:
             continue
 
+        covered_races += 1
         actual_idx = int(actual_positions[0])
         actual_probability = max(float(ordered.loc[actual_idx, probability_col]), 1e-15)
         probs = ordered[probability_col].to_numpy(dtype=float)
@@ -49,6 +51,8 @@ def compute_trifecta_metrics(
 
     metrics: dict[str, float | dict[str, float]] = {
         "race_count": float(race_count),
+        "covered_races": float(covered_races),
+        "candidate_coverage_rate": covered_races / race_count if race_count else 0.0,
         "top1_hit_rate": top_hits[1] / race_count if race_count else 0.0,
         "top3_hit_rate": top_hits[3] / race_count if race_count else 0.0,
         "top5_hit_rate": top_hits[5] / race_count if race_count else 0.0,
@@ -83,7 +87,6 @@ def compute_trifecta_rerank_metrics(
     if missing:
         raise ValueError(f"Missing trifecta rerank metric columns: {sorted(missing)}")
 
-    race_count = int(trifecta_df["race_id"].nunique())
     covered = 0
     rerank_top1 = 0
     rerank_mrr = 0.0
