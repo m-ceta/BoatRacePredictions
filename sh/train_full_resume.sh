@@ -8,6 +8,10 @@ MAX_RACES="${MAX_RACES:-10000}"
 EVAL_MAX_RACES="${EVAL_MAX_RACES:-3000}"
 OPTIMIZE_RERANK_WORKERS="${OPTIMIZE_RERANK_WORKERS:-2}"
 
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/_common.sh"
+activate_conda_env
+
 cd "${PROJECT_ROOT}"
 mkdir -p "${STATE_DIR}"
 
