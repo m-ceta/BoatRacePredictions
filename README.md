@@ -390,6 +390,12 @@ sh/zip_upload.sh
 sh/train_full.sh
 ```
 
+rerank 最適化なしでフルパイプラインを実行する場合:
+
+```bash
+sh/train_without_rerank.sh
+```
+
 途中終了後に再開する場合:
 
 ```bash
@@ -426,6 +432,7 @@ bat\drive_mount.bat
 bat\zip_update_local.bat
 bat\zip_upload.bat
 bat\train_full.bat
+bat\train_without_rerank.bat
 bat\train_full_resume.bat
 ```
 
@@ -445,6 +452,7 @@ Windows の Drive mount は rclone と WinFsp が必要です。
 - `bat/today_ui.bat`
 - `bat/train_full.bat`
 - `bat/train_full_resume.bat`
+- `bat/train_without_rerank.bat`
 - `bat/zip_update_local.bat`
 - `bat/zip_upload.bat`
 
@@ -459,6 +467,7 @@ Windows の Drive mount は rclone と WinFsp が必要です。
 - `sh/today_ui.sh`
 - `sh/train_full.sh`
 - `sh/train_full_resume.sh`
+- `sh/train_without_rerank.sh`
 - `sh/zip_update_local.sh`
 - `sh/zip_upload.sh`
 
