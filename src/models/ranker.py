@@ -18,6 +18,19 @@ from catboost import CatBoostError, CatBoostRanker, Pool
 from sklearn.isotonic import IsotonicRegression
 
 from src.evaluation.metrics import compute_trifecta_metrics, compute_trifecta_rerank_metrics
+from src.features.scenario import (
+    SCENARIO_NAMES,
+    SCENARIO_SHORT_TO_LABEL,
+    classify_result_pattern,
+    scenario_feature_values,
+    scenario_description,
+    scenario_display_name,
+    scenario_label,
+    scenario_line_features,
+    scenario_numeric_id,
+    scenario_scores,
+    score_pre_race_scenarios,
+)
 from src.models.classifiers import (
     evaluate_classifier_models,
     load_classifier_models,
@@ -134,6 +147,9 @@ PHASE3_SCENARIO_NAMES = {
     "S6": "外攻め展開",
     "S7": "攻め連鎖・混戦展開",
 }
+
+
+PHASE3_SCENARIO_NAMES = SCENARIO_NAMES
 
 
 def load_config(path: Path) -> dict:
@@ -302,6 +318,9 @@ def save_trifecta_v2_model_artifact(model: Any, path: Path) -> None:
         if "phase3_third_model" in payload and isinstance(payload.get("phase3_third_model"), lgb.Booster):
             payload["phase3_third_model_str"] = payload["phase3_third_model"].model_to_string()
             payload.pop("phase3_third_model", None)
+        if "phase3_pattern_model" in payload and isinstance(payload.get("phase3_pattern_model"), lgb.Booster):
+            payload["phase3_pattern_model_str"] = payload["phase3_pattern_model"].model_to_string()
+            payload.pop("phase3_pattern_model", None)
     joblib.dump(payload, path)
 
 
@@ -317,6 +336,8 @@ def load_trifecta_v2_model_artifact_payload(path: Path) -> Any | None:
             restored["phase3_second_model"] = lgb.Booster(model_str=restored.pop("phase3_second_model_str"))
         if "phase3_third_model_str" in restored and "phase3_third_model" not in restored:
             restored["phase3_third_model"] = lgb.Booster(model_str=restored.pop("phase3_third_model_str"))
+        if "phase3_pattern_model_str" in restored and "phase3_pattern_model" not in restored:
+            restored["phase3_pattern_model"] = lgb.Booster(model_str=restored.pop("phase3_pattern_model_str"))
         return restored
     return payload
 
@@ -1349,7 +1370,7 @@ def build_trifecta_prediction_frame(
             trifecta_v2_v1_weight,
         )
         if trifecta_v2_model is not None:
-            v2_features = build_trifecta_feature_frame(race_df, v1, v2)
+            v2_features = build_trifecta_feature_frame(race_df, v1, v2, scenario_model_bundle=trifecta_v2_model)
             rerank_scores = predict_trifecta_v2_scores(trifecta_v2_model, v2_features)
             if is_trifecta_v2_bundle(trifecta_v2_model) and trifecta_v2_model.get("phase") == "phase3_conditional":
                 rerank_scores = apply_phase3_conditional_scores(
@@ -1383,7 +1404,7 @@ def build_trifecta_prediction_frame(
                 if denom > 0:
                     merged[probability_col] = merged[probability_col] / denom
         merged["probability"] = merged["probability_v2"] if use_v2 else merged["probability_v1"]
-        merged = attach_race_upset_and_darkhorse_scores(merged, race_df)
+        merged = attach_race_upset_and_darkhorse_scores(merged, race_df, scenario_model_bundle=trifecta_v2_model)
         rows.append(merged.sort_values("probability", ascending=False).reset_index(drop=True))
 
     if not rows:
@@ -1400,6 +1421,8 @@ def build_trifecta_prediction_frame(
                 "race_upset_label",
                 "race_probability_flatness",
                 "race_scenario_id",
+                "race_scenario_name",
+                "race_scenario_description",
                 "scenario_line_fit_score",
                 "trifecta_darkhorse_score",
                 "is_darkhorse_candidate",
@@ -1416,12 +1439,20 @@ def build_trifecta_prediction_frame(
     return trifecta.sort_values(["race_id", "probability"], ascending=[True, False]).reset_index(drop=True)
 
 
-def attach_race_upset_and_darkhorse_scores(trifecta_df: pd.DataFrame, race_df: pd.DataFrame) -> pd.DataFrame:
+def attach_race_upset_and_darkhorse_scores(
+    trifecta_df: pd.DataFrame,
+    race_df: pd.DataFrame,
+    scenario_model_bundle: Any | None = None,
+) -> pd.DataFrame:
     frame = trifecta_df.copy()
     if frame.empty:
         return frame
 
-    scenario = _phase3_scenario_context(race_df.set_index("lane"))
+    scenario = apply_phase3_pattern_model_to_scenario(
+        _phase3_scenario_context(race_df.set_index("lane")),
+        race_df,
+        scenario_model_bundle,
+    )
     scenario_scores = _phase3_scenario_scores(scenario)
     probabilities = pd.to_numeric(frame["probability"], errors="coerce").fillna(0.0)
     ordered_probs = probabilities.sort_values(ascending=False).to_numpy(dtype=float)
@@ -1461,7 +1492,10 @@ def attach_race_upset_and_darkhorse_scores(trifecta_df: pd.DataFrame, race_df: p
     frame["race_upset_score"] = race_upset_score
     frame["race_upset_label"] = label_race_upset(race_upset_score)
     frame["race_probability_flatness"] = probability_flatness
-    frame["race_scenario_id"] = _phase3_scenario_label(scenario)
+    scenario_id = _phase3_scenario_label(scenario)
+    frame["race_scenario_id"] = scenario_id
+    frame["race_scenario_name"] = scenario_display_name(scenario_id)
+    frame["race_scenario_description"] = scenario_description(scenario_id)
 
     darkhorse_scores: list[float] = []
     line_fit_scores: list[float] = []
@@ -2518,7 +2552,7 @@ def evaluate_trifecta(
                 probability_col="probability",
                 baseline_col="probability_v1",
             )
-        scenario_result["scenario_id"] = float(int(scenario_label[1:]))
+        scenario_result["scenario_id"] = float(scenario_numeric_id(scenario_label))
         scenario_result["scenario_min_races"] = float(scenario_min_races)
         scenario_result["is_small_sample"] = float(len(race_ids) < scenario_min_races)
         scenario_metrics[scenario_label] = scenario_result
@@ -2955,6 +2989,15 @@ def train_phase3_conditional_trifecta_model(
         flow_classes=flow_classes,
         staged_models=staged_models,
     )
+    pattern_model, pattern_feature_names, pattern_classes = train_phase3_pattern_model(ranked, config=config)
+    pattern_bundle: dict[str, Any] | None = None
+    if pattern_model is not None:
+        pattern_bundle = {
+            "model_type": "phase3_pattern_only",
+            "phase3_pattern_model": pattern_model,
+            "phase3_pattern_feature_names": pattern_feature_names,
+            "phase3_pattern_classes": pattern_classes,
+        }
 
     second_rows: list[pd.DataFrame] = []
     second_labels: list[np.ndarray] = []
@@ -2973,7 +3016,11 @@ def train_phase3_conditional_trifecta_model(
         first_candidates = list(dict.fromkeys([*first_ranked, int(actual_order[0])]))
         for first_lane in first_candidates:
             second_target = next((lane for lane in actual_order if lane != first_lane), None)
-            second_frame = build_phase3_second_feature_frame(race_df, first_lane)
+            second_frame = build_phase3_second_feature_frame(
+                race_df,
+                first_lane,
+                scenario_model_bundle=pattern_bundle,
+            )
             if second_target is not None and not second_frame.empty:
                 second_rows.append(second_frame)
                 second_labels.append(
@@ -2994,7 +3041,12 @@ def train_phase3_conditional_trifecta_model(
                     (lane for lane in actual_order if lane not in {first_lane, second_lane}),
                     None,
                 )
-                third_frame = build_phase3_third_feature_frame(race_df, first_lane, second_lane)
+                third_frame = build_phase3_third_feature_frame(
+                    race_df,
+                    first_lane,
+                    second_lane,
+                    scenario_model_bundle=pattern_bundle,
+                )
                 if third_target is not None and not third_frame.empty:
                     third_rows.append(third_frame)
                     third_labels.append(
@@ -3056,6 +3108,10 @@ def train_phase3_conditional_trifecta_model(
     bundle["phase3_second_feature_names"] = list(x_second.columns)
     bundle["phase3_third_model"] = third_model
     bundle["phase3_third_feature_names"] = list(x_third.columns)
+    if pattern_model is not None:
+        bundle["phase3_pattern_model"] = pattern_model
+        bundle["phase3_pattern_feature_names"] = pattern_feature_names
+        bundle["phase3_pattern_classes"] = pattern_classes
     bundle["conservative_v1_weight"] = float(phase3_settings["rerank"]["default_conservative_weight"])
     bundle["rank_penalty_strength"] = float(phase3_settings["rerank"]["default_rank_penalty_strength"])
     bundle["rank_penalty_start"] = int(phase3_settings["rerank"]["rank_penalty_start"])
@@ -3441,10 +3497,175 @@ def _phase3_line_features(
     }
 
 
+def _phase3_scenario_context(lane_frame: pd.DataFrame) -> dict[str, float]:
+    return score_pre_race_scenarios(lane_frame)
+
+
+def _phase3_scenario_scores(scenario: dict[str, float]) -> dict[str, float]:
+    return scenario_scores(scenario)
+
+
+def _phase3_scenario_label(scenario: dict[str, float]) -> str:
+    return scenario_label(scenario)
+
+
+def _phase3_scenario_feature_values(scenario: dict[str, float]) -> dict[str, float]:
+    return scenario_feature_values(scenario)
+
+
+def _phase3_line_features(
+    scenario: dict[str, float],
+    first_lane: int,
+    second_lane: int | None = None,
+    third_lane: int | None = None,
+) -> dict[str, float]:
+    return scenario_line_features(scenario, first_lane, second_lane, third_lane)
+
+
+def build_phase3_pattern_feature_frame(race_df: pd.DataFrame) -> pd.DataFrame:
+    lane_frame = race_df.set_index("lane").copy()
+    scenario = score_pre_race_scenarios(lane_frame)
+    scores = scenario_scores(scenario)
+    row: dict[str, float] = {
+        "escape_strength": float(scenario.get("escape_strength", 0.0)),
+        "inner_collapse_risk": float(scenario.get("inner_collapse_risk", 0.0)),
+        "sashi_pressure_2": float(scenario.get("sashi_pressure_2", 0.0)),
+        "s2_makuri_pressure": float(scenario.get("s2_makuri_pressure", 0.0)),
+        "s3_attack_pressure": float(scenario.get("s3_attack_pressure", 0.0)),
+        "s4_course_attack_pressure": float(scenario.get("s4_course_attack_pressure", 0.0)),
+        "s5_outside_attack_pressure": float(scenario.get("s5_outside_attack_pressure", 0.0)),
+        "makuri_pressure_3_4": float(scenario.get("makuri_pressure_3_4", 0.0)),
+        "makurizashi_pressure": float(scenario.get("makurizashi_pressure", 0.0)),
+        "outer_sweep_risk": float(scenario.get("outer_sweep_risk", 0.0)),
+        "attack_lane": float(scenario.get("attack_lane", 0.0)),
+        "attack_pressure": float(scenario.get("attack_pressure", 0.0)),
+        "second_attack_pressure": float(scenario.get("second_attack_pressure", 0.0)),
+        "attack_score_margin": float(scenario.get("attack_score_margin", 0.0)),
+        "chaos_pressure": float(scenario.get("chaos_pressure", 0.0)),
+        "venue_escape_win_rate": float(scenario.get("venue_escape_win_rate", 0.0)),
+        "venue_escape_top2_rate": float(scenario.get("venue_escape_top2_rate", 0.0)),
+        "venue_outer_top3_rate": float(scenario.get("venue_outer_top3_rate", 0.0)),
+    }
+    for short_id, score in scores.items():
+        row[f"rule_{short_id.lower()}_score"] = float(score)
+
+    for lane in range(1, 7):
+        if lane in lane_frame.index:
+            lane_row = lane_frame.loc[lane]
+            row[f"lane{lane}_win_prob"] = _row_numeric(lane_row, "win_probability_like", "win_prob")
+            row[f"lane{lane}_top2_prob"] = _row_numeric(lane_row, "top2_prob")
+            row[f"lane{lane}_top3_prob"] = _row_numeric(lane_row, "top3_prob")
+            row[f"lane{lane}_exact1_prob"] = _row_numeric(lane_row, "exact1_prob", "win_prob")
+            row[f"lane{lane}_nige_prob"] = _row_numeric(lane_row, "flow_prob_nige")
+            row[f"lane{lane}_sashi_prob"] = _row_numeric(lane_row, "flow_prob_sashi")
+            row[f"lane{lane}_makuri_prob"] = _row_numeric(lane_row, "flow_prob_makuri")
+            row[f"lane{lane}_makurizashi_prob"] = _row_numeric(lane_row, "flow_prob_makurizashi")
+            row[f"lane{lane}_venue_course_win_rate"] = _row_numeric(
+                lane_row, "venue_course_prev_win_rate", "venue_lane_prev_win_rate"
+            )
+            row[f"lane{lane}_venue_course_top3_rate"] = _row_numeric(
+                lane_row, "venue_course_prev_top3_rate", "venue_lane_prev_top3_rate"
+            )
+        else:
+            for suffix in (
+                "win_prob",
+                "top2_prob",
+                "top3_prob",
+                "exact1_prob",
+                "nige_prob",
+                "sashi_prob",
+                "makuri_prob",
+                "makurizashi_prob",
+                "venue_course_win_rate",
+                "venue_course_top3_rate",
+            ):
+                row[f"lane{lane}_{suffix}"] = 0.0
+    return pd.DataFrame([row]).fillna(0.0).astype(float)
+
+
+def train_phase3_pattern_model(
+    ranked: pd.DataFrame,
+    config: dict | None = None,
+) -> tuple[lgb.Booster | None, list[str], list[str]]:
+    feature_rows: list[pd.DataFrame] = []
+    labels: list[int] = []
+    class_labels = [SCENARIO_SHORT_TO_LABEL[f"S{i}"] for i in range(7)]
+    class_to_index = {label: index for index, label in enumerate(class_labels)}
+    for _, race_df in ranked.groupby("race_id", sort=False):
+        result = classify_result_pattern(race_df)
+        label = str(result.get("scenario", "S6_MIXED_OTHER"))
+        if label not in class_to_index:
+            continue
+        feature_rows.append(build_phase3_pattern_feature_frame(race_df))
+        labels.append(class_to_index[label])
+    if len(feature_rows) < 20 or len(set(labels)) < 2:
+        return None, [], class_labels
+
+    x_train = pd.concat(feature_rows, ignore_index=True)
+    y_train = np.asarray(labels, dtype=int)
+    train_set = lgb.Dataset(x_train, label=y_train, free_raw_data=False)
+    phase3_settings = get_phase3_settings(config)
+    regularization = phase3_settings["regularization"]
+    params = {
+        "objective": "multiclass",
+        "metric": "multi_logloss",
+        "num_class": len(class_labels),
+        "learning_rate": 0.05,
+        "num_leaves": int(regularization["num_leaves"]),
+        "min_data_in_leaf": max(int(regularization["min_data_in_leaf"]), 10),
+        "feature_fraction": float(regularization["feature_fraction"]),
+        "bagging_fraction": float(regularization["bagging_fraction"]),
+        "bagging_freq": int(regularization["bagging_freq"]),
+        "lambda_l1": float(regularization["lambda_l1"]),
+        "lambda_l2": float(regularization["lambda_l2"]),
+        "verbosity": -1,
+        "seed": 42,
+    }
+    booster = train_lightgbm_with_optional_gpu(
+        params,
+        train_set,
+        config,
+        num_boost_round=max(80, min(int(regularization["num_boost_round"]), 200)),
+        callbacks=[lgb.log_evaluation(100)],
+    )
+    return booster, list(x_train.columns), class_labels
+
+
+def apply_phase3_pattern_model_to_scenario(
+    scenario: dict[str, float],
+    race_df: pd.DataFrame,
+    model_bundle: Any | None,
+) -> dict[str, float]:
+    if not is_trifecta_v2_bundle(model_bundle):
+        return scenario
+    pattern_model = model_bundle.get("phase3_pattern_model")
+    feature_names = model_bundle.get("phase3_pattern_feature_names", [])
+    class_labels = model_bundle.get("phase3_pattern_classes", [])
+    if pattern_model is None or not feature_names or not class_labels:
+        return scenario
+
+    features = build_phase3_pattern_feature_frame(race_df).reindex(columns=feature_names, fill_value=0.0)
+    probabilities = np.asarray(pattern_model.predict(features), dtype=float)
+    if probabilities.ndim == 2:
+        probabilities = probabilities[0]
+    if probabilities.size != len(class_labels):
+        return scenario
+
+    updated = dict(scenario)
+    for label, probability in zip(class_labels, probabilities):
+        numeric_id = scenario_numeric_id(label)
+        updated[f"pattern_model_s{numeric_id}_probability"] = float(probability)
+        if 0 <= numeric_id <= 6:
+            updated[f"model_s{numeric_id}_score"] = float(probability)
+    updated["pattern_model_available"] = 1.0
+    return updated
+
+
 def build_trifecta_feature_frame(
     race_df: pd.DataFrame,
     v1_df: pd.DataFrame,
     v2_df: pd.DataFrame,
+    scenario_model_bundle: Any | None = None,
 ) -> pd.DataFrame:
     v1_col = "raw_probability_v1" if "raw_probability_v1" in v1_df.columns else "raw_probability"
     v2_col = "raw_probability_v2" if "raw_probability_v2" in v2_df.columns else "raw_probability"
@@ -3463,7 +3684,7 @@ def build_trifecta_feature_frame(
     )
     lane_frame["exact_second_prob"] = top2_exact
     lane_frame["exact_third_prob"] = top3_exact
-    scenario = _phase3_scenario_context(lane_frame)
+    scenario = apply_phase3_pattern_model_to_scenario(_phase3_scenario_context(lane_frame), race_df, scenario_model_bundle)
     scenario_features = _phase3_scenario_feature_values(scenario)
 
     v1_map = dict(zip(v1_df["trifecta"], v1_df[v1_col]))
@@ -3561,12 +3782,16 @@ def build_trifecta_feature_frame(
     return frame
 
 
-def build_phase3_second_feature_frame(race_df: pd.DataFrame, first_lane: int) -> pd.DataFrame:
+def build_phase3_second_feature_frame(
+    race_df: pd.DataFrame,
+    first_lane: int,
+    scenario_model_bundle: Any | None = None,
+) -> pd.DataFrame:
     lane_frame = race_df.set_index("lane").copy()
     if first_lane not in lane_frame.index:
         return pd.DataFrame()
     first_row = lane_frame.loc[first_lane]
-    scenario = _phase3_scenario_context(lane_frame)
+    scenario = apply_phase3_pattern_model_to_scenario(_phase3_scenario_context(lane_frame), race_df, scenario_model_bundle)
     scenario_features = _phase3_scenario_feature_values(scenario)
     rows: list[dict[str, float]] = []
     for second_lane in [int(lane) for lane in lane_frame.index if int(lane) != int(first_lane)]:
@@ -3652,13 +3877,18 @@ def build_phase3_second_feature_frame(race_df: pd.DataFrame, first_lane: int) ->
     return pd.DataFrame(rows)
 
 
-def build_phase3_third_feature_frame(race_df: pd.DataFrame, first_lane: int, second_lane: int) -> pd.DataFrame:
+def build_phase3_third_feature_frame(
+    race_df: pd.DataFrame,
+    first_lane: int,
+    second_lane: int,
+    scenario_model_bundle: Any | None = None,
+) -> pd.DataFrame:
     lane_frame = race_df.set_index("lane").copy()
     if first_lane not in lane_frame.index or second_lane not in lane_frame.index:
         return pd.DataFrame()
     first_row = lane_frame.loc[first_lane]
     second_row = lane_frame.loc[second_lane]
-    scenario = _phase3_scenario_context(lane_frame)
+    scenario = apply_phase3_pattern_model_to_scenario(_phase3_scenario_context(lane_frame), race_df, scenario_model_bundle)
     scenario_features = _phase3_scenario_feature_values(scenario)
     rows: list[dict[str, float]] = []
     excluded = {int(first_lane), int(second_lane)}
@@ -3761,7 +3991,11 @@ def apply_phase3_conditional_scores(
     for idx, trifecta in enumerate(trifecta_df["trifecta"].astype(str).tolist()):
         first_lane, second_lane, third_lane = [int(x) for x in trifecta.split("-")]
         if first_lane not in second_cache:
-            second_cache[first_lane] = build_phase3_second_feature_frame(race_df, first_lane)
+            second_cache[first_lane] = build_phase3_second_feature_frame(
+                race_df,
+                first_lane,
+                scenario_model_bundle=model_bundle,
+            )
         second_frame = second_cache[first_lane]
         second_prob = 1.0
         if not second_frame.empty:
@@ -3773,7 +4007,12 @@ def apply_phase3_conditional_scores(
 
         pair_key = (first_lane, second_lane)
         if pair_key not in third_cache:
-            third_cache[pair_key] = build_phase3_third_feature_frame(race_df, first_lane, second_lane)
+            third_cache[pair_key] = build_phase3_third_feature_frame(
+                race_df,
+                first_lane,
+                second_lane,
+                scenario_model_bundle=model_bundle,
+            )
         third_frame = third_cache[pair_key]
         third_prob = 1.0
         if not third_frame.empty:

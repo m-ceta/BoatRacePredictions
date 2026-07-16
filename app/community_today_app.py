@@ -149,6 +149,9 @@ def _set_default_prediction_race(schedule: dict[str, dict[int, object]]) -> None
 def _select_and_rename_columns(frame: Any, columns: list[tuple[str, str]]):
     available = [(source, label) for source, label in columns if source in frame.columns]
     extra_labels = {
+        "race_scenario_name": "決着パターン",
+        "race_scenario_id": "決着ID",
+        "race_scenario_description": "決着イメージ",
         "race_upset_score": "荒れ度",
         "race_upset_label": "荒れ判定",
         "trifecta_darkhorse_score": "穴度",
@@ -387,6 +390,8 @@ def render_prediction_tab() -> None:
 
     st.success("予測が完了しました。")
     st.text(_build_prediction_summary(prediction))
+    st.metric("決着パターン", prediction.race_scenario_name, prediction.race_scenario_id)
+    st.caption(f"決着イメージ: {prediction.race_scenario_description}")
     st.metric("レース荒れ度", f"{float(prediction.race_upset_score) * 100:.1f}%", prediction.race_upset_label)
     _render_prediction_guide()
 

@@ -20,6 +20,7 @@ except ImportError:  # pragma: no cover - optional runtime dependency
     lhafile = None
 
 from src.features.builder import add_current_meet_features, add_race_relative_features
+from src.features.scenario import scenario_description, scenario_display_name
 from src.models.ranker import attach_darkhorse_odds_context, predict_race_order, predict_trifecta_probabilities
 from src.parsers.bk_parser import parse_entry_text
 from src.today_schedule import (
@@ -98,6 +99,9 @@ class TodayRacePrediction:
     trifecta: pd.DataFrame
     boatrace_title: str | None
     odds: pd.DataFrame | None = None
+    race_scenario_id: str = "S6_MIXED_OTHER"
+    race_scenario_name: str = "混合・その他型"
+    race_scenario_description: str = "勝ち筋や上位構成が一つの典型に寄り切らない決着型です。"
     confidence_score: float = 0.0
     race_upset_score: float = 0.0
     race_upset_label: str = "堅め"
@@ -121,6 +125,9 @@ class TodayRacePrediction:
         ]
 
         lines.insert(2, f"レース荒れ度: {self.race_upset_label} ({format_percent(self.race_upset_score)})")
+
+        lines.insert(2, f"決着パターン: {self.race_scenario_name} ({self.race_scenario_id})")
+        lines.insert(3, f"決着イメージ: {self.race_scenario_description}")
 
         if self.odds is not None and not self.odds.empty:
             top_odds = self.odds.iloc[0]
@@ -224,11 +231,14 @@ def predict_today_race(
         buy_candidates = select_buy_candidates(odds_frame)
     confidence_score = calculate_prediction_confidence(ranking, trifecta)
     race_upset_score = 0.0
+    race_scenario_id = "S6_MIXED_OTHER"
     race_upset_label = "堅め"
     if "race_upset_score" in trifecta.columns and trifecta["race_upset_score"].notna().any():
         race_upset_score = float(pd.to_numeric(trifecta["race_upset_score"], errors="coerce").dropna().iloc[0])
     if "race_upset_label" in trifecta.columns and trifecta["race_upset_label"].notna().any():
         race_upset_label = str(trifecta["race_upset_label"].dropna().iloc[0])
+    if "race_scenario_id" in trifecta.columns and trifecta["race_scenario_id"].notna().any():
+        race_scenario_id = str(trifecta["race_scenario_id"].dropna().iloc[0])
     return TodayRacePrediction(
         venue=venue,
         venue_code=venue_code,
@@ -238,6 +248,9 @@ def predict_today_race(
         trifecta=trifecta,
         boatrace_title=boatrace_title,
         odds=odds_frame,
+        race_scenario_id=race_scenario_id,
+        race_scenario_name=scenario_display_name(race_scenario_id),
+        race_scenario_description=scenario_description(race_scenario_id),
         confidence_score=confidence_score,
         confidence_label=label_prediction_confidence(confidence_score),
         race_upset_score=race_upset_score,
