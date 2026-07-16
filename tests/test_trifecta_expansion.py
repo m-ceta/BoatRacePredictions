@@ -86,6 +86,11 @@ def test_predict_trifecta_without_odds_does_not_fail() -> None:
     )
     assert "probability_v1" in trifecta.columns
     assert "probability_v2" in trifecta.columns
+    assert "race_upset_score" in trifecta.columns
+    assert "race_upset_label" in trifecta.columns
+    assert "trifecta_darkhorse_score" in trifecta.columns
+    assert "is_darkhorse_candidate" in trifecta.columns
+    assert "ticket_hint" in trifecta.columns
     assert "odds" not in trifecta.columns
 
 

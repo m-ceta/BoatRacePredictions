@@ -20,7 +20,7 @@ except ImportError:  # pragma: no cover - optional runtime dependency
     lhafile = None
 
 from src.features.builder import add_current_meet_features, add_race_relative_features
-from src.models.ranker import predict_race_order, predict_trifecta_probabilities
+from src.models.ranker import attach_darkhorse_odds_context, predict_race_order, predict_trifecta_probabilities
 from src.parsers.bk_parser import parse_entry_text
 from src.today_schedule import (
     choose_default_today_race_no as _choose_default_today_race_no,
@@ -99,6 +99,8 @@ class TodayRacePrediction:
     boatrace_title: str | None
     odds: pd.DataFrame | None = None
     confidence_score: float = 0.0
+    race_upset_score: float = 0.0
+    race_upset_label: str = "堅め"
     confidence_label: str = "低"
     buy_candidates: pd.DataFrame | None = None
 
@@ -118,6 +120,8 @@ class TodayRacePrediction:
             f"3連単予想確率: {format_percent(float(top['probability']))}",
         ]
 
+        lines.insert(2, f"レース荒れ度: {self.race_upset_label} ({format_percent(self.race_upset_score)})")
+
         if self.odds is not None and not self.odds.empty:
             top_odds = self.odds.iloc[0]
             lines.extend(
@@ -135,6 +139,12 @@ class TodayRacePrediction:
                     f"{row.trifecta} | 確率 {format_percent(float(row.probability))} | オッズ {float(row.odds):.1f}倍 | "
                     f"期待値 {float(row.expected_value):.2f} | 判定 {row.buy_decision}"
                 )
+        lines.append("Top10 3連単候補:")
+        for row in self.trifecta.head(10).itertuples(index=False):
+            lines.append(
+                f"{row.trifecta} | 確率 {format_percent(float(row.probability))} | "
+                f"{getattr(row, 'ticket_hint', '-')} | 穴度 {format_percent(float(getattr(row, 'trifecta_darkhorse_score', 0.0)))}"
+            )
         return "\n".join(lines)
 
     def _position_probability(self, lane: int, index: int) -> float:
@@ -213,6 +223,12 @@ def predict_today_race(
         odds_frame = attach_odds_and_value(trifecta, odds)
         buy_candidates = select_buy_candidates(odds_frame)
     confidence_score = calculate_prediction_confidence(ranking, trifecta)
+    race_upset_score = 0.0
+    race_upset_label = "堅め"
+    if "race_upset_score" in trifecta.columns and trifecta["race_upset_score"].notna().any():
+        race_upset_score = float(pd.to_numeric(trifecta["race_upset_score"], errors="coerce").dropna().iloc[0])
+    if "race_upset_label" in trifecta.columns and trifecta["race_upset_label"].notna().any():
+        race_upset_label = str(trifecta["race_upset_label"].dropna().iloc[0])
     return TodayRacePrediction(
         venue=venue,
         venue_code=venue_code,
@@ -224,6 +240,8 @@ def predict_today_race(
         odds=odds_frame,
         confidence_score=confidence_score,
         confidence_label=label_prediction_confidence(confidence_score),
+        race_upset_score=race_upset_score,
+        race_upset_label=race_upset_label,
         buy_candidates=buy_candidates,
     )
 
@@ -808,6 +826,7 @@ def attach_odds_and_value(
     frame["probability"] = pd.to_numeric(frame["probability"], errors="coerce")
     frame["odds"] = pd.to_numeric(frame["odds"], errors="coerce")
     frame["expected_value"] = frame["odds"] * frame["probability"]
+    frame = attach_darkhorse_odds_context(frame)
     frame = frame.sort_values(["expected_value", "probability"], ascending=[False, False]).reset_index(drop=True)
     frame["buy_decision"] = frame.apply(
         lambda row: "買い"
@@ -824,12 +843,12 @@ def select_buy_candidates(odds_frame: pd.DataFrame, top_n: int = 5) -> pd.DataFr
     buy_only = odds_frame[odds_frame["buy_decision"] != "見送り"].copy()
     if not buy_only.empty:
         return buy_only.sort_values(
-            ["expected_value", "probability"],
-            ascending=[False, False],
+            ["expected_value", "ticket_priority_score", "probability"],
+            ascending=[False, False, False],
         ).head(top_n).reset_index(drop=True)
     return odds_frame.sort_values(
-        ["expected_value", "probability"],
-        ascending=[False, False],
+        ["expected_value", "ticket_priority_score", "probability"],
+        ascending=[False, False, False],
     ).head(top_n).reset_index(drop=True)
 
 

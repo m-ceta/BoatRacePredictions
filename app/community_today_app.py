@@ -148,6 +148,20 @@ def _set_default_prediction_race(schedule: dict[str, dict[int, object]]) -> None
 
 def _select_and_rename_columns(frame: Any, columns: list[tuple[str, str]]):
     available = [(source, label) for source, label in columns if source in frame.columns]
+    extra_labels = {
+        "race_upset_score": "荒れ度",
+        "race_upset_label": "荒れ判定",
+        "trifecta_darkhorse_score": "穴度",
+        "is_darkhorse_candidate": "穴候補",
+        "ticket_priority_score": "買い目優先度",
+        "ticket_hint": "買い目目安",
+    }
+    selected_sources = {source for source, _ in available}
+    available.extend(
+        (source, label)
+        for source, label in extra_labels.items()
+        if source in frame.columns and source not in selected_sources
+    )
     if not available:
         return frame.copy()
     selected = frame[[source for source, _ in available]].copy()
@@ -373,6 +387,7 @@ def render_prediction_tab() -> None:
 
     st.success("予測が完了しました。")
     st.text(_build_prediction_summary(prediction))
+    st.metric("レース荒れ度", f"{float(prediction.race_upset_score) * 100:.1f}%", prediction.race_upset_label)
     _render_prediction_guide()
 
     st.markdown("**順位予測**")

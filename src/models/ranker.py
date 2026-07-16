@@ -1383,6 +1383,7 @@ def build_trifecta_prediction_frame(
                 if denom > 0:
                     merged[probability_col] = merged[probability_col] / denom
         merged["probability"] = merged["probability_v2"] if use_v2 else merged["probability_v1"]
+        merged = attach_race_upset_and_darkhorse_scores(merged, race_df)
         rows.append(merged.sort_values("probability", ascending=False).reset_index(drop=True))
 
     if not rows:
@@ -1395,6 +1396,15 @@ def build_trifecta_prediction_frame(
                 "raw_probability_v2",
                 "probability_v2",
                 "probability",
+                "race_upset_score",
+                "race_upset_label",
+                "race_probability_flatness",
+                "race_scenario_id",
+                "scenario_line_fit_score",
+                "trifecta_darkhorse_score",
+                "is_darkhorse_candidate",
+                "ticket_priority_score",
+                "ticket_hint",
             ]
         )
 
@@ -1402,7 +1412,155 @@ def build_trifecta_prediction_frame(
     if odds_df is not None:
         trifecta = merge_odds_into_trifecta(trifecta, odds_df)
         trifecta = attach_expected_value_columns(trifecta, probability_col="probability", odds_col="odds")
+        trifecta = attach_darkhorse_odds_context(trifecta)
     return trifecta.sort_values(["race_id", "probability"], ascending=[True, False]).reset_index(drop=True)
+
+
+def attach_race_upset_and_darkhorse_scores(trifecta_df: pd.DataFrame, race_df: pd.DataFrame) -> pd.DataFrame:
+    frame = trifecta_df.copy()
+    if frame.empty:
+        return frame
+
+    scenario = _phase3_scenario_context(race_df.set_index("lane"))
+    scenario_scores = _phase3_scenario_scores(scenario)
+    probabilities = pd.to_numeric(frame["probability"], errors="coerce").fillna(0.0)
+    ordered_probs = probabilities.sort_values(ascending=False).to_numpy(dtype=float)
+    top_prob = float(ordered_probs[0]) if len(ordered_probs) else 0.0
+    second_prob = float(ordered_probs[1]) if len(ordered_probs) > 1 else 0.0
+    top10_mass = float(ordered_probs[:10].sum()) if len(ordered_probs) else 0.0
+    top10_entropy = _normalized_entropy(ordered_probs[:10])
+
+    lane_frame = race_df.set_index("lane")
+    lane1_win = _row_numeric(lane_frame.loc[1], "venue_course_prev_win_rate", "venue_lane_prev_win_rate") if 1 in lane_frame.index else 0.0
+    lane1_top2 = _row_numeric(lane_frame.loc[1], "venue_course_prev_top2_rate", "venue_lane_prev_top2_rate") if 1 in lane_frame.index else 0.0
+    weak_escape = _clip01(1.0 - float(scenario.get("escape_strength", 0.0)))
+    collapse = float(scenario.get("inner_collapse_risk", 0.0))
+    attack = max(
+        float(scenario.get("attack_pressure", 0.0)),
+        float(scenario.get("outer_sweep_risk", 0.0)),
+        float(scenario.get("s7_chain_pressure", 0.0)),
+    )
+    scenario_upset = max(
+        scenario_scores.get("S3", 0.0),
+        scenario_scores.get("S4", 0.0),
+        scenario_scores.get("S5", 0.0),
+        scenario_scores.get("S6", 0.0),
+        scenario_scores.get("S7", 0.0),
+    )
+    probability_flatness = _clip01(0.55 * top10_entropy + 0.25 * (1.0 - top_prob) + 0.20 * (1.0 - max(top_prob - second_prob, 0.0)))
+    lane1_venue_weakness = _clip01(1.0 - max(lane1_win, 0.6 * lane1_top2))
+    race_upset_score = _clip01(
+        0.24 * weak_escape
+        + 0.22 * collapse
+        + 0.18 * attack
+        + 0.16 * scenario_upset
+        + 0.10 * lane1_venue_weakness
+        + 0.10 * probability_flatness
+    )
+
+    frame["race_upset_score"] = race_upset_score
+    frame["race_upset_label"] = label_race_upset(race_upset_score)
+    frame["race_probability_flatness"] = probability_flatness
+    frame["race_scenario_id"] = _phase3_scenario_label(scenario)
+
+    darkhorse_scores: list[float] = []
+    line_fit_scores: list[float] = []
+    for trifecta, probability in zip(frame["trifecta"].astype(str), probabilities):
+        first, second, third = [int(value) for value in trifecta.split("-")]
+        line_features = _phase3_line_features(scenario, first, second, third)
+        line_fit = _clip01(
+            line_features["makuri_line_fit"]
+            + line_features["makurizashi_line_fit"]
+            + line_features["outer_follow_fit"]
+            + line_features["attack_line_fit"]
+            + 0.5 * line_features["sashi_line_fit"]
+            - line_features["scenario_mismatch_penalty"]
+        )
+        outer_mix = _clip01(
+            0.34 * float(first >= 4)
+            + 0.24 * float(second >= 4)
+            + 0.16 * float(third >= 4)
+            + 0.16 * float(first != 1)
+            + 0.10 * float(1 in (second, third))
+        )
+        low_model_probability = _clip01(1.0 - float(probability) / max(top_prob, 1e-12))
+        darkhorse_score = _clip01(
+            0.34 * race_upset_score
+            + 0.26 * outer_mix
+            + 0.22 * line_fit
+            + 0.18 * low_model_probability
+        )
+        line_fit_scores.append(line_fit)
+        darkhorse_scores.append(darkhorse_score)
+
+    frame["scenario_line_fit_score"] = line_fit_scores
+    frame["trifecta_darkhorse_score"] = darkhorse_scores
+    frame["is_darkhorse_candidate"] = frame["trifecta_darkhorse_score"] >= 0.58
+    frame["ticket_priority_score"] = _ticket_priority_score(frame)
+    frame["ticket_hint"] = frame.apply(_ticket_hint_from_row, axis=1)
+    return frame
+
+
+def attach_darkhorse_odds_context(trifecta_df: pd.DataFrame) -> pd.DataFrame:
+    frame = trifecta_df.copy()
+    if frame.empty or "odds" not in frame.columns:
+        return frame
+    odds = pd.to_numeric(frame["odds"], errors="coerce")
+    odds_score = ((odds - 10.0) / 40.0).clip(0.0, 1.0).fillna(0.0)
+    expected_value = pd.to_numeric(frame.get("expected_value"), errors="coerce").fillna(0.0)
+    value_score = ((expected_value - 0.8) / 0.7).clip(0.0, 1.0)
+    base_score = pd.to_numeric(frame.get("trifecta_darkhorse_score"), errors="coerce").fillna(0.0)
+    frame["trifecta_darkhorse_score"] = (0.70 * base_score + 0.18 * odds_score + 0.12 * value_score).clip(0.0, 1.0)
+    frame["is_darkhorse_candidate"] = frame["trifecta_darkhorse_score"] >= 0.58
+    frame["ticket_priority_score"] = _ticket_priority_score(frame)
+    frame["ticket_hint"] = frame.apply(_ticket_hint_from_row, axis=1)
+    return frame
+
+
+def label_race_upset(score: float) -> str:
+    if score >= 0.72:
+        return "波乱"
+    if score >= 0.55:
+        return "荒れ気配"
+    if score >= 0.38:
+        return "標準"
+    return "堅め"
+
+
+def _normalized_entropy(values: np.ndarray) -> float:
+    probs = np.asarray(values, dtype=float)
+    total = float(probs.sum())
+    if total <= 0 or len(probs) <= 1:
+        return 0.0
+    probs = probs / total
+    entropy = -float(np.sum(probs * np.log(np.clip(probs, 1e-12, None))))
+    return _clip01(entropy / float(np.log(len(probs))))
+
+
+def _ticket_priority_score(frame: pd.DataFrame) -> pd.Series:
+    probability = pd.to_numeric(frame.get("probability"), errors="coerce").fillna(0.0)
+    darkhorse = pd.to_numeric(frame.get("trifecta_darkhorse_score"), errors="coerce").fillna(0.0)
+    line_fit = pd.to_numeric(frame.get("scenario_line_fit_score"), errors="coerce").fillna(0.0)
+    if "expected_value" in frame.columns:
+        expected_value = pd.to_numeric(frame["expected_value"], errors="coerce").fillna(0.0)
+    else:
+        expected_value = pd.Series(0.0, index=frame.index)
+    probability_score = probability.groupby(frame["race_id"]).rank(pct=True, ascending=True).fillna(0.0)
+    value_score = ((expected_value - 0.8) / 0.7).clip(0.0, 1.0)
+    return (0.42 * probability_score + 0.28 * darkhorse + 0.18 * line_fit + 0.12 * value_score).clip(0.0, 1.0)
+
+
+def _ticket_hint_from_row(row: pd.Series) -> str:
+    darkhorse = float(row.get("trifecta_darkhorse_score", 0.0) or 0.0)
+    priority = float(row.get("ticket_priority_score", 0.0) or 0.0)
+    probability = float(row.get("probability", 0.0) or 0.0)
+    if darkhorse >= 0.70 and priority >= 0.45:
+        return "妙味穴"
+    if darkhorse >= 0.58:
+        return "穴候補"
+    if probability >= 0.08 or priority >= 0.72:
+        return "本線"
+    return "押さえ"
 
 
 def normalize_trifecta_probabilities(
