@@ -35,6 +35,7 @@ from src.models.ranker import (
     fit_model_trifecta_calibrator,
     get_artifact_paths,
     get_default_rerank_top_n,
+    get_phase3_settings,
     get_rerank_top_n,
     load_config,
     load_classifier_artifacts,
@@ -367,7 +368,7 @@ def train_trifecta_v2_main() -> None:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--training-device", choices=["cpu", "gpu"], default=None)
     parser.add_argument("--max-races", type=int, default=10000)
-    parser.add_argument("--eval-max-races", type=int, default=3000)
+    parser.add_argument("--eval-max-races", type=int, default=5000)
     parser.add_argument("--optimize-rerank", action="store_true")
     parser.add_argument(
         "--optimize-rerank-workers",
@@ -409,6 +410,9 @@ def train_trifecta_v2_main() -> None:
     models = load_models(config)
     classifier_models = load_classifier_artifacts(config)
     ensemble_weights = load_ensemble_weights(artifacts["ensemble_weights_path"])
+    ensemble_weights["scenario_metric_min_races"] = int(
+        get_phase3_settings(config)["evaluation"].get("scenario_min_races", 100)
+    )
     trifecta_calibrator = load_trifecta_calibrator(artifacts["trifecta_calibrator_path"])
     eval_rerank_top_n = get_default_rerank_top_n(config)
 
@@ -611,6 +615,7 @@ def train_trifecta_v2_main() -> None:
         "test_races": int(eval_test_df["race_id"].nunique()) if not eval_test_df.empty else 0,
         "eval_max_races": int(args.eval_max_races),
         "eval_rerank_top_n": int(eval_rerank_top_n),
+        "scenario_min_races": int(ensemble_weights.get("scenario_metric_min_races", 100)),
     }
     if rerank_optimization:
         metrics["rerank_optimization"] = rerank_optimization
@@ -782,6 +787,10 @@ def evaluate_trifecta_full_valid_main() -> None:
     staged_models = load_staged_model_artifacts(config)
     trifecta_v3_model = load_trifecta_v2_model_artifact(config)
     ensemble_weights = load_ensemble_weights(artifacts["ensemble_weights_path"])
+    ensemble_weights.setdefault(
+        "scenario_metric_min_races",
+        int(get_phase3_settings(config)["evaluation"].get("scenario_min_races", 100)),
+    )
     v1_calibrator = load_trifecta_calibrator(artifacts["trifecta_calibrator_path"])
     v3_calibrator = load_optional_trifecta_calibrator(artifacts["trifecta_v3_calibrator_path"])
     rerank_top_n = get_rerank_top_n(trifecta_v3_model, get_default_rerank_top_n(config))
@@ -830,6 +839,7 @@ def evaluate_trifecta_full_valid_main() -> None:
         "valid_races": int(valid_df["race_id"].nunique()) if not valid_df.empty else 0,
         "test_races": int(test_df["race_id"].nunique()) if not test_df.empty else 0,
         "eval_rerank_top_n": rerank_top_n,
+        "scenario_min_races": int(ensemble_weights.get("scenario_metric_min_races", 100)),
         "chunk": args.chunk,
         "evaluation_mode": "full_valid_chunked",
         "date_from": args.date_from,

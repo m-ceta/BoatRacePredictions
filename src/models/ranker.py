@@ -118,6 +118,21 @@ DEFAULT_PHASE3_SETTINGS = {
         "window_days_options": [30, 60, 90],
         "default_window_days": 60,
     },
+    "evaluation": {
+        "scenario_min_races": 100,
+    },
+}
+
+
+PHASE3_SCENARIO_NAMES = {
+    "S0": "イン主導・逃げ展開",
+    "S1": "2コース差し展開",
+    "S2": "2コースまくり展開",
+    "S3": "3コース攻め展開",
+    "S4": "センターまくり差し展開",
+    "S5": "カドまくり展開",
+    "S6": "外攻め展開",
+    "S7": "攻め連鎖・混戦展開",
 }
 
 
@@ -494,6 +509,9 @@ def train_ranker(
         feature_columns,
         categorical_columns,
     )
+    ensemble_weights["scenario_metric_min_races"] = int(
+        get_phase3_settings(config)["evaluation"].get("scenario_min_races", 100)
+    )
     trifecta_calibrator = fit_trifecta_calibrator(
         models,
         ensemble_weights,
@@ -707,6 +725,9 @@ def train_ranker_from_splits(
         valid_df,
         feature_columns,
         categorical_columns,
+    )
+    ensemble_weights["scenario_metric_min_races"] = int(
+        get_phase3_settings(config)["evaluation"].get("scenario_min_races", 100)
     )
     progress("evaluating ensemble")
     ensemble_metrics = evaluate_ensemble(
@@ -2324,7 +2345,9 @@ def evaluate_trifecta(
         str(race_id): _phase3_scenario_label(_phase3_scenario_context(race_df.set_index("lane")))
         for race_id, race_df in race_probs.groupby("race_id", sort=False)
     }
+    scenario_min_races = int(weights.get("scenario_metric_min_races", DEFAULT_PHASE3_SETTINGS["evaluation"]["scenario_min_races"]))
     scenario_metrics: dict[str, Any] = {}
+    scenario_groups: dict[str, set[str]] = {}
     for scenario_label in sorted(set(scenario_by_race.values())):
         race_ids = {
             race_id for race_id, label in scenario_by_race.items() if label == scenario_label
@@ -2337,8 +2360,27 @@ def evaluate_trifecta(
                 probability_col="probability",
                 baseline_col="probability_v1",
             )
+        scenario_result["scenario_id"] = float(int(scenario_label[1:]))
+        scenario_result["scenario_min_races"] = float(scenario_min_races)
+        scenario_result["is_small_sample"] = float(len(race_ids) < scenario_min_races)
         scenario_metrics[scenario_label] = scenario_result
+        grouped_label = scenario_label if len(race_ids) >= scenario_min_races else "__small_sample__"
+        scenario_groups.setdefault(grouped_label, set()).update(race_ids)
     metrics["scenario_metrics"] = scenario_metrics
+    grouped_metrics: dict[str, Any] = {}
+    for scenario_label, race_ids in sorted(scenario_groups.items()):
+        scenario_frame = trifecta[trifecta["race_id"].astype(str).isin(race_ids)].copy()
+        scenario_result = compute_trifecta_metrics(scenario_frame, probability_col="probability")
+        if rerank_top_n is not None:
+            scenario_result["rerank_metrics"] = compute_trifecta_rerank_metrics(
+                scenario_frame,
+                probability_col="probability",
+                baseline_col="probability_v1",
+            )
+        scenario_result["scenario_min_races"] = float(scenario_min_races)
+        scenario_result["is_small_sample_group"] = float(scenario_label == "__small_sample__")
+        grouped_metrics[scenario_label] = scenario_result
+    metrics["scenario_metrics_grouped"] = grouped_metrics
     return metrics
 
 
@@ -2903,6 +2945,15 @@ def _phase3_scenario_context(lane_frame: pd.DataFrame) -> dict[str, float]:
             "outer_sweep_risk": 0.0,
             "attack_lane": 0.0,
             "attack_pressure": 0.0,
+            "venue_escape_win_rate": 0.0,
+            "venue_escape_top2_rate": 0.0,
+            "venue_outer_top3_rate": 0.0,
+            "s2_makuri_pressure": 0.0,
+            "s3_attack_pressure": 0.0,
+            "s4_makurizashi_pressure": 0.0,
+            "s5_kado_makuri_pressure": 0.0,
+            "s6_outer_attack_pressure": 0.0,
+            "s7_chain_pressure": 0.0,
         }
 
     frame = lane_frame.copy()
@@ -2914,6 +2965,18 @@ def _phase3_scenario_context(lane_frame: pd.DataFrame) -> dict[str, float]:
     frame["sashi_prob_ctx"] = frame.apply(lambda row: _row_numeric(row, "flow_prob_sashi"), axis=1)
     frame["makuri_prob_ctx"] = frame.apply(lambda row: _row_numeric(row, "flow_prob_makuri"), axis=1)
     frame["makurizashi_prob_ctx"] = frame.apply(lambda row: _row_numeric(row, "flow_prob_makurizashi"), axis=1)
+    frame["venue_course_win_ctx"] = frame.apply(
+        lambda row: _row_numeric(row, "venue_course_prev_win_rate", "venue_lane_prev_win_rate"),
+        axis=1,
+    )
+    frame["venue_course_top2_ctx"] = frame.apply(
+        lambda row: _row_numeric(row, "venue_course_prev_top2_rate", "venue_lane_prev_top2_rate"),
+        axis=1,
+    )
+    frame["venue_course_top3_ctx"] = frame.apply(
+        lambda row: _row_numeric(row, "venue_course_prev_top3_rate", "venue_lane_prev_top3_rate"),
+        axis=1,
+    )
     frame["machine_ctx"] = frame.apply(
         lambda row: _row_numeric(row, "motor_top2_rate_hist", "motor_prev_top3_rate", "motor_place_rate")
         + _row_numeric(row, "boat_top2_rate_hist", "boat_prev_top3_rate", "boat_place_rate"),
@@ -2939,13 +3002,15 @@ def _phase3_scenario_context(lane_frame: pd.DataFrame) -> dict[str, float]:
         elif lane >= 5:
             lane_bias = 0.05
         attack_scores[lane] = _clip01(
-            0.25 * float(row["rank_prob_ctx"])
-            + 0.20 * float(row["top2_prob_ctx"])
-            + 0.18 * float(row["sashi_prob_ctx"])
-            + 0.22 * max(float(row["makuri_prob_ctx"]), float(row["makurizashi_prob_ctx"]))
-            + 0.07 * float(row["st_adv_ctx"])
-            + 0.05 * float(row["exhibition_adv_ctx"])
+            0.22 * float(row["rank_prob_ctx"])
+            + 0.18 * float(row["top2_prob_ctx"])
+            + 0.16 * float(row["sashi_prob_ctx"])
+            + 0.20 * max(float(row["makuri_prob_ctx"]), float(row["makurizashi_prob_ctx"]))
+            + 0.06 * float(row["st_adv_ctx"])
+            + 0.04 * float(row["exhibition_adv_ctx"])
             + 0.03 * float(row["machine_adv_ctx"])
+            + 0.07 * float(row["venue_course_top2_ctx"])
+            + 0.04 * float(row["venue_course_top3_ctx"])
             + lane_bias
         )
 
@@ -2958,19 +3023,24 @@ def _phase3_scenario_context(lane_frame: pd.DataFrame) -> dict[str, float]:
         lane1_top2 = 0.0
     else:
         lane1_top2 = float(lane1["top2_prob_ctx"])
+        lane1_venue_win = float(lane1["venue_course_win_ctx"])
+        lane1_venue_top2 = float(lane1["venue_course_top2_ctx"])
         escape_base = _clip01(
-            0.32 * float(lane1["exact1_prob_ctx"])
-            + 0.24 * float(lane1["rank_prob_ctx"])
-            + 0.22 * float(lane1["nige_prob_ctx"])
-            + 0.08 * float(lane1["st_adv_ctx"])
-            + 0.06 * float(lane1["exhibition_adv_ctx"])
-            + 0.08 * float(lane1["machine_adv_ctx"])
+            0.27 * float(lane1["exact1_prob_ctx"])
+            + 0.20 * float(lane1["rank_prob_ctx"])
+            + 0.19 * float(lane1["nige_prob_ctx"])
+            + 0.07 * float(lane1["st_adv_ctx"])
+            + 0.05 * float(lane1["exhibition_adv_ctx"])
+            + 0.07 * float(lane1["machine_adv_ctx"])
+            + 0.09 * lane1_venue_win
+            + 0.06 * lane1_venue_top2
         )
         escape_strength = _clip01(escape_base * (1.0 - 0.35 * attack_pressure))
 
     lane2 = frame.loc[2] if 2 in frame.index else None
     if lane2 is None:
         sashi_pressure_2 = 0.0
+        s2_makuri_pressure = 0.0
     else:
         sashi_pressure_2 = _clip01(
             0.38 * float(lane2["sashi_prob_ctx"])
@@ -2979,6 +3049,15 @@ def _phase3_scenario_context(lane_frame: pd.DataFrame) -> dict[str, float]:
             + 0.10 * float(lane2["st_adv_ctx"])
             + 0.05 * float(lane2["exhibition_adv_ctx"])
             + 0.05 * float(lane2["machine_adv_ctx"])
+        )
+        s2_makuri_pressure = _clip01(
+            0.34 * float(lane2["makuri_prob_ctx"])
+            + 0.20 * float(lane2["rank_prob_ctx"])
+            + 0.16 * float(lane2["top2_prob_ctx"])
+            + 0.12 * float(lane2["st_adv_ctx"])
+            + 0.08 * float(lane2["exhibition_adv_ctx"])
+            + 0.05 * float(lane2["machine_adv_ctx"])
+            + 0.05 * float(lane2["venue_course_top2_ctx"])
         )
 
     makuri_pressure_3_4 = max(
@@ -2996,6 +3075,22 @@ def _phase3_scenario_context(lane_frame: pd.DataFrame) -> dict[str, float]:
         ),
         default=0.0,
     )
+    s3_attack_pressure = _clip01(
+        0.42 * float(frame.loc[3, "makuri_prob_ctx"])
+        + 0.18 * float(frame.loc[3, "makurizashi_prob_ctx"])
+        + 0.16 * float(frame.loc[3, "rank_prob_ctx"])
+        + 0.10 * float(frame.loc[3, "st_adv_ctx"])
+        + 0.06 * float(frame.loc[3, "exhibition_adv_ctx"])
+        + 0.08 * float(frame.loc[3, "venue_course_top2_ctx"])
+    ) if 3 in frame.index else 0.0
+    s5_kado_makuri_pressure = _clip01(
+        0.46 * float(frame.loc[4, "makuri_prob_ctx"])
+        + 0.16 * float(frame.loc[4, "rank_prob_ctx"])
+        + 0.12 * float(frame.loc[4, "top2_prob_ctx"])
+        + 0.10 * float(frame.loc[4, "st_adv_ctx"])
+        + 0.06 * float(frame.loc[4, "exhibition_adv_ctx"])
+        + 0.10 * float(frame.loc[4, "venue_course_top3_ctx"])
+    ) if 4 in frame.index else 0.0
     makurizashi_pressure = max(
         (
             _clip01(
@@ -3010,12 +3105,64 @@ def _phase3_scenario_context(lane_frame: pd.DataFrame) -> dict[str, float]:
         ),
         default=0.0,
     )
-    outer_sweep_risk = _clip01(
-        0.35 * max((attack_scores.get(lane, 0.0) for lane in (4, 5, 6)), default=0.0)
-        + 0.35 * makurizashi_pressure
-        + 0.30 * max((float(frame.loc[lane, "top3_prob_ctx"]) for lane in (4, 5, 6) if lane in frame.index), default=0.0)
+    s4_makurizashi_pressure = max(
+        (
+            _clip01(
+                0.44 * float(frame.loc[lane, "makurizashi_prob_ctx"])
+                + 0.16 * float(frame.loc[lane, "makuri_prob_ctx"])
+                + 0.16 * float(frame.loc[lane, "rank_prob_ctx"])
+                + 0.10 * float(frame.loc[lane, "top3_prob_ctx"])
+                + 0.08 * float(frame.loc[lane, "exhibition_adv_ctx"])
+                + 0.06 * float(frame.loc[lane, "venue_course_top3_ctx"])
+            )
+            for lane in (3, 4)
+            if lane in frame.index
+        ),
+        default=0.0,
     )
-    inner_collapse_risk = _clip01((1.0 - escape_strength) * (0.45 + 0.35 * attack_pressure) + 0.20 * (1.0 - lane1_top2))
+    s6_outer_attack_pressure = max(
+        (
+            _clip01(
+                0.34 * float(frame.loc[lane, "makurizashi_prob_ctx"])
+                + 0.20 * float(frame.loc[lane, "makuri_prob_ctx"])
+                + 0.14 * float(frame.loc[lane, "rank_prob_ctx"])
+                + 0.12 * float(frame.loc[lane, "top3_prob_ctx"])
+                + 0.08 * float(frame.loc[lane, "exhibition_adv_ctx"])
+                + 0.12 * float(frame.loc[lane, "venue_course_top3_ctx"])
+            )
+            for lane in (5, 6)
+            if lane in frame.index
+        ),
+        default=0.0,
+    )
+    outer_sweep_risk = _clip01(
+        0.30 * max((attack_scores.get(lane, 0.0) for lane in (4, 5, 6)), default=0.0)
+        + 0.30 * makurizashi_pressure
+        + 0.25 * max((float(frame.loc[lane, "top3_prob_ctx"]) for lane in (4, 5, 6) if lane in frame.index), default=0.0)
+        + 0.15 * max(
+            (float(frame.loc[lane, "venue_course_top3_ctx"]) for lane in (4, 5, 6) if lane in frame.index),
+            default=0.0,
+        )
+    )
+    lane1_venue_top2 = float(frame.loc[1, "venue_course_top2_ctx"]) if 1 in frame.index else 0.0
+    inner_collapse_risk = _clip01(
+        (1.0 - escape_strength) * (0.42 + 0.32 * attack_pressure)
+        + 0.18 * (1.0 - lane1_top2)
+        + 0.08 * (1.0 - lane1_venue_top2)
+    )
+    venue_escape_win_rate = float(frame.loc[1, "venue_course_win_ctx"]) if 1 in frame.index else 0.0
+    venue_outer_top3_rate = max(
+        (float(frame.loc[lane, "venue_course_top3_ctx"]) for lane in (4, 5, 6) if lane in frame.index),
+        default=0.0,
+    )
+    attack_values = [float(score) for lane, score in attack_scores.items() if lane != 1]
+    attack_spread = float(np.mean(sorted(attack_values, reverse=True)[:2])) if len(attack_values) >= 2 else attack_pressure
+    s7_chain_pressure = _clip01(
+        0.45 * inner_collapse_risk
+        + 0.25 * attack_spread
+        + 0.15 * max(s3_attack_pressure, s4_makurizashi_pressure, s5_kado_makuri_pressure)
+        + 0.15 * max(s6_outer_attack_pressure, outer_sweep_risk)
+    )
 
     return {
         "escape_strength": escape_strength,
@@ -3026,21 +3173,83 @@ def _phase3_scenario_context(lane_frame: pd.DataFrame) -> dict[str, float]:
         "outer_sweep_risk": outer_sweep_risk,
         "attack_lane": float(attack_lane),
         "attack_pressure": attack_pressure,
+        "venue_escape_win_rate": venue_escape_win_rate,
+        "venue_escape_top2_rate": lane1_venue_top2,
+        "venue_outer_top3_rate": venue_outer_top3_rate,
+        "s2_makuri_pressure": s2_makuri_pressure,
+        "s3_attack_pressure": s3_attack_pressure,
+        "s4_makurizashi_pressure": s4_makurizashi_pressure,
+        "s5_kado_makuri_pressure": s5_kado_makuri_pressure,
+        "s6_outer_attack_pressure": s6_outer_attack_pressure,
+        "s7_chain_pressure": s7_chain_pressure,
+    }
+
+
+def _phase3_scenario_scores(scenario: dict[str, float]) -> dict[str, float]:
+    escape = float(scenario.get("escape_strength", 0.0))
+    collapse = float(scenario.get("inner_collapse_risk", 0.0))
+    attack = float(scenario.get("attack_pressure", 0.0))
+    return {
+        "S0": _clip01(0.72 * escape + 0.18 * (1.0 - collapse) + 0.10 * (1.0 - attack)),
+        "S1": _clip01(
+            0.52 * float(scenario.get("sashi_pressure_2", 0.0))
+            + 0.24 * escape
+            + 0.14 * float(scenario.get("venue_escape_top2_rate", 0.0))
+            + 0.10 * (1.0 - collapse)
+        ),
+        "S2": _clip01(
+            0.58 * float(scenario.get("s2_makuri_pressure", 0.0))
+            + 0.18 * attack
+            + 0.14 * collapse
+            + 0.10 * (1.0 - escape)
+        ),
+        "S3": _clip01(
+            0.58 * float(scenario.get("s3_attack_pressure", 0.0))
+            + 0.18 * float(scenario.get("makuri_pressure_3_4", 0.0))
+            + 0.14 * collapse
+            + 0.10 * attack
+        ),
+        "S4": _clip01(
+            0.58 * float(scenario.get("s4_makurizashi_pressure", 0.0))
+            + 0.18 * float(scenario.get("makurizashi_pressure", 0.0))
+            + 0.12 * attack
+            + 0.12 * collapse
+        ),
+        "S5": _clip01(
+            0.62 * float(scenario.get("s5_kado_makuri_pressure", 0.0))
+            + 0.16 * float(scenario.get("outer_sweep_risk", 0.0))
+            + 0.12 * collapse
+            + 0.10 * float(scenario.get("venue_outer_top3_rate", 0.0))
+        ),
+        "S6": _clip01(
+            0.60 * float(scenario.get("s6_outer_attack_pressure", 0.0))
+            + 0.18 * float(scenario.get("outer_sweep_risk", 0.0))
+            + 0.12 * collapse
+            + 0.10 * (1.0 - escape)
+        ),
+        "S7": _clip01(
+            0.62 * float(scenario.get("s7_chain_pressure", 0.0))
+            + 0.18 * collapse
+            + 0.12 * attack
+            + 0.08 * (1.0 - escape)
+        ),
     }
 
 
 def _phase3_scenario_label(scenario: dict[str, float]) -> str:
-    candidates = {
-        "escape": float(scenario.get("escape_strength", 0.0)),
-        "sashi": float(scenario.get("sashi_pressure_2", 0.0)),
-        "makuri": float(scenario.get("makuri_pressure_3_4", 0.0)),
-        "makurizashi": float(scenario.get("makurizashi_pressure", 0.0)),
-        "outer_attack": float(scenario.get("outer_sweep_risk", 0.0)),
-    }
+    candidates = _phase3_scenario_scores(scenario)
     label, strength = max(candidates.items(), key=lambda item: item[1])
-    if strength < 0.25 or float(scenario.get("inner_collapse_risk", 0.0)) > 0.65:
-        return "mixed"
+    if strength < 0.25:
+        return "S7"
     return label
+
+
+def _phase3_scenario_feature_values(scenario: dict[str, float]) -> dict[str, float]:
+    label = _phase3_scenario_label(scenario)
+    scores = _phase3_scenario_scores(scenario)
+    features = {f"scenario_{key.lower()}_score": value for key, value in scores.items()}
+    features["scenario_id_numeric"] = float(int(label[1:]))
+    return features
 
 
 def _phase3_line_features(
@@ -3097,6 +3306,7 @@ def build_trifecta_feature_frame(
     lane_frame["exact_second_prob"] = top2_exact
     lane_frame["exact_third_prob"] = top3_exact
     scenario = _phase3_scenario_context(lane_frame)
+    scenario_features = _phase3_scenario_feature_values(scenario)
 
     v1_map = dict(zip(v1_df["trifecta"], v1_df[v1_col]))
     v2_map = dict(zip(v2_df["trifecta"], v2_df[v2_col]))
@@ -3123,6 +3333,12 @@ def build_trifecta_feature_frame(
                 "first_flow_nige": float(pd.to_numeric(first_row.get("flow_prob_nige"), errors="coerce") or 0.0),
                 "second_flow_sashi": float(pd.to_numeric(second_row.get("flow_prob_sashi"), errors="coerce") or 0.0),
                 "third_flow_makurizashi": float(pd.to_numeric(third_row.get("flow_prob_makurizashi"), errors="coerce") or 0.0),
+                "first_venue_course_win_rate": float(pd.to_numeric(first_row.get("venue_course_prev_win_rate"), errors="coerce") or 0.0),
+                "first_venue_course_top2_rate": float(pd.to_numeric(first_row.get("venue_course_prev_top2_rate"), errors="coerce") or 0.0),
+                "first_venue_course_top3_rate": float(pd.to_numeric(first_row.get("venue_course_prev_top3_rate"), errors="coerce") or 0.0),
+                "second_venue_course_top2_rate": float(pd.to_numeric(second_row.get("venue_course_prev_top2_rate"), errors="coerce") or 0.0),
+                "second_venue_course_top3_rate": float(pd.to_numeric(second_row.get("venue_course_prev_top3_rate"), errors="coerce") or 0.0),
+                "third_venue_course_top3_rate": float(pd.to_numeric(third_row.get("venue_course_prev_top3_rate"), errors="coerce") or 0.0),
                 "first_flow_makuri": float(pd.to_numeric(first_row.get("flow_prob_makuri"), errors="coerce") or 0.0),
                 "first_flow_nuki": float(pd.to_numeric(first_row.get("flow_prob_nuki"), errors="coerce") or 0.0),
                 "first_lane": float(first),
@@ -3174,6 +3390,10 @@ def build_trifecta_feature_frame(
                 "outer_sweep_risk": scenario["outer_sweep_risk"],
                 "attack_lane": scenario["attack_lane"],
                 "attack_pressure": scenario["attack_pressure"],
+                "venue_escape_win_rate": scenario["venue_escape_win_rate"],
+                "venue_escape_top2_rate": scenario["venue_escape_top2_rate"],
+                "venue_outer_top3_rate": scenario["venue_outer_top3_rate"],
+                **scenario_features,
                 **line_features,
             }
         )
@@ -3189,6 +3409,7 @@ def build_phase3_second_feature_frame(race_df: pd.DataFrame, first_lane: int) ->
         return pd.DataFrame()
     first_row = lane_frame.loc[first_lane]
     scenario = _phase3_scenario_context(lane_frame)
+    scenario_features = _phase3_scenario_feature_values(scenario)
     rows: list[dict[str, float]] = []
     for second_lane in [int(lane) for lane in lane_frame.index if int(lane) != int(first_lane)]:
         second_row = lane_frame.loc[second_lane]
@@ -3214,6 +3435,10 @@ def build_phase3_second_feature_frame(race_df: pd.DataFrame, first_lane: int) ->
         second_national_win = float(pd.to_numeric(second_row.get("national_win_rate"), errors="coerce") or 0.0)
         second_motor = float(pd.to_numeric(second_row.get("motor_top2_rate_hist"), errors="coerce") or 0.0)
         second_boat = float(pd.to_numeric(second_row.get("boat_top2_rate_hist"), errors="coerce") or 0.0)
+        first_venue_win = float(pd.to_numeric(first_row.get("venue_course_prev_win_rate"), errors="coerce") or 0.0)
+        first_venue_top2 = float(pd.to_numeric(first_row.get("venue_course_prev_top2_rate"), errors="coerce") or 0.0)
+        second_venue_top2 = float(pd.to_numeric(second_row.get("venue_course_prev_top2_rate"), errors="coerce") or 0.0)
+        second_venue_top3 = float(pd.to_numeric(second_row.get("venue_course_prev_top3_rate"), errors="coerce") or 0.0)
         rows.append(
             {
                 "first_lane": float(first_lane),
@@ -3244,6 +3469,11 @@ def build_phase3_second_feature_frame(race_df: pd.DataFrame, first_lane: int) ->
                 "second_motor_top2_rate": second_motor,
                 "second_boat_top2_rate": second_boat,
                 "second_machine_strength": second_motor + second_boat,
+                "first_venue_course_win_rate": first_venue_win,
+                "first_venue_course_top2_rate": first_venue_top2,
+                "second_venue_course_top2_rate": second_venue_top2,
+                "second_venue_course_top3_rate": second_venue_top3,
+                "venue_course_top2_gap_12": first_venue_top2 - second_venue_top2,
                 "inside_follow_alignment": float((int(first_lane) <= 2 and int(second_lane) <= 4) * second_course_top3),
                 "outside_chase_alignment": float((int(first_lane) >= 3 and int(second_lane) >= 4) * second_top2_prob),
                 "escape_strength": scenario["escape_strength"],
@@ -3254,6 +3484,10 @@ def build_phase3_second_feature_frame(race_df: pd.DataFrame, first_lane: int) ->
                 "outer_sweep_risk": scenario["outer_sweep_risk"],
                 "attack_lane": scenario["attack_lane"],
                 "attack_pressure": scenario["attack_pressure"],
+                "venue_escape_win_rate": scenario["venue_escape_win_rate"],
+                "venue_escape_top2_rate": scenario["venue_escape_top2_rate"],
+                "venue_outer_top3_rate": scenario["venue_outer_top3_rate"],
+                **scenario_features,
                 **line_features,
             }
         )
@@ -3267,6 +3501,7 @@ def build_phase3_third_feature_frame(race_df: pd.DataFrame, first_lane: int, sec
     first_row = lane_frame.loc[first_lane]
     second_row = lane_frame.loc[second_lane]
     scenario = _phase3_scenario_context(lane_frame)
+    scenario_features = _phase3_scenario_feature_values(scenario)
     rows: list[dict[str, float]] = []
     excluded = {int(first_lane), int(second_lane)}
     for third_lane in [int(lane) for lane in lane_frame.index if int(lane) not in excluded]:
@@ -3289,6 +3524,9 @@ def build_phase3_third_feature_frame(race_df: pd.DataFrame, first_lane: int, sec
         third_national_win = float(pd.to_numeric(third_row.get("national_win_rate"), errors="coerce") or 0.0)
         third_motor = float(pd.to_numeric(third_row.get("motor_top2_rate_hist"), errors="coerce") or 0.0)
         third_boat = float(pd.to_numeric(third_row.get("boat_top2_rate_hist"), errors="coerce") or 0.0)
+        first_venue_win = float(pd.to_numeric(first_row.get("venue_course_prev_win_rate"), errors="coerce") or 0.0)
+        second_venue_top2 = float(pd.to_numeric(second_row.get("venue_course_prev_top2_rate"), errors="coerce") or 0.0)
+        third_venue_top3 = float(pd.to_numeric(third_row.get("venue_course_prev_top3_rate"), errors="coerce") or 0.0)
         rows.append(
             {
                 "first_lane": float(first_lane),
@@ -3319,6 +3557,10 @@ def build_phase3_third_feature_frame(race_df: pd.DataFrame, first_lane: int, sec
                 "third_motor_top2_rate": third_motor,
                 "third_boat_top2_rate": third_boat,
                 "third_machine_strength": third_motor + third_boat,
+                "first_venue_course_win_rate": first_venue_win,
+                "second_venue_course_top2_rate": second_venue_top2,
+                "third_venue_course_top3_rate": third_venue_top3,
+                "venue_course_top3_gap_23": second_venue_top2 - third_venue_top3,
                 "top3_mass_first_second": first_top3_prob + second_top3_prob,
                 "third_residual_top3": max(third_top3_prob - second_top2_prob, 0.0),
                 "third_inside_scrap_alignment": float((int(third_lane) <= 4) * third_course_top3),
@@ -3331,6 +3573,10 @@ def build_phase3_third_feature_frame(race_df: pd.DataFrame, first_lane: int, sec
                 "outer_sweep_risk": scenario["outer_sweep_risk"],
                 "attack_lane": scenario["attack_lane"],
                 "attack_pressure": scenario["attack_pressure"],
+                "venue_escape_win_rate": scenario["venue_escape_win_rate"],
+                "venue_escape_top2_rate": scenario["venue_escape_top2_rate"],
+                "venue_outer_top3_rate": scenario["venue_outer_top3_rate"],
+                **scenario_features,
                 **line_features,
             }
         )

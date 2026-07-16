@@ -343,6 +343,7 @@ def _build_history_append_frame(evaluation_rows: pd.DataFrame) -> pd.DataFrame:
     history["race_date"] = pd.to_datetime(history["race_date"], errors="coerce")
     finish = pd.to_numeric(history["finish_position"], errors="coerce")
     history["is_win"] = (finish == 1).astype(int)
+    history["is_top2"] = (finish.fillna(999).astype(int) <= 2).astype(int)
     history["is_top3"] = (finish.fillna(999).astype(int) <= 3).astype(int)
     return history
 

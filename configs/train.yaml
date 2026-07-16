@@ -2,12 +2,12 @@ data:
   processed_dir: data/processed
   training_table: data/processed/training_table.parquet
   min_date: "2023-01-01"
-  max_date: "2026-05-24"
+  max_date: "2026-02-28"
   rolling_years: 3
 
 split:
-  train_end_date: "2025-12-31"
-  valid_end_date: "2026-05-24"
+  train_end_date: "2026-03-01"
+  valid_end_date: "2026-06-30"
   valid_months: 4
 
 model:
@@ -42,8 +42,8 @@ phase3:
     num_boost_round: 120
   rerank:
     default_conservative_weight: 0.9
-    weight_grid: [0.5, 0.7, 0.8, 0.9, 0.95]
-    top_n_grid: [10, 24, 32, 60]
+    weight_grid: [0.6, 0.7, 0.8, 0.9, 0.95]
+    top_n_grid: [6, 8, 10, 12]
     rank_penalty_strength_grid: [0.0, 0.01, 0.02, 0.03]
     default_rank_penalty_strength: 0.02
     rank_penalty_start: 5
@@ -61,6 +61,8 @@ phase3:
   calibration:
     window_days_options: [30, 60, 90]
     default_window_days: 60
+  evaluation:
+    scenario_min_races: 100
 
 artifacts:
   catboost_model_path: artifacts/catboost_ranker.cbm

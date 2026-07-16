@@ -79,7 +79,7 @@ CONFIGURE_RCLONE=0 MOUNT_GDRIVE=0 sh/env_setup.sh
 boatrace-backfill-rowdata --rowdata rowdata
 boatrace-build --rowdata rowdata --output data/processed
 boatrace-train --config configs/train.yaml
-boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 3000 --optimize-rerank
+boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 5000 --optimize-rerank
 boatrace-eval-trifecta-full --config configs/train.yaml
 ```
 
@@ -148,31 +148,31 @@ boatrace-train --config configs/train.yaml --training-device gpu
 ### 三連単 v2/v3 学習
 
 ```bash
-boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 3000
+boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 5000
 ```
 
 rerank 最適化付き:
 
 ```bash
-boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 3000 --optimize-rerank
+boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 5000 --optimize-rerank
 ```
 
 rerank 最適化の候補評価を並列化する場合:
 
 ```bash
-boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 3000 --optimize-rerank --optimize-rerank-workers 4
+boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 5000 --optimize-rerank --optimize-rerank-workers 4
 ```
 
 利用可能コア数から 1 を引いた数で自動指定する場合:
 
 ```bash
-boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 3000 --optimize-rerank --optimize-rerank-workers 0
+boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 5000 --optimize-rerank --optimize-rerank-workers 0
 ```
 
 最適化を最初からやり直す場合:
 
 ```bash
-boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 3000 --optimize-rerank --reset-rerank-optimization
+boatrace-train-trifecta-v2 --config configs/train.yaml --max-races 1000 --eval-max-races 5000 --optimize-rerank --reset-rerank-optimization
 ```
 
 主なオプション:
@@ -419,7 +419,7 @@ sh/train_full_resume.sh
 - `DRIVE_PACKAGE_DIR`: zip 配置先です。既定は `$HOME/gdrive/gcolab_workdir/btp` です。
 - `PIPELINE_STATE_DIR`: 再開用マーカーの保存先です。既定は `.gcloud_pipeline_state` です。
 - `MAX_RACES`: 三連単 v2/v3 学習の `--max-races` です。既定は `1000` です。
-- `EVAL_MAX_RACES`: 三連単 v2/v3 評価の `--eval-max-races` です。既定は `3000` です。
+- `EVAL_MAX_RACES`: 三連単 v2/v3 評価の `--eval-max-races` です。既定は `5000` です。
 - `OPTIMIZE_RERANK_WORKERS`: rerank 最適化の並列数です。`train_full` / `train_full_resume` の既定は `2`、`0` は `CPUコア数 - 1` です。
 - `RESTORE_ROWDATA` / `RESTORE_DATA` / `RESTORE_ARTIFACTS`: `0` で復元をスキップします。
 - `UPDATE_ROWDATA`: `0` で zip 復元後の rowdata 更新をスキップします。

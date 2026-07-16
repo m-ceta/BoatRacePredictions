@@ -119,6 +119,50 @@ def add_racer_history_features(df: pd.DataFrame) -> pd.DataFrame:
         lambda s: s.shift(1).rolling(10, min_periods=2).mean()
     )
 
+    venue_course_sorted = racer_sorted.sort_values(["venue", "course", "race_date", "race_no", "lane"]).copy()
+    venue_course_grouped = venue_course_sorted.dropna(subset=["course"]).groupby(["venue", "course"], group_keys=False)
+    venue_course_sorted["venue_course_prev_win_rate"] = venue_course_grouped["is_win"].transform(
+        lambda s: s.shift(1).rolling(200, min_periods=30).mean()
+    )
+    venue_course_sorted["venue_course_prev_top2_rate"] = venue_course_grouped["is_top2"].transform(
+        lambda s: s.shift(1).rolling(200, min_periods=30).mean()
+    )
+    venue_course_sorted["venue_course_prev_top3_rate"] = venue_course_grouped["is_top3"].transform(
+        lambda s: s.shift(1).rolling(200, min_periods=30).mean()
+    )
+    venue_course_sorted["venue_course_prev_avg_finish"] = venue_course_grouped["finish_position"].transform(
+        lambda s: s.shift(1).rolling(200, min_periods=30).mean()
+    )
+    venue_course_columns = [
+        "venue_course_prev_win_rate",
+        "venue_course_prev_top2_rate",
+        "venue_course_prev_top3_rate",
+        "venue_course_prev_avg_finish",
+    ]
+    racer_sorted[venue_course_columns] = venue_course_sorted[venue_course_columns].reindex(racer_sorted.index)
+
+    venue_lane_sorted = racer_sorted.sort_values(["venue", "lane", "race_date", "race_no"]).copy()
+    venue_lane_overall_grouped = venue_lane_sorted.groupby(["venue", "lane"], group_keys=False)
+    venue_lane_sorted["venue_lane_prev_win_rate"] = venue_lane_overall_grouped["is_win"].transform(
+        lambda s: s.shift(1).rolling(200, min_periods=30).mean()
+    )
+    venue_lane_sorted["venue_lane_prev_top2_rate"] = venue_lane_overall_grouped["is_top2"].transform(
+        lambda s: s.shift(1).rolling(200, min_periods=30).mean()
+    )
+    venue_lane_sorted["venue_lane_prev_top3_rate"] = venue_lane_overall_grouped["is_top3"].transform(
+        lambda s: s.shift(1).rolling(200, min_periods=30).mean()
+    )
+    venue_lane_sorted["venue_lane_prev_avg_finish"] = venue_lane_overall_grouped["finish_position"].transform(
+        lambda s: s.shift(1).rolling(200, min_periods=30).mean()
+    )
+    venue_lane_columns = [
+        "venue_lane_prev_win_rate",
+        "venue_lane_prev_top2_rate",
+        "venue_lane_prev_top3_rate",
+        "venue_lane_prev_avg_finish",
+    ]
+    racer_sorted[venue_lane_columns] = venue_lane_sorted[venue_lane_columns].reindex(racer_sorted.index)
+
     course_grouped = racer_sorted.groupby(["racer_id", "course"], group_keys=False)
     racer_sorted["racer_course_prev_top3_rate"] = course_grouped["is_top3"].transform(
         lambda s: s.shift(1).rolling(10, min_periods=2).mean()
@@ -177,6 +221,14 @@ def add_race_relative_features(df: pd.DataFrame) -> pd.DataFrame:
         "racer_prev_avg_exhibition",
         "racer_lane_prev_top3_rate",
         "racer_venue_lane_prev_top3_rate",
+        "venue_course_prev_win_rate",
+        "venue_course_prev_top2_rate",
+        "venue_course_prev_top3_rate",
+        "venue_course_prev_avg_finish",
+        "venue_lane_prev_win_rate",
+        "venue_lane_prev_top2_rate",
+        "venue_lane_prev_top3_rate",
+        "venue_lane_prev_avg_finish",
         "motor_prev_top3_rate",
         "boat_prev_top3_rate",
         "st_momentum_diff",

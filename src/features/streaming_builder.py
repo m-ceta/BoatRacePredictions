@@ -210,6 +210,7 @@ class HistoryCarryovers:
             "race_date",
             "race_no",
             "is_win",
+            "is_top2",
             "is_top3",
             "finish_position",
             "start_timing",
@@ -219,6 +220,8 @@ class HistoryCarryovers:
         self.venue = _empty_like(base_columns)
         self.lane = _empty_like(base_columns)
         self.venue_lane = _empty_like(base_columns)
+        self.venue_course = _empty_like(base_columns)
+        self.venue_lane_overall = _empty_like(base_columns)
         self.course = _empty_like(base_columns)
         self.motor = _empty_like(base_columns)
         self.boat = _empty_like(base_columns)
@@ -254,6 +257,7 @@ def _apply_group_history_features(
             "race_date",
             "race_no",
             "is_win",
+            "is_top2",
             "is_top3",
             "finish_position",
             "start_timing",
@@ -268,6 +272,7 @@ def _apply_group_history_features(
         ],
         ignore_index=True,
     )
+    combined = combined.sort_values([*group_cols, "race_date", "race_no"]).reset_index(drop=True)
     grouped = combined.groupby(group_cols, group_keys=False, dropna=True)
 
     for feature_name, (source_col, window, min_periods, agg) in feature_builders.items():
@@ -298,7 +303,19 @@ def _apply_group_history_features(
     )
 
     new_carryover = (
-        combined[group_cols + ["race_date", "race_no", "is_win", "is_top3", "finish_position", "start_timing", "exhibition_time"]]
+        combined[
+            group_cols
+            + [
+                "race_date",
+                "race_no",
+                "is_win",
+                "is_top2",
+                "is_top3",
+                "finish_position",
+                "start_timing",
+                "exhibition_time",
+            ]
+        ]
         .groupby(group_cols, group_keys=False, dropna=True)
         .tail(max_tail)
         .reset_index(drop=True)
@@ -376,6 +393,36 @@ def add_racer_history_features_streaming(base_chunk: pd.DataFrame, carryovers: H
         max_tail=10,
     )
 
+    venue_course_current = current[current["course"].notna()].copy()
+    venue_course_features = pd.DataFrame(index=current["__row_id"])
+    if not venue_course_current.empty:
+        computed, carryovers.venue_course = _apply_group_history_features(
+            venue_course_current.sort_values(["venue", "course", "race_date", "race_no", "lane"]),
+            carryovers.venue_course,
+            ["venue", "course"],
+            {
+                "venue_course_prev_win_rate": ("is_win", 200, 30, "mean"),
+                "venue_course_prev_top2_rate": ("is_top2", 200, 30, "mean"),
+                "venue_course_prev_top3_rate": ("is_top3", 200, 30, "mean"),
+                "venue_course_prev_avg_finish": ("finish_position", 200, 30, "mean"),
+            },
+            max_tail=200,
+        )
+        venue_course_features = computed
+
+    venue_lane_overall_features, carryovers.venue_lane_overall = _apply_group_history_features(
+        current.sort_values(["venue", "lane", "race_date", "race_no"]),
+        carryovers.venue_lane_overall,
+        ["venue", "lane"],
+        {
+            "venue_lane_prev_win_rate": ("is_win", 200, 30, "mean"),
+            "venue_lane_prev_top2_rate": ("is_top2", 200, 30, "mean"),
+            "venue_lane_prev_top3_rate": ("is_top3", 200, 30, "mean"),
+            "venue_lane_prev_avg_finish": ("finish_position", 200, 30, "mean"),
+        },
+        max_tail=200,
+    )
+
     course_current = current[current["course"].notna()].copy()
     course_features = pd.DataFrame(index=current["__row_id"])
     if not course_current.empty:
@@ -428,6 +475,8 @@ def add_racer_history_features_streaming(base_chunk: pd.DataFrame, carryovers: H
         venue_features,
         lane_features,
         venue_lane_features,
+        venue_course_features,
+        venue_lane_overall_features,
         course_features,
         motor_features,
         boat_features,

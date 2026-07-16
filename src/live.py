@@ -280,6 +280,9 @@ def load_live_history_frame(config: dict[str, Any], target_date: date) -> pd.Dat
             ],
         )
         history["is_win"] = (pd.to_numeric(history["finish_position"], errors="coerce") == 1).astype(int)
+        history["is_top2"] = (
+            pd.to_numeric(history["finish_position"], errors="coerce").fillna(999).astype(int) <= 2
+        ).astype(int)
         history["is_top3"] = (
             pd.to_numeric(history["finish_position"], errors="coerce").fillna(999).astype(int) <= 3
         ).astype(int)
@@ -296,19 +299,33 @@ def load_live_history_frame(config: dict[str, Any], target_date: date) -> pd.Dat
         "motor_no",
         "boat_no",
         "is_win",
+        "is_top2",
         "is_top3",
         "finish_position",
         "start_timing",
         "exhibition_time",
     ]
-    history = pd.read_parquet(
-        config["data"]["training_table"],
-        columns=history_columns,
-        filters=[
-            ("race_date", ">=", min_history_date),
-            ("race_date", "<", target_date),
-        ],
-    )
+    try:
+        history = pd.read_parquet(
+            config["data"]["training_table"],
+            columns=history_columns,
+            filters=[
+                ("race_date", ">=", min_history_date),
+                ("race_date", "<", target_date),
+            ],
+        )
+    except Exception:
+        history = pd.read_parquet(
+            config["data"]["training_table"],
+            columns=[column for column in history_columns if column != "is_top2"],
+            filters=[
+                ("race_date", ">=", min_history_date),
+                ("race_date", "<", target_date),
+            ],
+        )
+    if "is_top2" not in history.columns:
+        finish = pd.to_numeric(history.get("finish_position"), errors="coerce")
+        history["is_top2"] = (finish.fillna(999).astype(int) <= 2).astype(int)
     history["race_date"] = pd.to_datetime(history["race_date"])
     return history
 
@@ -387,6 +404,17 @@ def fill_live_measurement_proxies(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def merge_recent_group_features(frame: pd.DataFrame, hist: pd.DataFrame) -> pd.DataFrame:
+    if "course" not in frame.columns:
+        frame = frame.copy()
+        frame["course"] = frame["lane"]
+    frame["course"] = pd.to_numeric(frame["course"], errors="coerce").fillna(
+        pd.to_numeric(frame["lane"], errors="coerce")
+    )
+    if "is_top2" not in hist.columns:
+        hist = hist.copy()
+        finish = pd.to_numeric(hist.get("finish_position"), errors="coerce")
+        hist["is_top2"] = (finish.fillna(999).astype(int) <= 2).astype(int)
+
     racer_ids = set(frame["racer_id"].dropna().tolist())
     motor_nos = set(frame["motor_no"].dropna().tolist())
     boat_nos = set(frame["boat_no"].dropna().tolist())
@@ -481,6 +509,38 @@ def merge_recent_group_features(frame: pd.DataFrame, hist: pd.DataFrame) -> pd.D
             how="left",
         )
 
+    hist_venue = hist[hist["venue"].isin(venues)].copy()
+    if "course" in hist_venue.columns and not hist_venue.empty:
+        frame = frame.merge(
+            recent_group_agg(
+                hist_venue.dropna(subset=["course"]).assign(course=lambda d: d["course"].astype(int)),
+                ["venue", "course"],
+                {
+                    "is_win": [("venue_course_prev_win_rate", 200, "mean")],
+                    "is_top2": [("venue_course_prev_top2_rate", 200, "mean")],
+                    "is_top3": [("venue_course_prev_top3_rate", 200, "mean")],
+                    "finish_position": [("venue_course_prev_avg_finish", 200, "mean")],
+                },
+            ),
+            on=["venue", "course"],
+            how="left",
+        )
+
+    frame = frame.merge(
+        recent_group_agg(
+            hist_venue[hist_venue["lane"].isin(lanes)].copy(),
+            ["venue", "lane"],
+            {
+                "is_win": [("venue_lane_prev_win_rate", 200, "mean")],
+                "is_top2": [("venue_lane_prev_top2_rate", 200, "mean")],
+                "is_top3": [("venue_lane_prev_top3_rate", 200, "mean")],
+                "finish_position": [("venue_lane_prev_avg_finish", 200, "mean")],
+            },
+        ),
+        on=["venue", "lane"],
+        how="left",
+    )
+
     frame = frame.merge(
         recent_group_agg(
             hist_motor,
@@ -537,6 +597,14 @@ def merge_recent_group_features(frame: pd.DataFrame, hist: pd.DataFrame) -> pd.D
         "racer_venue_lane_prev_avg_st",
         "racer_course_prev_top3_rate",
         "racer_course_prev_avg_finish",
+        "venue_course_prev_win_rate",
+        "venue_course_prev_top2_rate",
+        "venue_course_prev_top3_rate",
+        "venue_course_prev_avg_finish",
+        "venue_lane_prev_win_rate",
+        "venue_lane_prev_top2_rate",
+        "venue_lane_prev_top3_rate",
+        "venue_lane_prev_avg_finish",
         "motor_prev_top3_rate",
         "motor_prev_win_rate",
         "motor_prev_avg_st",

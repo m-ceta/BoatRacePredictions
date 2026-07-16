@@ -243,6 +243,9 @@ def test_phase3_scenario_features_are_added_to_rerank_frames() -> None:
         "attack_pressure",
         "escape_line_fit",
         "scenario_mismatch_penalty",
+        "scenario_s0_score",
+        "scenario_s7_score",
+        "scenario_id_numeric",
     }
     assert expected.issubset(trifecta_features.columns)
     assert expected.issubset(second_features.columns)
