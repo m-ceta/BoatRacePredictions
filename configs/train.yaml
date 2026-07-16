@@ -9,6 +9,7 @@ split:
   train_end_date: "2026-03-01"
   valid_end_date: "2026-06-30"
   valid_months: 4
+  final_eval_months: 1
 
 model:
   training_device: "cpu"

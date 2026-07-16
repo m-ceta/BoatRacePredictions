@@ -386,18 +386,24 @@ def train_trifecta_v2_main() -> None:
     config = with_training_device_override(config, args.training_device)
     artifacts = get_artifact_paths(config)
     train_df, valid_df, test_df = load_training_splits(Path(config["data"]["training_table"]), config)
-    eval_valid_df = sample_races_for_evaluation(valid_df, args.eval_max_races)
+    final_eval_months = get_final_eval_months(config)
+    valid_tune_df, final_eval_df = split_valid_for_final_eval(valid_df, final_eval_months)
+    eval_valid_tune_df = sample_races_for_evaluation(valid_tune_df, args.eval_max_races)
+    eval_final_df = sample_races_for_evaluation(final_eval_df, args.eval_max_races)
+    eval_report_df = eval_final_df if not eval_final_df.empty else eval_valid_tune_df
     eval_test_df = sample_races_for_evaluation(test_df, args.eval_max_races)
     progress(
         "loaded splits: "
         f"train_races={race_count(train_df)}, valid_races={race_count(valid_df)}, "
-        f"test_races={race_count(test_df)}, eval_valid_races={race_count(eval_valid_df)}, "
+        f"valid_tune_races={race_count(valid_tune_df)}, final_eval_races={race_count(final_eval_df)}, "
+        f"test_races={race_count(test_df)}, eval_valid_tune_races={race_count(eval_valid_tune_df)}, "
+        f"eval_final_races={race_count(eval_final_df)}, "
         f"eval_test_races={race_count(eval_test_df)}"
     )
 
     progress("inferring feature columns")
     schema_df = pd.concat(
-        [train_df.head(200), valid_df.head(200), test_df.head(200)],
+        [train_df.head(200), valid_tune_df.head(200), final_eval_df.head(200), test_df.head(200)],
         ignore_index=True,
     )
     feature_columns = infer_feature_columns(schema_df)
@@ -417,16 +423,16 @@ def train_trifecta_v2_main() -> None:
     eval_rerank_top_n = get_default_rerank_top_n(config)
 
     progress("training flow model")
-    flow_model, flow_classes = train_flow_model(train_df, valid_df, feature_columns, categorical_columns, config)
+    flow_model, flow_classes = train_flow_model(train_df, valid_tune_df, feature_columns, categorical_columns, config)
     collect_garbage()
     progress("training staged models")
-    staged_models = train_staged_models(train_df, valid_df, feature_columns, categorical_columns, config)
+    staged_models = train_staged_models(train_df, valid_tune_df, feature_columns, categorical_columns, config)
     collect_garbage()
     progress("optimizing trifecta v2 blend weight")
     trifecta_v2_v1_weight = optimize_trifecta_v2_blend_weight(
         models,
         ensemble_weights,
-        valid_df,
+        valid_tune_df,
         feature_columns,
         categorical_columns,
         classifier_models=classifier_models,
@@ -469,7 +475,7 @@ def train_trifecta_v2_main() -> None:
     )
     collect_garbage()
     rerank_optimization = {}
-    if args.optimize_rerank and not eval_valid_df.empty:
+    if args.optimize_rerank and not eval_valid_tune_df.empty:
         rerank_checkpoint_path = artifacts["rerank_optimization_checkpoint_path"]
         if args.reset_rerank_optimization:
             checkpoint_pattern = f"{rerank_checkpoint_path.stem}*{rerank_checkpoint_path.suffix}"
@@ -480,7 +486,7 @@ def train_trifecta_v2_main() -> None:
         rerank_optimization = optimize_rerank_inference_settings_two_stage(
             models,
             ensemble_weights,
-            eval_valid_df,
+            eval_valid_tune_df,
             feature_columns,
             categorical_columns,
             classifier_models=classifier_models,
@@ -512,7 +518,7 @@ def train_trifecta_v2_main() -> None:
     calibration_optimization = optimize_phase3_calibration_window(
         models,
         ensemble_weights,
-        valid_df,
+        valid_tune_df,
         feature_columns,
         categorical_columns,
         classifier_models=classifier_models,
@@ -535,7 +541,7 @@ def train_trifecta_v2_main() -> None:
     trifecta_v2_calibrator = fit_model_trifecta_calibrator(
         models,
         ensemble_weights,
-        valid_df,
+        valid_tune_df,
         feature_columns,
         categorical_columns,
         classifier_models=classifier_models,
@@ -550,7 +556,7 @@ def train_trifecta_v2_main() -> None:
     trifecta_v3_calibrator = fit_model_trifecta_calibrator(
         models,
         ensemble_weights,
-        valid_df,
+        valid_tune_df,
         feature_columns,
         categorical_columns,
         classifier_models=classifier_models,
@@ -597,7 +603,7 @@ def train_trifecta_v2_main() -> None:
         flow_model,
         flow_classes,
         train_df,
-        eval_valid_df,
+        eval_report_df,
         eval_test_df,
         feature_columns,
         categorical_columns,
@@ -605,117 +611,131 @@ def train_trifecta_v2_main() -> None:
     metrics["staged_model_metrics"] = evaluate_staged_models(
         staged_models,
         train_df,
-        eval_valid_df,
+        eval_report_df,
         eval_test_df,
         feature_columns,
         categorical_columns,
     )
     metrics["trifecta_evaluation_scope"] = {
-        "valid_races": int(eval_valid_df["race_id"].nunique()) if not eval_valid_df.empty else 0,
+        "valid_races": int(valid_df["race_id"].nunique()) if not valid_df.empty else 0,
+        "valid_tune_races": int(valid_tune_df["race_id"].nunique()) if not valid_tune_df.empty else 0,
+        "final_eval_races": int(final_eval_df["race_id"].nunique()) if not final_eval_df.empty else 0,
+        "eval_valid_tune_races": int(eval_valid_tune_df["race_id"].nunique()) if not eval_valid_tune_df.empty else 0,
+        "eval_final_eval_races": int(eval_final_df["race_id"].nunique()) if not eval_final_df.empty else 0,
         "test_races": int(eval_test_df["race_id"].nunique()) if not eval_test_df.empty else 0,
         "eval_max_races": int(args.eval_max_races),
         "eval_rerank_top_n": int(eval_rerank_top_n),
+        "final_eval_months": int(final_eval_months),
         "scenario_min_races": int(ensemble_weights.get("scenario_metric_min_races", 100)),
     }
     if rerank_optimization:
         metrics["rerank_optimization"] = rerank_optimization
     metrics["calibration_optimization"] = calibration_optimization
     progress("evaluating trifecta metrics")
+    v1_final_metrics = evaluate_trifecta(
+        models,
+        ensemble_weights,
+        trifecta_calibrator,
+        eval_report_df,
+        feature_columns,
+        categorical_columns,
+        classifier_models=classifier_models,
+        flow_model=flow_model,
+        flow_classes=flow_classes,
+        staged_models=staged_models,
+        trifecta_v2_model=trifecta_v2_model,
+        use_v2=False,
+        rerank_top_n=eval_rerank_top_n,
+    )
+    v1_test_metrics = evaluate_trifecta(
+        models,
+        ensemble_weights,
+        trifecta_calibrator,
+        eval_test_df,
+        feature_columns,
+        categorical_columns,
+        classifier_models=classifier_models,
+        flow_model=flow_model,
+        flow_classes=flow_classes,
+        staged_models=staged_models,
+        trifecta_v2_model=trifecta_v2_model,
+        use_v2=False,
+        rerank_top_n=eval_rerank_top_n,
+    )
     metrics["trifecta_v1_rerank_metrics"] = {
-        "valid_calibrated": evaluate_trifecta(
-            models,
-            ensemble_weights,
-            trifecta_calibrator,
-            eval_valid_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
-            trifecta_v2_model=trifecta_v2_model,
-            use_v2=False,
-            rerank_top_n=eval_rerank_top_n,
-        ),
-        "test_calibrated": evaluate_trifecta(
-            models,
-            ensemble_weights,
-            trifecta_calibrator,
-            eval_test_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
-            trifecta_v2_model=trifecta_v2_model,
-            use_v2=False,
-            rerank_top_n=eval_rerank_top_n,
-        ),
+        "valid_calibrated": v1_final_metrics,
+        "final_eval_calibrated": v1_final_metrics,
+        "test_calibrated": v1_test_metrics,
     }
+    v2_final_metrics = evaluate_trifecta(
+        models,
+        ensemble_weights,
+        trifecta_v2_calibrator,
+        eval_report_df,
+        feature_columns,
+        categorical_columns,
+        classifier_models=classifier_models,
+        flow_model=flow_model,
+        flow_classes=flow_classes,
+        staged_models=staged_models,
+        trifecta_v2_model=trifecta_v2_model,
+        use_v2=True,
+        rerank_top_n=eval_rerank_top_n,
+    )
+    v2_test_metrics = evaluate_trifecta(
+        models,
+        ensemble_weights,
+        trifecta_v2_calibrator,
+        eval_test_df,
+        feature_columns,
+        categorical_columns,
+        classifier_models=classifier_models,
+        flow_model=flow_model,
+        flow_classes=flow_classes,
+        staged_models=staged_models,
+        trifecta_v2_model=trifecta_v2_model,
+        use_v2=True,
+        rerank_top_n=eval_rerank_top_n,
+    )
     metrics["trifecta_v2_metrics"] = {
-        "valid_calibrated": evaluate_trifecta(
-            models,
-            ensemble_weights,
-            trifecta_v2_calibrator,
-            eval_valid_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
-            trifecta_v2_model=trifecta_v2_model,
-            use_v2=True,
-            rerank_top_n=eval_rerank_top_n,
-        ),
-        "test_calibrated": evaluate_trifecta(
-            models,
-            ensemble_weights,
-            trifecta_v2_calibrator,
-            eval_test_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
-            trifecta_v2_model=trifecta_v2_model,
-            use_v2=True,
-            rerank_top_n=eval_rerank_top_n,
-        ),
+        "valid_calibrated": v2_final_metrics,
+        "final_eval_calibrated": v2_final_metrics,
+        "test_calibrated": v2_test_metrics,
     }
+    v3_final_metrics = evaluate_trifecta(
+        models,
+        ensemble_weights,
+        trifecta_v3_calibrator,
+        eval_report_df,
+        feature_columns,
+        categorical_columns,
+        classifier_models=classifier_models,
+        flow_model=flow_model,
+        flow_classes=flow_classes,
+        staged_models=staged_models,
+        trifecta_v2_model=trifecta_v3_model,
+        use_v2=True,
+        rerank_top_n=eval_rerank_top_n,
+    )
+    v3_test_metrics = evaluate_trifecta(
+        models,
+        ensemble_weights,
+        trifecta_v3_calibrator,
+        eval_test_df,
+        feature_columns,
+        categorical_columns,
+        classifier_models=classifier_models,
+        flow_model=flow_model,
+        flow_classes=flow_classes,
+        staged_models=staged_models,
+        trifecta_v2_model=trifecta_v3_model,
+        use_v2=True,
+        rerank_top_n=eval_rerank_top_n,
+    )
     metrics["trifecta_v3_metrics"] = {
-        "valid_calibrated": evaluate_trifecta(
-            models,
-            ensemble_weights,
-            trifecta_v3_calibrator,
-            eval_valid_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
-            trifecta_v2_model=trifecta_v3_model,
-            use_v2=True,
-            rerank_top_n=eval_rerank_top_n,
-        ),
-        "test_calibrated": evaluate_trifecta(
-            models,
-            ensemble_weights,
-            trifecta_v3_calibrator,
-            eval_test_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
-            trifecta_v2_model=trifecta_v3_model,
-            use_v2=True,
-            rerank_top_n=eval_rerank_top_n,
-        ),
+        "valid_calibrated": v3_final_metrics,
+        "final_eval_calibrated": v3_final_metrics,
+        "test_calibrated": v3_test_metrics,
     }
     progress(f"writing metrics: {artifacts['metrics_path']}")
     artifacts["metrics_path"].write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -728,6 +748,31 @@ def json_load_or_empty(path: Path) -> dict:
     if not path.exists():
         return {}
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def get_final_eval_months(config: dict) -> int:
+    return max(0, int(config.get("split", {}).get("final_eval_months", 1)))
+
+
+def split_valid_for_final_eval(
+    valid_df: pd.DataFrame,
+    final_eval_months: int = 1,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if valid_df.empty or final_eval_months <= 0 or "race_date" not in valid_df.columns:
+        return valid_df.copy(), valid_df.iloc[0:0].copy()
+
+    frame = valid_df.copy()
+    race_dates = pd.to_datetime(frame["race_date"])
+    latest_date = race_dates.max().normalize()
+    final_start = (latest_date - pd.DateOffset(months=final_eval_months) + pd.Timedelta(days=1)).normalize()
+
+    final_mask = race_dates >= final_start
+    valid_tune_df = frame.loc[~final_mask].copy()
+    final_eval_df = frame.loc[final_mask].copy()
+
+    if valid_tune_df.empty:
+        return frame, frame.iloc[0:0].copy()
+    return valid_tune_df, final_eval_df
 
 
 def sample_races_for_evaluation(df: pd.DataFrame, max_races: int) -> pd.DataFrame:
@@ -770,12 +815,19 @@ def evaluate_trifecta_full_valid_main() -> None:
         valid_df = valid_df[valid_df["race_date"] <= pd.Timestamp(args.date_to)].copy()
         if not test_df.empty and "race_date" in test_df.columns:
             test_df = test_df[test_df["race_date"] <= pd.Timestamp(args.date_to)].copy()
+    final_eval_months = get_final_eval_months(config)
+    valid_tune_df, final_eval_df = split_valid_for_final_eval(valid_df, final_eval_months)
+    eval_valid_df = final_eval_df if not final_eval_df.empty else valid_tune_df
     progress(
         "evaluation scope: "
-        f"valid_races={race_count(valid_df)}, test_races={race_count(test_df)}, chunk={args.chunk}"
+        f"valid_races={race_count(valid_df)}, valid_tune_races={race_count(valid_tune_df)}, "
+        f"final_eval_races={race_count(final_eval_df)}, test_races={race_count(test_df)}, chunk={args.chunk}"
     )
     progress("inferring feature columns")
-    schema_df = pd.concat([train_df.head(200), valid_df.head(200), test_df.head(200)], ignore_index=True)
+    schema_df = pd.concat(
+        [train_df.head(200), valid_tune_df.head(200), final_eval_df.head(200), test_df.head(200)],
+        ignore_index=True,
+    )
     feature_columns = infer_feature_columns(schema_df)
     categorical_columns = infer_categorical_columns(schema_df, feature_columns)
     progress(f"inferred features: numeric_and_categorical={len(feature_columns)}, categorical={len(categorical_columns)}")
@@ -796,9 +848,9 @@ def evaluate_trifecta_full_valid_main() -> None:
     rerank_top_n = get_rerank_top_n(trifecta_v3_model, get_default_rerank_top_n(config))
     progress(f"loaded model artifacts: rerank_top_n={rerank_top_n}")
 
-    progress("evaluating valid chunks")
+    progress("evaluating final_eval chunks")
     valid_metrics = evaluate_trifecta_in_chunks(
-        valid_df,
+        eval_valid_df,
         models=models,
         weights=ensemble_weights,
         feature_columns=feature_columns,
@@ -811,7 +863,7 @@ def evaluate_trifecta_full_valid_main() -> None:
         v1_calibrator=v1_calibrator,
         v3_calibrator=v3_calibrator,
         rerank_top_n=rerank_top_n,
-        split_name="valid",
+        split_name="final_eval",
         progress_callback=progress,
     )
     progress("evaluating test chunks")
@@ -837,16 +889,25 @@ def evaluate_trifecta_full_valid_main() -> None:
     metrics = json_load_or_empty(artifacts["metrics_path"])
     metrics["trifecta_evaluation_scope"] = {
         "valid_races": int(valid_df["race_id"].nunique()) if not valid_df.empty else 0,
+        "valid_tune_races": int(valid_tune_df["race_id"].nunique()) if not valid_tune_df.empty else 0,
+        "final_eval_races": int(final_eval_df["race_id"].nunique()) if not final_eval_df.empty else 0,
         "test_races": int(test_df["race_id"].nunique()) if not test_df.empty else 0,
         "eval_rerank_top_n": rerank_top_n,
         "scenario_min_races": int(ensemble_weights.get("scenario_metric_min_races", 100)),
         "chunk": args.chunk,
-        "evaluation_mode": "full_valid_chunked",
+        "evaluation_mode": "final_eval_chunked",
+        "final_eval_months": int(final_eval_months),
         "date_from": args.date_from,
         "date_to": args.date_to,
     }
     metrics["trifecta_v1_rerank_metrics"] = valid_metrics["v1"]
     metrics["trifecta_v3_metrics"] = valid_metrics["phase3"]
+    metrics["trifecta_v1_rerank_metrics"]["final_eval_calibrated"] = metrics["trifecta_v1_rerank_metrics"].get(
+        "valid_calibrated", {}
+    )
+    metrics["trifecta_v3_metrics"]["final_eval_calibrated"] = metrics["trifecta_v3_metrics"].get(
+        "valid_calibrated", {}
+    )
     metrics["trifecta_v1_rerank_metrics"]["test_calibrated"] = test_metrics["v1"].get("valid_calibrated", {})
     metrics["trifecta_v3_metrics"]["test_calibrated"] = test_metrics["phase3"].get("valid_calibrated", {})
     artifacts["metrics_path"].write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 
 from src.models.ranker import (
+    apply_prediction_time_measurement_proxies,
     blend_conservative_rerank_scores,
     build_phase3_second_feature_frame,
     build_phase3_third_feature_frame,
@@ -132,6 +133,26 @@ def test_future_information_columns_do_not_enter_features() -> None:
     assert "is_win" not in feature_columns
     assert "is_top3" not in feature_columns
     assert "winning_style" not in feature_columns
+
+
+def test_evaluation_measurement_proxies_replace_start_and_exhibition_but_keep_course() -> None:
+    frame = pd.DataFrame(
+        {
+            "start_timing": [0.01, 0.02],
+            "exhibition_time": [6.50, 6.51],
+            "course": [4, 5],
+            "racer_venue_prev_avg_st": [0.14, pd.NA],
+            "racer_prev_avg_st": [0.17, 0.16],
+            "racer_venue_prev_avg_exhibition": [6.72, pd.NA],
+            "racer_prev_avg_exhibition": [6.80, 6.77],
+        }
+    )
+
+    proxied = apply_prediction_time_measurement_proxies(frame)
+
+    assert proxied["start_timing"].tolist() == [0.14, 0.16]
+    assert proxied["exhibition_time"].tolist() == [6.72, 6.77]
+    assert proxied["course"].tolist() == [4, 5]
 
 
 def test_select_rerank_candidate_mask_from_v1_does_not_force_actual_inclusion() -> None:

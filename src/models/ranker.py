@@ -625,28 +625,31 @@ def train_ranker(
             use_v2=False,
         ),
     }
+    train_eval_df = apply_prediction_time_measurement_proxies(train_df)
+    valid_eval_df = apply_prediction_time_measurement_proxies(valid_df)
+    test_eval_df = apply_prediction_time_measurement_proxies(test_df)
     classifier_metrics = evaluate_classifier_models(
         classifier_models,
-        train_df,
-        valid_df,
-        test_df,
+        train_eval_df,
+        valid_eval_df,
+        test_eval_df,
         feature_columns,
         categorical_columns,
     )
     flow_metrics = evaluate_flow_model(
         flow_model,
         flow_classes,
-        train_df,
-        valid_df,
-        test_df,
+        train_eval_df,
+        valid_eval_df,
+        test_eval_df,
         feature_columns,
         categorical_columns,
     )
     staged_metrics = evaluate_staged_models(
         staged_models,
-        train_df,
-        valid_df,
-        test_df,
+        train_eval_df,
+        valid_eval_df,
+        test_eval_df,
         feature_columns,
         categorical_columns,
     )
@@ -765,11 +768,14 @@ def train_ranker_from_splits(
     progress("training classifier models")
     classifier_models = train_classifiers(train_df, valid_df, feature_columns, categorical_columns, config)
     progress("evaluating classifier models")
+    train_eval_df = apply_prediction_time_measurement_proxies(train_df)
+    valid_eval_df = apply_prediction_time_measurement_proxies(valid_df)
+    test_eval_df = apply_prediction_time_measurement_proxies(test_df)
     classifier_metrics = evaluate_classifier_models(
         classifier_models,
-        train_df,
-        valid_df,
-        test_df,
+        train_eval_df,
+        valid_eval_df,
+        test_eval_df,
         feature_columns,
         categorical_columns,
     )
@@ -892,6 +898,44 @@ def prepare_training_table(training_table: pd.DataFrame, config: dict) -> pd.Dat
     if max_date:
         frame = frame[frame["race_date"] <= pd.Timestamp(max_date)].copy()
     return frame
+
+
+def apply_prediction_time_measurement_proxies(df: pd.DataFrame) -> pd.DataFrame:
+    """Replace result-time measurements with prediction-time proxies for evaluation.
+
+    Training keeps actual measurements. Evaluation, calibration, and optimization
+    should use the same kind of pre-race proxy values that live prediction has.
+    The actual course is intentionally kept unchanged by request.
+    """
+    frame = df.copy()
+    frame["start_timing"] = _first_available_numeric_series(
+        frame,
+        [
+            "racer_venue_prev_avg_st",
+            "racer_prev_avg_st",
+            "racer_prev_avg_st_5",
+            "racer_prev_avg_st_10",
+            "racer_lane_prev_avg_st",
+            "racer_venue_lane_prev_avg_st",
+        ],
+    )
+    frame["exhibition_time"] = _first_available_numeric_series(
+        frame,
+        [
+            "racer_venue_prev_avg_exhibition",
+            "racer_prev_avg_exhibition",
+        ],
+    )
+    return frame
+
+
+def _first_available_numeric_series(df: pd.DataFrame, columns: list[str]) -> pd.Series:
+    values = pd.Series(pd.NA, index=df.index, dtype="Float64")
+    for column in columns:
+        if column not in df.columns:
+            continue
+        values = values.fillna(pd.to_numeric(df[column], errors="coerce"))
+    return values
 
 
 def infer_feature_columns(df: pd.DataFrame) -> list[str]:
@@ -1114,6 +1158,7 @@ def evaluate_race_order(
     if df.empty:
         return {}
 
+    df = apply_prediction_time_measurement_proxies(df)
     scored = score_frame(model, model_type, df, feature_columns, categorical_columns)
     return summarize_rank_metrics(scored)
 
@@ -1128,6 +1173,7 @@ def evaluate_ensemble_scores(
     if df.empty:
         return {}
 
+    df = apply_prediction_time_measurement_proxies(df)
     base = sort_for_grouping(df)[["race_id", "lane", "finish_position"]].copy()
     combined = np.zeros(len(base), dtype=float)
     for model_type, model in models.items():
@@ -1753,6 +1799,7 @@ def optimize_ensemble_weights(
     feature_columns: list[str],
     categorical_columns: list[str],
 ) -> dict[str, float]:
+    valid_df = apply_prediction_time_measurement_proxies(valid_df)
     cat_scores = score_frame(models["catboost"], "catboost", valid_df, feature_columns, categorical_columns)
     lgb_scores = score_frame(models["lightgbm"], "lightgbm", valid_df, feature_columns, categorical_columns)
 
@@ -1792,6 +1839,7 @@ def fit_trifecta_calibrator(
     feature_columns: list[str],
     categorical_columns: list[str],
 ) -> IsotonicRegression:
+    valid_df = apply_prediction_time_measurement_proxies(valid_df)
     race_probs = build_weighted_lane_probabilities(
         models,
         weights,
@@ -1835,6 +1883,7 @@ def fit_model_trifecta_calibrator(
         calibration_df = valid_df[pd.to_datetime(valid_df["race_date"]) >= window_start].copy()
         if calibration_df.empty:
             calibration_df = valid_df
+    calibration_df = apply_prediction_time_measurement_proxies(calibration_df)
     race_probs = build_weighted_lane_probabilities(
         models,
         weights,
@@ -2504,6 +2553,7 @@ def evaluate_trifecta(
     if df.empty:
         return {}
 
+    df = apply_prediction_time_measurement_proxies(df)
     race_probs = build_weighted_lane_probabilities(
         models,
         weights,
@@ -2719,6 +2769,7 @@ def optimize_trifecta_v2_blend_weight(
     if valid_df.empty or not classifier_models:
         return 1.0
 
+    valid_df = apply_prediction_time_measurement_proxies(valid_df)
     ranked = build_weighted_lane_probabilities(
         models,
         weights,
