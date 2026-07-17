@@ -215,3 +215,4 @@ def test_compute_ticket_rank_hit_rates_uses_bought_tickets_only() -> None:
     assert metrics["top1_hit_rate"] == 1 / 3
     assert metrics["top3_hit_rate"] == 2 / 3
     assert metrics["top5_hit_rate"] == 2 / 3
+    assert metrics["top12_hit_rate"] == 2 / 3

@@ -391,7 +391,7 @@ def build_recent_backtest_prediction_frame(
 def compute_ticket_rank_hit_rates(
     ticket_details: pd.DataFrame,
     race_count: int,
-    top_ks: tuple[int, ...] = (1, 3, 5),
+    top_ks: tuple[int, ...] = (1, 3, 5, 12),
 ) -> dict[str, float]:
     if race_count <= 0 or ticket_details.empty:
         return {f"top{top_k}_hit_rate": 0.0 for top_k in top_ks}
@@ -591,6 +591,7 @@ def evaluate_recent_week_predictions(
         "top1_hit_rate": float(rank_hit_rates.get("top1_hit_rate", 0.0)),
         "top3_hit_rate": float(rank_hit_rates.get("top3_hit_rate", 0.0)),
         "top5_hit_rate": float(rank_hit_rates.get("top5_hit_rate", 0.0)),
+        "top12_hit_rate": float(rank_hit_rates.get("top12_hit_rate", 0.0)),
         "missing_payout_files": missing_payout_files,
     }
 

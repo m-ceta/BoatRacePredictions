@@ -22,7 +22,7 @@ def compute_trifecta_metrics(
         raise ValueError(f"Missing trifecta metric columns: {sorted(missing)}")
 
     race_count = int(trifecta_df["race_id"].nunique())
-    top_hits = {1: 0, 3: 0, 5: 0, 10: 0}
+    top_hits = {1: 0, 3: 0, 5: 0, 10: 0, 12: 0}
     covered_races = 0
     log_losses: list[float] = []
     brier_scores: list[float] = []
@@ -57,6 +57,7 @@ def compute_trifecta_metrics(
         "top3_hit_rate": top_hits[3] / race_count if race_count else 0.0,
         "top5_hit_rate": top_hits[5] / race_count if race_count else 0.0,
         "top10_hit_rate": top_hits[10] / race_count if race_count else 0.0,
+        "top12_hit_rate": top_hits[12] / race_count if race_count else 0.0,
         "log_loss": float(np.mean(log_losses)) if log_losses else 0.0,
         "brier_score": float(np.mean(brier_scores)) if brier_scores else 0.0,
         "mean_actual_probability": float(np.mean(actual_probabilities)) if actual_probabilities else 0.0,

@@ -288,7 +288,7 @@ def _render_recent_backtest_report(report: dict) -> None:
     col5.metric("購入点数", f"{ticket_count}")
     col6.metric("購入額", f"{total_stake:,.0f}円")
     col7.metric("払戻額", f"{total_return:,.0f}円")
-    col8.metric("Top3内率", f"{float(summary.get('top3_hit_rate', 0.0)) * 100:.1f}%")
+    col8.metric("Top12内率", f"{float(summary.get('top12_hit_rate', 0.0)) * 100:.1f}%")
 
     missing_payout_files = summary.get("missing_payout_files", [])
     if missing_payout_files:

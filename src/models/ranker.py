@@ -111,17 +111,18 @@ DEFAULT_PHASE3_SETTINGS = {
     "rerank": {
         "default_conservative_weight": 0.9,
         "weight_grid": [0.5, 0.7, 0.8, 0.9, 0.95],
-        "top_n_grid": [10, 24, 32, 60],
+        "top_n_grid": [12, 16, 20, 24],
         "rank_penalty_strength_grid": [0.0, 0.01, 0.02, 0.03],
         "default_rank_penalty_strength": 0.02,
         "rank_penalty_start": 5,
-        "scenario_candidate_top_n": 6,
+        "scenario_candidate_top_n": 12,
         "coarse_eval_max_races": 750,
         "coarse_penalty_grid": [0.0],
         "fine_top_k": 5,
         "log_loss_max_delta_vs_v1": 0.03,
-        "objective_top5_weight": 0.35,
-        "objective_top3_weight": 0.25,
+        "objective_top12_weight": 0.40,
+        "objective_top5_weight": 0.15,
+        "objective_top3_weight": 0.15,
         "objective_top1_weight": 0.15,
         "objective_mrr_weight": 0.15,
         "objective_log_loss_weight": 0.10,
@@ -1938,8 +1939,9 @@ def _phase3_tuning_objective(
     allowed_log_loss = baseline_log_loss + max_delta
     log_loss_excess = max(log_loss - allowed_log_loss, 0.0)
     objective = (
-        float(settings.get("objective_top5_weight", 0.35)) * _metric_value(metrics, "top5_hit_rate")
-        + float(settings.get("objective_top3_weight", 0.25)) * _metric_value(metrics, "top3_hit_rate")
+        float(settings.get("objective_top12_weight", 0.40)) * _metric_value(metrics, "top12_hit_rate")
+        + float(settings.get("objective_top5_weight", 0.15)) * _metric_value(metrics, "top5_hit_rate")
+        + float(settings.get("objective_top3_weight", 0.15)) * _metric_value(metrics, "top3_hit_rate")
         + float(settings.get("objective_top1_weight", 0.15)) * _metric_value(metrics, "top1_hit_rate")
         + float(settings.get("objective_mrr_weight", 0.15)) * _rerank_metric_value(metrics, "rerank_mrr")
         - float(settings.get("objective_log_loss_weight", 0.10)) * log_loss
@@ -2277,6 +2279,7 @@ def optimize_rerank_inference_settings(
             "top3_hit_rate": float(metrics.get("top3_hit_rate", 0.0)),
             "top5_hit_rate": float(metrics.get("top5_hit_rate", 0.0)),
             "top10_hit_rate": float(metrics.get("top10_hit_rate", 0.0)),
+            "top12_hit_rate": float(metrics.get("top12_hit_rate", 0.0)),
             "log_loss": float(metrics.get("log_loss", 0.0)),
             "rerank_mrr": _rerank_metric_value(metrics, "rerank_mrr"),
         }
@@ -2293,6 +2296,7 @@ def optimize_rerank_inference_settings(
             "top3_hit_rate": float(metrics.get("top3_hit_rate", 0.0)),
             "top5_hit_rate": float(metrics.get("top5_hit_rate", 0.0)),
             "top10_hit_rate": float(metrics.get("top10_hit_rate", 0.0)),
+            "top12_hit_rate": float(metrics.get("top12_hit_rate", 0.0)),
             "log_loss": float(metrics.get("log_loss", 0.0)),
             "rerank_mrr": _rerank_metric_value(metrics, "rerank_mrr"),
         }
@@ -2528,6 +2532,7 @@ def optimize_phase3_calibration_window(
                 "top1_hit_rate": float(metrics.get("top1_hit_rate", 0.0)),
                 "top3_hit_rate": float(metrics.get("top3_hit_rate", 0.0)),
                 "top5_hit_rate": float(metrics.get("top5_hit_rate", 0.0)),
+                "top12_hit_rate": float(metrics.get("top12_hit_rate", 0.0)),
                 "log_loss": float(metrics.get("log_loss", 0.0)),
                 "rerank_mrr": _rerank_metric_value(metrics, "rerank_mrr"),
             }
@@ -2804,7 +2809,7 @@ def optimize_trifecta_v2_blend_weight(
     best_objective = float("-inf")
     for weight in np.linspace(0.5, 1.0, 11):
         top1 = 0
-        top5 = 0
+        top12 = 0
         log_losses: list[float] = []
         for raw_v1, raw_v2, actual_idx in race_payloads:
             blended = blend_trifecta_raw_probabilities(raw_v1, raw_v2, float(weight))
@@ -2814,11 +2819,11 @@ def optimize_trifecta_v2_blend_weight(
             rank = int(np.where(order == actual_idx)[0][0])
             actual_prob = max(float(probs[actual_idx]), 1e-15)
             top1 += int(rank == 0)
-            top5 += int(rank < 5)
+            top12 += int(rank < 12)
             log_losses.append(-np.log(actual_prob))
 
         race_count = len(race_payloads)
-        objective = (top1 / race_count) + 0.1 * (top5 / race_count) - 0.05 * float(np.mean(log_losses))
+        objective = (top1 / race_count) + 0.1 * (top12 / race_count) - 0.05 * float(np.mean(log_losses))
         if objective > best_objective:
             best_objective = objective
             best_weight = float(weight)

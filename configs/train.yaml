@@ -43,18 +43,19 @@ phase3:
     num_boost_round: 120
   rerank:
     default_conservative_weight: 0.9
-    weight_grid: [0.6, 0.7, 0.8, 0.9, 0.95]
-    top_n_grid: [6, 8, 10, 12]
+    weight_grid: [0.7, 0.8, 0.9, 0.95]
+    top_n_grid: [12, 16, 20, 24, 28]
     rank_penalty_strength_grid: [0.0, 0.01, 0.02, 0.03]
     default_rank_penalty_strength: 0.02
     rank_penalty_start: 5
-    scenario_candidate_top_n: 6
+    scenario_candidate_top_n: 12
     coarse_eval_max_races: 750
     coarse_penalty_grid: [0.0]
-    fine_top_k: 5
+    fine_top_k: 8
     log_loss_max_delta_vs_v1: 0.03
-    objective_top5_weight: 0.35
-    objective_top3_weight: 0.25
+    objective_top12_weight: 0.40
+    objective_top5_weight: 0.15
+    objective_top3_weight: 0.15
     objective_top1_weight: 0.15
     objective_mrr_weight: 0.15
     objective_log_loss_weight: 0.10

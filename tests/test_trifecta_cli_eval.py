@@ -30,6 +30,7 @@ def test_train_trifecta_v2_phase3_rerank_does_not_force_actual_candidate(monkeyp
         race_df: pd.DataFrame,
         v1_df: pd.DataFrame,
         v2_df: pd.DataFrame,
+        scenario_model_bundle=None,
     ) -> pd.DataFrame:
         rows: list[dict[str, int]] = []
         for trifecta in v1_df["trifecta"].astype(str).tolist():
@@ -88,6 +89,7 @@ def test_eval_trifecta_full_uses_requested_rerank_top_n_for_each_chunk(monkeypat
             "top1_hit_rate": 0.0,
             "top3_hit_rate": 0.0,
             "top5_hit_rate": 0.0,
+            "top12_hit_rate": 0.0,
         }
 
     monkeypatch.setattr(cli, "evaluate_trifecta", fake_evaluate_trifecta)

@@ -37,6 +37,7 @@ def test_optimize_rerank_saves_and_reuses_checkpoint(tmp_path: Path, monkeypatch
             "top3_hit_rate": 0.0,
             "top5_hit_rate": weight - penalty,
             "top10_hit_rate": 0.0,
+            "top12_hit_rate": weight - penalty,
             "log_loss": 0.1,
             "rerank_metrics": {"rerank_mrr": 0.0},
         }
