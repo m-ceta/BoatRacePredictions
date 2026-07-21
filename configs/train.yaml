@@ -44,7 +44,7 @@ phase3:
   rerank:
     default_conservative_weight: 0.9
     weight_grid: [0.8, 0.9, 0.95]
-    top_n_grid: [12, 16]
+    top_n_grid: [12]
     rank_penalty_strength_grid: [0.0, 0.01]
     default_rank_penalty_strength: 0.02
     rank_penalty_start: 5
