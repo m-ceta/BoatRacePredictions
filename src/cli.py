@@ -55,8 +55,10 @@ from src.models.ranker import (
     train_phase3_conditional_trifecta_model,
     train_trifecta_v2_model,
     optimize_rerank_inference_settings_two_stage,
+    optimize_dynamic_rerank_weights,
     optimize_phase3_calibration_window,
     with_conservative_rerank_weight,
+    with_dynamic_rerank_weight_metadata,
     with_calibration_window_days,
     with_phase3_optimization_metadata,
     with_rank_penalty_settings,
@@ -514,11 +516,32 @@ def train_trifecta_v2_main() -> None:
     else:
         progress("skipping rerank optimization: --optimize-rerank not set")
     trifecta_v3_model = with_rerank_top_n(trifecta_v3_model, eval_rerank_top_n)
-    progress(f"optimizing calibration window: rerank_top_n={eval_rerank_top_n}")
+    progress("optimizing dynamic rerank weight rules")
+    dynamic_weight_optimization = optimize_dynamic_rerank_weights(
+        models,
+        ensemble_weights,
+        eval_valid_tune_df,
+        feature_columns,
+        categorical_columns,
+        classifier_models=classifier_models,
+        flow_model=flow_model,
+        flow_classes=flow_classes,
+        staged_models=staged_models,
+        trifecta_v2_model=trifecta_v3_model,
+        rerank_top_n=eval_rerank_top_n,
+        config=config,
+        progress_callback=progress,
+    )
+    trifecta_v3_model = with_dynamic_rerank_weight_metadata(trifecta_v3_model, dynamic_weight_optimization)
+    calibration_search_df = eval_valid_tune_df if not eval_valid_tune_df.empty else valid_tune_df
+    progress(
+        "optimizing calibration window: "
+        f"rerank_top_n={eval_rerank_top_n}, races={race_count(calibration_search_df)}"
+    )
     calibration_optimization = optimize_phase3_calibration_window(
         models,
         ensemble_weights,
-        valid_tune_df,
+        calibration_search_df,
         feature_columns,
         categorical_columns,
         classifier_models=classifier_models,
@@ -630,6 +653,7 @@ def train_trifecta_v2_main() -> None:
     }
     if rerank_optimization:
         metrics["rerank_optimization"] = rerank_optimization
+    metrics["dynamic_rerank_weight_optimization"] = dynamic_weight_optimization
     metrics["calibration_optimization"] = calibration_optimization
     progress("evaluating trifecta metrics")
     v1_final_metrics = evaluate_trifecta(

@@ -1,0 +1,481 @@
+{
+  "scope": {
+    "date_from": "2026-07-06",
+    "date_to": "2026-07-12",
+    "race_count": 1080,
+    "source_split": "valid"
+  },
+  "thresholds": {
+    "escape_strength_high": 0.29110074481276005,
+    "inner_collapse_risk_high": 0.5349699695588098,
+    "inner_collapse_risk_mid": 0.5218669280098873,
+    "attack_pressure_high": 0.3778969853919732,
+    "race_upset_score_high": 0.4706095428980892,
+    "probability_flatness_high": 0.9391036953362688
+  },
+  "subset_counts": [
+    {
+      "label": "attack_or_collapse",
+      "race_count": 458,
+      "rate": 0.42407407407407405
+    },
+    {
+      "label": "stable_escape",
+      "race_count": 246,
+      "rate": 0.22777777777777777
+    },
+    {
+      "label": "neutral",
+      "race_count": 243,
+      "rate": 0.225
+    },
+    {
+      "label": "upset_or_flat",
+      "race_count": 133,
+      "rate": 0.12314814814814815
+    }
+  ],
+  "scenario_counts": [
+    {
+      "label": "S0_C1_ESCAPE_IN_WIN",
+      "race_count": 592,
+      "rate": 0.5481481481481482
+    },
+    {
+      "label": "S3_C3_WIN_CENTER",
+      "race_count": 130,
+      "rate": 0.12037037037037036
+    },
+    {
+      "label": "S4_C4_WIN_KADO",
+      "race_count": 119,
+      "rate": 0.11018518518518519
+    },
+    {
+      "label": "S5_OUTER_WIN_OR_CHAIN",
+      "race_count": 100,
+      "rate": 0.09259259259259259
+    },
+    {
+      "label": "S1_C2_SASHI_IN_REMAIN",
+      "race_count": 71,
+      "rate": 0.06574074074074074
+    },
+    {
+      "label": "S2_C2_WIN_IN_OUT",
+      "race_count": 68,
+      "rate": 0.06296296296296296
+    }
+  ],
+  "subset_summary": [
+    {
+      "subset": "attack_or_collapse",
+      "race_count": 458,
+      "rate": 0.42407407407407405,
+      "lane1_win_rate": 0.4672489082969432,
+      "lane1_remain_rate": 0.7510917030567685,
+      "outer_chain_rate": 0.25327510917030566,
+      "outer_winner_rate": 0.23580786026200873,
+      "avg_escape_strength": 0.24452905013408743,
+      "avg_inner_collapse_risk": 0.5415015454982619,
+      "avg_attack_pressure": 0.38565337942172245,
+      "avg_race_upset_score": 0.4746235520466861,
+      "avg_probability_flatness": 0.9309276339726527,
+      "top_scenarios": [
+        {
+          "label": "S0_C1_ESCAPE_IN_WIN",
+          "race_count": 219,
+          "rate": 0.4781659388646288
+        },
+        {
+          "label": "S4_C4_WIN_KADO",
+          "race_count": 66,
+          "rate": 0.14410480349344978
+        },
+        {
+          "label": "S3_C3_WIN_CENTER",
+          "race_count": 59,
+          "rate": 0.12882096069868995
+        },
+        {
+          "label": "S5_OUTER_WIN_OR_CHAIN",
+          "race_count": 42,
+          "rate": 0.09170305676855896
+        },
+        {
+          "label": "S2_C2_WIN_IN_OUT",
+          "race_count": 41,
+          "rate": 0.08951965065502183
+        }
+      ],
+      "top_lane1_status": [
+        {
+          "label": "IN_WIN",
+          "race_count": 214,
+          "rate": 0.4672489082969432
+        },
+        {
+          "label": "IN_REMAIN",
+          "race_count": 130,
+          "rate": 0.2838427947598253
+        },
+        {
+          "label": "IN_OUT",
+          "race_count": 114,
+          "rate": 0.24890829694323144
+        }
+      ],
+      "top3_shapes": [
+        {
+          "label": "CENTER_OUTER",
+          "race_count": 150,
+          "rate": 0.32751091703056767
+        },
+        {
+          "label": "OUTER_CHAIN",
+          "race_count": 116,
+          "rate": 0.25327510917030566
+        },
+        {
+          "label": "INNER_TOP3",
+          "race_count": 79,
+          "rate": 0.17248908296943233
+        },
+        {
+          "label": "INNER_CENTER",
+          "race_count": 64,
+          "rate": 0.13973799126637554
+        },
+        {
+          "label": "MIXED",
+          "race_count": 49,
+          "rate": 0.10698689956331878
+        }
+      ]
+    },
+    {
+      "subset": "upset_or_flat",
+      "race_count": 133,
+      "rate": 0.12314814814814815,
+      "lane1_win_rate": 0.37593984962406013,
+      "lane1_remain_rate": 0.6691729323308271,
+      "outer_chain_rate": 0.2781954887218045,
+      "outer_winner_rate": 0.2857142857142857,
+      "avg_escape_strength": 0.2618535396251639,
+      "avg_inner_collapse_risk": 0.5185916182089461,
+      "avg_attack_pressure": 0.3517753588673491,
+      "avg_race_upset_score": 0.46271058891047295,
+      "avg_probability_flatness": 0.9434817928748629,
+      "top_scenarios": [
+        {
+          "label": "S0_C1_ESCAPE_IN_WIN",
+          "race_count": 52,
+          "rate": 0.39097744360902253
+        },
+        {
+          "label": "S3_C3_WIN_CENTER",
+          "race_count": 24,
+          "rate": 0.18045112781954886
+        },
+        {
+          "label": "S5_OUTER_WIN_OR_CHAIN",
+          "race_count": 19,
+          "rate": 0.14285714285714285
+        },
+        {
+          "label": "S4_C4_WIN_KADO",
+          "race_count": 19,
+          "rate": 0.14285714285714285
+        },
+        {
+          "label": "S1_C2_SASHI_IN_REMAIN",
+          "race_count": 12,
+          "rate": 0.09022556390977443
+        }
+      ],
+      "top_lane1_status": [
+        {
+          "label": "IN_WIN",
+          "race_count": 50,
+          "rate": 0.37593984962406013
+        },
+        {
+          "label": "IN_OUT",
+          "race_count": 44,
+          "rate": 0.3308270676691729
+        },
+        {
+          "label": "IN_REMAIN",
+          "race_count": 39,
+          "rate": 0.2932330827067669
+        }
+      ],
+      "top3_shapes": [
+        {
+          "label": "CENTER_OUTER",
+          "race_count": 48,
+          "rate": 0.3609022556390977
+        },
+        {
+          "label": "OUTER_CHAIN",
+          "race_count": 37,
+          "rate": 0.2781954887218045
+        },
+        {
+          "label": "MIXED",
+          "race_count": 21,
+          "rate": 0.15789473684210525
+        },
+        {
+          "label": "INNER_TOP3",
+          "race_count": 15,
+          "rate": 0.11278195488721804
+        },
+        {
+          "label": "INNER_CENTER",
+          "race_count": 12,
+          "rate": 0.09022556390977443
+        }
+      ]
+    },
+    {
+      "subset": "neutral",
+      "race_count": 243,
+      "rate": 0.225,
+      "lane1_win_rate": 0.5843621399176955,
+      "lane1_remain_rate": 0.831275720164609,
+      "outer_chain_rate": 0.25102880658436216,
+      "outer_winner_rate": 0.18930041152263374,
+      "avg_escape_strength": 0.2666881177792577,
+      "avg_inner_collapse_risk": 0.516320055669563,
+      "avg_attack_pressure": 0.34877705072126997,
+      "avg_race_upset_score": 0.4543532819512463,
+      "avg_probability_flatness": 0.9140058075227286,
+      "top_scenarios": [
+        {
+          "label": "S0_C1_ESCAPE_IN_WIN",
+          "race_count": 142,
+          "rate": 0.5843621399176955
+        },
+        {
+          "label": "S3_C3_WIN_CENTER",
+          "race_count": 30,
+          "rate": 0.12345679012345678
+        },
+        {
+          "label": "S5_OUTER_WIN_OR_CHAIN",
+          "race_count": 24,
+          "rate": 0.09876543209876543
+        },
+        {
+          "label": "S4_C4_WIN_KADO",
+          "race_count": 22,
+          "rate": 0.09053497942386832
+        },
+        {
+          "label": "S1_C2_SASHI_IN_REMAIN",
+          "race_count": 15,
+          "rate": 0.06172839506172839
+        }
+      ],
+      "top_lane1_status": [
+        {
+          "label": "IN_WIN",
+          "race_count": 142,
+          "rate": 0.5843621399176955
+        },
+        {
+          "label": "IN_REMAIN",
+          "race_count": 60,
+          "rate": 0.24691358024691357
+        },
+        {
+          "label": "IN_OUT",
+          "race_count": 41,
+          "rate": 0.16872427983539096
+        }
+      ],
+      "top3_shapes": [
+        {
+          "label": "CENTER_OUTER",
+          "race_count": 77,
+          "rate": 0.3168724279835391
+        },
+        {
+          "label": "OUTER_CHAIN",
+          "race_count": 61,
+          "rate": 0.25102880658436216
+        },
+        {
+          "label": "INNER_TOP3",
+          "race_count": 48,
+          "rate": 0.19753086419753085
+        },
+        {
+          "label": "MIXED",
+          "race_count": 30,
+          "rate": 0.12345679012345678
+        },
+        {
+          "label": "INNER_CENTER",
+          "race_count": 27,
+          "rate": 0.1111111111111111
+        }
+      ]
+    },
+    {
+      "subset": "stable_escape",
+      "race_count": 246,
+      "rate": 0.22777777777777777,
+      "lane1_win_rate": 0.7235772357723578,
+      "lane1_remain_rate": 0.9186991869918699,
+      "outer_chain_rate": 0.2073170731707317,
+      "outer_winner_rate": 0.10975609756097561,
+      "avg_escape_strength": 0.3152352270347679,
+      "avg_inner_collapse_risk": 0.4931706892330195,
+      "avg_attack_pressure": 0.34516604920710997,
+      "avg_race_upset_score": 0.4440375659148395,
+      "avg_probability_flatness": 0.9047138328726474,
+      "top_scenarios": [
+        {
+          "label": "S0_C1_ESCAPE_IN_WIN",
+          "race_count": 179,
+          "rate": 0.7276422764227642
+        },
+        {
+          "label": "S3_C3_WIN_CENTER",
+          "race_count": 17,
+          "rate": 0.06910569105691057
+        },
+        {
+          "label": "S5_OUTER_WIN_OR_CHAIN",
+          "race_count": 15,
+          "rate": 0.06097560975609756
+        },
+        {
+          "label": "S1_C2_SASHI_IN_REMAIN",
+          "race_count": 13,
+          "rate": 0.052845528455284556
+        },
+        {
+          "label": "S4_C4_WIN_KADO",
+          "race_count": 12,
+          "rate": 0.04878048780487805
+        }
+      ],
+      "top_lane1_status": [
+        {
+          "label": "IN_WIN",
+          "race_count": 178,
+          "rate": 0.7235772357723578
+        },
+        {
+          "label": "IN_REMAIN",
+          "race_count": 48,
+          "rate": 0.1951219512195122
+        },
+        {
+          "label": "IN_OUT",
+          "race_count": 20,
+          "rate": 0.08130081300813008
+        }
+      ],
+      "top3_shapes": [
+        {
+          "label": "INNER_TOP3",
+          "race_count": 57,
+          "rate": 0.23170731707317074
+        },
+        {
+          "label": "CENTER_OUTER",
+          "race_count": 52,
+          "rate": 0.21138211382113822
+        },
+        {
+          "label": "OUTER_CHAIN",
+          "race_count": 51,
+          "rate": 0.2073170731707317
+        },
+        {
+          "label": "MIXED",
+          "race_count": 47,
+          "rate": 0.1910569105691057
+        },
+        {
+          "label": "INNER_CENTER",
+          "race_count": 39,
+          "rate": 0.15853658536585366
+        }
+      ]
+    }
+  ],
+  "subset_x_scenario_rate": {
+    "attack_or_collapse": {
+      "S0_C1_ESCAPE_IN_WIN": 0.4782,
+      "S1_C2_SASHI_IN_REMAIN": 0.0677,
+      "S2_C2_WIN_IN_OUT": 0.0895,
+      "S3_C3_WIN_CENTER": 0.1288,
+      "S4_C4_WIN_KADO": 0.1441,
+      "S5_OUTER_WIN_OR_CHAIN": 0.0917
+    },
+    "neutral": {
+      "S0_C1_ESCAPE_IN_WIN": 0.5844,
+      "S1_C2_SASHI_IN_REMAIN": 0.0617,
+      "S2_C2_WIN_IN_OUT": 0.0412,
+      "S3_C3_WIN_CENTER": 0.1235,
+      "S4_C4_WIN_KADO": 0.0905,
+      "S5_OUTER_WIN_OR_CHAIN": 0.0988
+    },
+    "stable_escape": {
+      "S0_C1_ESCAPE_IN_WIN": 0.7276,
+      "S1_C2_SASHI_IN_REMAIN": 0.0528,
+      "S2_C2_WIN_IN_OUT": 0.0407,
+      "S3_C3_WIN_CENTER": 0.0691,
+      "S4_C4_WIN_KADO": 0.0488,
+      "S5_OUTER_WIN_OR_CHAIN": 0.061
+    },
+    "upset_or_flat": {
+      "S0_C1_ESCAPE_IN_WIN": 0.391,
+      "S1_C2_SASHI_IN_REMAIN": 0.0902,
+      "S2_C2_WIN_IN_OUT": 0.0526,
+      "S3_C3_WIN_CENTER": 0.1805,
+      "S4_C4_WIN_KADO": 0.1429,
+      "S5_OUTER_WIN_OR_CHAIN": 0.1429
+    }
+  },
+  "subset_x_scenario_count": {
+    "attack_or_collapse": {
+      "S0_C1_ESCAPE_IN_WIN": 219,
+      "S1_C2_SASHI_IN_REMAIN": 31,
+      "S2_C2_WIN_IN_OUT": 41,
+      "S3_C3_WIN_CENTER": 59,
+      "S4_C4_WIN_KADO": 66,
+      "S5_OUTER_WIN_OR_CHAIN": 42
+    },
+    "neutral": {
+      "S0_C1_ESCAPE_IN_WIN": 142,
+      "S1_C2_SASHI_IN_REMAIN": 15,
+      "S2_C2_WIN_IN_OUT": 10,
+      "S3_C3_WIN_CENTER": 30,
+      "S4_C4_WIN_KADO": 22,
+      "S5_OUTER_WIN_OR_CHAIN": 24
+    },
+    "stable_escape": {
+      "S0_C1_ESCAPE_IN_WIN": 179,
+      "S1_C2_SASHI_IN_REMAIN": 13,
+      "S2_C2_WIN_IN_OUT": 10,
+      "S3_C3_WIN_CENTER": 17,
+      "S4_C4_WIN_KADO": 12,
+      "S5_OUTER_WIN_OR_CHAIN": 15
+    },
+    "upset_or_flat": {
+      "S0_C1_ESCAPE_IN_WIN": 52,
+      "S1_C2_SASHI_IN_REMAIN": 12,
+      "S2_C2_WIN_IN_OUT": 7,
+      "S3_C3_WIN_CENTER": 24,
+      "S4_C4_WIN_KADO": 19,
+      "S5_OUTER_WIN_OR_CHAIN": 19
+    }
+  },
+  "output_csv": "reports\\dynamic_subset_recent_week.csv"
+}

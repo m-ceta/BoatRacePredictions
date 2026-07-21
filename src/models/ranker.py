@@ -135,6 +135,16 @@ DEFAULT_PHASE3_SETTINGS = {
     "evaluation": {
         "scenario_min_races": 100,
     },
+    "dynamic_rerank_weight": {
+        "enabled": False,
+        "optimize": False,
+        "min_subset_races": 500,
+        "top12_min_improvement": 0.0,
+        "log_loss_max_delta": 0.03,
+        "weight_grid": [0.7, 0.8, 0.9, 0.95],
+        "quantile_high": 0.7,
+        "quantile_mid": 0.5,
+    },
 }
 
 
@@ -406,11 +416,29 @@ def get_scenario_candidate_top_n(model: Any) -> int:
     return 0
 
 
+def get_dynamic_rerank_weight_metadata(model: Any) -> dict[str, Any]:
+    if is_trifecta_v2_bundle(model) and isinstance(model.get("dynamic_rerank_weight"), dict):
+        return dict(model["dynamic_rerank_weight"])
+    return {"enabled": False, "rules": [], "default_weight": get_conservative_rerank_weight(model)}
+
+
 def with_conservative_rerank_weight(model: Any, weight: float) -> Any:
     if not is_trifecta_v2_bundle(model):
         return model
     updated = dict(model)
     updated["conservative_v1_weight"] = float(weight)
+    return updated
+
+
+def with_dynamic_rerank_weight_metadata(model: Any, metadata: dict[str, Any] | None) -> Any:
+    if not is_trifecta_v2_bundle(model):
+        return model
+    updated = dict(model)
+    updated["dynamic_rerank_weight"] = metadata or {
+        "enabled": False,
+        "rules": [],
+        "default_weight": get_conservative_rerank_weight(model),
+    }
     return updated
 
 
@@ -480,6 +508,160 @@ def blend_conservative_rerank_scores(
         overflow = np.clip((base_rank_order - float(rank_penalty_start)) / penalty_denom, 0.0, 1.0)
         update_rank_score = np.clip(update_rank_score - (overflow * rank_penalty_strength), 0.0, 1.0)
     return conservative_weight * base_rank_score + (1.0 - conservative_weight) * update_rank_score
+
+
+def build_disabled_dynamic_rerank_weight_metadata(
+    config: dict | None,
+    default_weight: float,
+) -> dict[str, Any]:
+    settings = get_phase3_settings(config)["dynamic_rerank_weight"]
+    return {
+        "enabled": bool(settings.get("enabled", False)),
+        "optimized": False,
+        "default_weight": float(default_weight),
+        "rules": [],
+        "thresholds": {},
+        "diagnostics": {},
+    }
+
+
+def build_dynamic_rerank_race_features(
+    race_df: pd.DataFrame,
+    model_bundle: Any | None = None,
+) -> dict[str, float]:
+    if race_df.empty:
+        return {
+            "escape_strength": 0.0,
+            "inner_collapse_risk": 0.0,
+            "attack_pressure": 0.0,
+            "race_upset_score": 0.0,
+            "probability_flatness": 0.0,
+        }
+    lane_frame = race_df.set_index("lane").copy()
+    scenario = apply_phase3_pattern_model_to_scenario(_phase3_scenario_context(lane_frame), race_df, model_bundle)
+    scenario_score_map = _phase3_scenario_scores(scenario)
+    probability_source = (
+        race_df["win_probability_like"]
+        if "win_probability_like" in race_df.columns
+        else pd.Series(0.0, index=race_df.index)
+    )
+    ordered_probs = (
+        pd.to_numeric(probability_source, errors="coerce").fillna(0.0).sort_values(ascending=False).to_numpy(dtype=float)
+    )
+    top_prob = float(ordered_probs[0]) if len(ordered_probs) > 0 else 0.0
+    second_prob = float(ordered_probs[1]) if len(ordered_probs) > 1 else 0.0
+    top10_entropy = _normalized_entropy(ordered_probs[:10])
+    probability_flatness = _clip01(
+        0.55 * top10_entropy
+        + 0.25 * (1.0 - top_prob)
+        + 0.20 * (1.0 - max(top_prob - second_prob, 0.0))
+    )
+    outer_scenario_pressure = max(
+        scenario_score_map.get("S3", 0.0),
+        scenario_score_map.get("S4", 0.0),
+        scenario_score_map.get("S5", 0.0),
+        scenario_score_map.get("S6", 0.0),
+        scenario_score_map.get("S7", 0.0),
+    )
+    race_upset_score = _clip01(
+        0.28 * float(scenario.get("inner_collapse_risk", 0.0))
+        + 0.24 * float(scenario.get("attack_pressure", 0.0))
+        + 0.20 * float(scenario.get("outer_sweep_risk", 0.0))
+        + 0.18 * outer_scenario_pressure
+        + 0.10 * probability_flatness
+    )
+    return {
+        "escape_strength": float(scenario.get("escape_strength", 0.0)),
+        "inner_collapse_risk": float(scenario.get("inner_collapse_risk", 0.0)),
+        "attack_pressure": float(scenario.get("attack_pressure", 0.0)),
+        "race_upset_score": race_upset_score,
+        "probability_flatness": probability_flatness,
+    }
+
+
+def build_dynamic_rerank_thresholds(
+    feature_frame: pd.DataFrame,
+    settings: dict[str, Any],
+) -> dict[str, float]:
+    if feature_frame.empty:
+        return {}
+    high_q = float(settings.get("quantile_high", 0.7))
+    mid_q = float(settings.get("quantile_mid", 0.5))
+    return {
+        "escape_strength_high": float(feature_frame["escape_strength"].quantile(high_q)),
+        "inner_collapse_risk_high": float(feature_frame["inner_collapse_risk"].quantile(high_q)),
+        "inner_collapse_risk_mid": float(feature_frame["inner_collapse_risk"].quantile(mid_q)),
+        "attack_pressure_high": float(feature_frame["attack_pressure"].quantile(high_q)),
+        "race_upset_score_high": float(feature_frame["race_upset_score"].quantile(high_q)),
+        "probability_flatness_high": float(feature_frame["probability_flatness"].quantile(high_q)),
+    }
+
+
+def classify_dynamic_rerank_subset(
+    features: dict[str, float],
+    thresholds: dict[str, float],
+) -> str:
+    if not thresholds:
+        return "neutral"
+    attack = float(features.get("attack_pressure", 0.0))
+    collapse = float(features.get("inner_collapse_risk", 0.0))
+    upset = float(features.get("race_upset_score", 0.0))
+    flat = float(features.get("probability_flatness", 0.0))
+    escape = float(features.get("escape_strength", 0.0))
+    if attack >= float(thresholds.get("attack_pressure_high", 1.0)) or collapse >= float(
+        thresholds.get("inner_collapse_risk_high", 1.0)
+    ):
+        return "attack_or_collapse"
+    if upset >= float(thresholds.get("race_upset_score_high", 1.0)) or flat >= float(
+        thresholds.get("probability_flatness_high", 1.0)
+    ):
+        return "upset_or_flat"
+    if escape >= float(thresholds.get("escape_strength_high", 1.0)) and collapse <= float(
+        thresholds.get("inner_collapse_risk_mid", 0.0)
+    ):
+        return "stable_escape"
+    return "neutral"
+
+
+def build_dynamic_rerank_subset_frame(
+    ranked_df: pd.DataFrame,
+    model_bundle: Any | None,
+    settings: dict[str, Any],
+) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    for race_id, race_df in ranked_df.groupby("race_id", sort=False):
+        features = build_dynamic_rerank_race_features(race_df, model_bundle)
+        rows.append({"race_id": str(race_id), **features})
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        return frame
+    thresholds = build_dynamic_rerank_thresholds(frame, settings)
+    frame["dynamic_rerank_subset"] = frame.apply(
+        lambda row: classify_dynamic_rerank_subset(row.to_dict(), thresholds),
+        axis=1,
+    )
+    frame.attrs["dynamic_rerank_thresholds"] = thresholds
+    return frame
+
+
+def get_dynamic_rerank_weight_for_race(
+    model: Any,
+    race_df: pd.DataFrame,
+) -> tuple[float, str, bool]:
+    default_weight = get_conservative_rerank_weight(model)
+    metadata = get_dynamic_rerank_weight_metadata(model)
+    if not bool(metadata.get("enabled", False)):
+        return default_weight, "disabled", False
+    thresholds = metadata.get("thresholds", {})
+    rules = metadata.get("rules", [])
+    if not isinstance(thresholds, dict) or not isinstance(rules, list):
+        return default_weight, "neutral", False
+    features = build_dynamic_rerank_race_features(race_df, model)
+    subset = classify_dynamic_rerank_subset(features, thresholds)
+    for rule in rules:
+        if isinstance(rule, dict) and rule.get("subset") == subset:
+            return float(rule.get("weight", default_weight)), subset, True
+    return float(metadata.get("default_weight", default_weight)), subset, True
 
 
 def train_ranker(
@@ -1426,13 +1608,21 @@ def build_trifecta_prediction_frame(
                     base_scores=rerank_scores,
                     model_bundle=trifecta_v2_model,
                 )
+            dynamic_weight, dynamic_subset, dynamic_enabled = get_dynamic_rerank_weight_for_race(
+                trifecta_v2_model,
+                race_df,
+            )
             v2["raw_probability_v2"] = blend_conservative_rerank_scores(
                 v1["raw_probability_v1"].to_numpy(dtype=float),
                 rerank_scores,
-                get_conservative_rerank_weight(trifecta_v2_model),
+                dynamic_weight,
                 get_rank_penalty_strength(trifecta_v2_model),
                 get_rank_penalty_start(trifecta_v2_model),
             )
+        else:
+            dynamic_weight = get_conservative_rerank_weight(trifecta_v2_model)
+            dynamic_subset = "disabled"
+            dynamic_enabled = False
         prob_v2 = normalize_trifecta_probabilities(v2["raw_probability_v2"].to_numpy(dtype=float), trifecta_calibrator)
         v2["probability_v2"] = prob_v2
 
@@ -1452,6 +1642,9 @@ def build_trifecta_prediction_frame(
                     merged[probability_col] = merged[probability_col] / denom
         merged["probability"] = merged["probability_v2"] if use_v2 else merged["probability_v1"]
         merged = attach_race_upset_and_darkhorse_scores(merged, race_df, scenario_model_bundle=trifecta_v2_model)
+        merged["dynamic_rerank_subset"] = dynamic_subset
+        merged["dynamic_rerank_weight"] = float(dynamic_weight)
+        merged["dynamic_rerank_enabled"] = bool(dynamic_enabled)
         rows.append(merged.sort_values("probability", ascending=False).reset_index(drop=True))
 
     if not rows:
@@ -1475,6 +1668,9 @@ def build_trifecta_prediction_frame(
                 "is_darkhorse_candidate",
                 "ticket_priority_score",
                 "ticket_hint",
+                "dynamic_rerank_subset",
+                "dynamic_rerank_weight",
+                "dynamic_rerank_enabled",
             ]
         )
 
@@ -2629,6 +2825,167 @@ def evaluate_trifecta(
         grouped_metrics[scenario_label] = scenario_result
     metrics["scenario_metrics_grouped"] = grouped_metrics
     return metrics
+
+
+def optimize_dynamic_rerank_weights(
+    models: dict[str, Any],
+    weights: dict[str, float],
+    valid_df: pd.DataFrame,
+    feature_columns: list[str],
+    categorical_columns: list[str],
+    classifier_models: dict[str, lgb.Booster] | None = None,
+    flow_model: lgb.Booster | None = None,
+    flow_classes: list[str] | None = None,
+    staged_models: dict[str, lgb.Booster] | None = None,
+    trifecta_v2_model: Any | None = None,
+    rerank_top_n: int | None = None,
+    config: dict | None = None,
+    progress_callback: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    default_weight = get_conservative_rerank_weight(trifecta_v2_model)
+    settings = get_phase3_settings(config)["dynamic_rerank_weight"]
+    metadata = build_disabled_dynamic_rerank_weight_metadata(config, default_weight)
+    if not bool(settings.get("optimize", False)):
+        return metadata
+    if valid_df.empty or trifecta_v2_model is None or not is_trifecta_v2_bundle(trifecta_v2_model):
+        return metadata
+
+    _emit_progress(progress_callback, "dynamic rerank weight: building subset profile")
+    eval_df = apply_prediction_time_measurement_proxies(valid_df)
+    ranked = build_weighted_lane_probabilities(
+        models,
+        weights,
+        eval_df,
+        feature_columns,
+        categorical_columns,
+        classifier_models=classifier_models,
+        flow_model=flow_model,
+        flow_classes=flow_classes,
+        staged_models=staged_models,
+    )
+    subset_frame = build_dynamic_rerank_subset_frame(ranked, trifecta_v2_model, settings)
+    if subset_frame.empty:
+        return metadata
+
+    thresholds = dict(subset_frame.attrs.get("dynamic_rerank_thresholds", {}))
+    metadata["thresholds"] = thresholds
+    subset_by_race = subset_frame.set_index("race_id")["dynamic_rerank_subset"].to_dict()
+    subset_counts = subset_frame["dynamic_rerank_subset"].value_counts().to_dict()
+    min_subset_races = int(settings.get("min_subset_races", 500))
+    candidate_weights = [float(value) for value in settings.get("weight_grid", [default_weight])]
+    if default_weight not in candidate_weights:
+        candidate_weights.append(float(default_weight))
+    candidate_weights = sorted(set(candidate_weights))
+    top12_min_improvement = float(settings.get("top12_min_improvement", 0.0))
+    log_loss_max_delta = float(settings.get("log_loss_max_delta", 0.03))
+
+    default_model = with_dynamic_rerank_weight_metadata(
+        with_conservative_rerank_weight(trifecta_v2_model, default_weight),
+        {"enabled": False, "rules": [], "default_weight": default_weight},
+    )
+    diagnostics: dict[str, Any] = {
+        "subset_counts": {str(key): int(value) for key, value in subset_counts.items()},
+        "thresholds": thresholds,
+        "rules": {},
+    }
+    rules: list[dict[str, Any]] = []
+
+    for subset_name in ("stable_escape", "attack_or_collapse", "upset_or_flat", "neutral"):
+        race_ids = [race_id for race_id, subset in subset_by_race.items() if subset == subset_name]
+        subset_race_count = len(race_ids)
+        if subset_race_count < min_subset_races:
+            diagnostics["rules"][subset_name] = {
+                "race_count": int(subset_race_count),
+                "status": "skipped_small_subset",
+            }
+            continue
+        subset_df = valid_df[valid_df["race_id"].astype(str).isin(race_ids)].copy()
+        baseline_metrics = evaluate_trifecta(
+            models,
+            weights,
+            None,
+            subset_df,
+            feature_columns,
+            categorical_columns,
+            classifier_models=classifier_models,
+            flow_model=flow_model,
+            flow_classes=flow_classes,
+            staged_models=staged_models,
+            trifecta_v2_model=default_model,
+            use_v2=True,
+            rerank_top_n=rerank_top_n,
+        )
+        baseline_top12 = float(baseline_metrics.get("top12_hit_rate", 0.0))
+        baseline_log_loss = float(baseline_metrics.get("log_loss", 0.0))
+        best_weight = float(default_weight)
+        best_metrics = dict(baseline_metrics)
+        for candidate_weight in candidate_weights:
+            candidate_model = with_dynamic_rerank_weight_metadata(
+                with_conservative_rerank_weight(trifecta_v2_model, candidate_weight),
+                {"enabled": False, "rules": [], "default_weight": candidate_weight},
+            )
+            candidate_metrics = evaluate_trifecta(
+                models,
+                weights,
+                None,
+                subset_df,
+                feature_columns,
+                categorical_columns,
+                classifier_models=classifier_models,
+                flow_model=flow_model,
+                flow_classes=flow_classes,
+                staged_models=staged_models,
+                trifecta_v2_model=candidate_model,
+                use_v2=True,
+                rerank_top_n=rerank_top_n,
+            )
+            if (
+                float(candidate_metrics.get("top12_hit_rate", 0.0)) > float(best_metrics.get("top12_hit_rate", 0.0))
+                and float(candidate_metrics.get("log_loss", 0.0)) <= baseline_log_loss + log_loss_max_delta
+            ):
+                best_weight = float(candidate_weight)
+                best_metrics = dict(candidate_metrics)
+        top12_improvement = float(best_metrics.get("top12_hit_rate", 0.0)) - baseline_top12
+        accepted = top12_improvement >= top12_min_improvement and float(best_metrics.get("log_loss", 0.0)) <= (
+            baseline_log_loss + log_loss_max_delta
+        )
+        diagnostics["rules"][subset_name] = {
+            "race_count": int(subset_race_count),
+            "baseline_weight": float(default_weight),
+            "best_weight": float(best_weight),
+            "accepted": bool(accepted),
+            "baseline_top12_hit_rate": baseline_top12,
+            "best_top12_hit_rate": float(best_metrics.get("top12_hit_rate", 0.0)),
+            "top12_improvement": top12_improvement,
+            "baseline_log_loss": baseline_log_loss,
+            "best_log_loss": float(best_metrics.get("log_loss", 0.0)),
+        }
+        if accepted:
+            rules.append(
+                {
+                    "subset": subset_name,
+                    "weight": float(best_weight),
+                    "race_count": int(subset_race_count),
+                    "top12_hit_rate": float(best_metrics.get("top12_hit_rate", 0.0)),
+                    "top12_improvement": top12_improvement,
+                    "log_loss": float(best_metrics.get("log_loss", 0.0)),
+                }
+            )
+
+    metadata.update(
+        {
+            "enabled": bool(settings.get("enabled", False)),
+            "optimized": True,
+            "default_weight": float(default_weight),
+            "rules": rules,
+            "diagnostics": diagnostics,
+        }
+    )
+    _emit_progress(
+        progress_callback,
+        f"dynamic rerank weight: optimized rules={len(rules)}, enabled={bool(metadata['enabled'])}",
+    )
+    return metadata
 
 
 def build_weighted_lane_probabilities(

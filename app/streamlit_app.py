@@ -100,6 +100,9 @@ def _select_and_rename_columns(frame: pd.DataFrame, columns: list[tuple[str, str
         "is_darkhorse_candidate": "穴候補",
         "ticket_priority_score": "買い目優先度",
         "ticket_hint": "買い目目安",
+        "dynamic_rerank_subset": "可変weight区分",
+        "dynamic_rerank_weight": "適用weight",
+        "dynamic_rerank_enabled": "可変weight有効",
     }
     selected_sources = {source for source, _ in available}
     available.extend(

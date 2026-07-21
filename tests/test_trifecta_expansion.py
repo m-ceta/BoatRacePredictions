@@ -10,6 +10,7 @@ from src.models.ranker import (
     build_phase3_third_feature_frame,
     build_trifecta_feature_frame,
     enumerate_trifecta_probabilities_from_scores,
+    get_dynamic_rerank_weight_for_race,
     get_rerank_top_n,
     infer_feature_columns,
     predict_race_order,
@@ -95,7 +96,39 @@ def test_predict_trifecta_without_odds_does_not_fail() -> None:
     assert "trifecta_darkhorse_score" in trifecta.columns
     assert "is_darkhorse_candidate" in trifecta.columns
     assert "ticket_hint" in trifecta.columns
+    assert "dynamic_rerank_subset" in trifecta.columns
+    assert "dynamic_rerank_weight" in trifecta.columns
+    assert "dynamic_rerank_enabled" in trifecta.columns
+    assert set(trifecta["dynamic_rerank_subset"]) == {"disabled"}
     assert "odds" not in trifecta.columns
+
+
+def test_dynamic_rerank_weight_rule_selects_subset_weight() -> None:
+    race_df = make_future_df()
+    race_df["win_probability_like"] = [0.45, 0.20, 0.14, 0.09, 0.07, 0.05]
+    model = {
+        "model_type": "lgbm_ranker",
+        "conservative_v1_weight": 0.9,
+        "dynamic_rerank_weight": {
+            "enabled": True,
+            "default_weight": 0.9,
+            "thresholds": {
+                "attack_pressure_high": 0.0,
+                "inner_collapse_risk_high": 2.0,
+                "race_upset_score_high": 2.0,
+                "probability_flatness_high": 2.0,
+                "escape_strength_high": 2.0,
+                "inner_collapse_risk_mid": 0.0,
+            },
+            "rules": [{"subset": "attack_or_collapse", "weight": 0.7}],
+        },
+    }
+
+    weight, subset, enabled = get_dynamic_rerank_weight_for_race(model, race_df)
+
+    assert enabled
+    assert subset == "attack_or_collapse"
+    assert weight == 0.7
 
 
 def test_expected_value_calculation_is_correct() -> None:

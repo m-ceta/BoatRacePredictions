@@ -7,7 +7,7 @@ if errorlevel 1 exit /b %errorlevel%
 
 if not defined PIPELINE_STATE_DIR set "PIPELINE_STATE_DIR=%CD%\.gcloud_pipeline_state"
 if not defined MAX_RACES set "MAX_RACES=1000"
-if not defined EVAL_MAX_RACES set "EVAL_MAX_RACES=5000"
+if not defined EVAL_MAX_RACES set "EVAL_MAX_RACES=3000"
 if not defined OPTIMIZE_RERANK_WORKERS set "OPTIMIZE_RERANK_WORKERS=2"
 
 if not exist "%PIPELINE_STATE_DIR%" mkdir "%PIPELINE_STATE_DIR%"
