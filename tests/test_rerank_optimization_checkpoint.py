@@ -150,3 +150,70 @@ def test_two_stage_rerank_uses_small_coarse_sample_and_shortlisted_fine_search(m
     assert sum(len(call["weights"]) * len(call["penalties"]) for call in calls[1:]) == 4
     assert result["search_mode"] == "two_stage"
     assert result["coarse_races"] == 5
+
+
+def test_two_stage_rerank_skips_coarse_when_full_grid_fits_fine_top_k(monkeypatch) -> None:
+    valid_df = pd.DataFrame(
+        {
+            "race_id": [f"R{race_no}" for race_no in range(20) for _ in range(2)],
+        }
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_optimize(*args, **kwargs):
+        search_df = args[2]
+        top_ns = list(kwargs["top_n_candidates"])
+        weights = list(kwargs["conservative_weights"])
+        penalties = list(kwargs["rank_penalty_strengths"])
+        calls.append(
+            {
+                "races": search_df["race_id"].nunique(),
+                "top_ns": top_ns,
+                "weights": weights,
+                "penalties": penalties,
+            }
+        )
+        return {
+            "best_top_n": float(top_ns[0]),
+            "best_conservative_weight": float(weights[-1]),
+            "best_rank_penalty_strength": float(penalties[0]),
+            "objective": 1.0,
+            "ranked_candidates": [],
+        }
+
+    monkeypatch.setattr(ranker, "optimize_rerank_inference_settings", fake_optimize)
+    config = {
+        "phase3": {
+            "rerank": {
+                "top_n_grid": [12],
+                "weight_grid": [0.8, 0.9, 0.95],
+                "rank_penalty_strength_grid": [0.0, 0.01],
+                "coarse_penalty_grid": [0.0],
+                "coarse_eval_max_races": 5,
+                "fine_top_k": 8,
+            }
+        }
+    }
+
+    result = ranker.optimize_rerank_inference_settings_two_stage(
+        models={},
+        weights={},
+        valid_df=valid_df,
+        feature_columns=[],
+        categorical_columns=[],
+        trifecta_v2_model={"model_type": "lgbm_ranker"},
+        config=config,
+    )
+
+    assert calls == [
+        {
+            "races": 20,
+            "top_ns": [12],
+            "weights": [0.8, 0.9, 0.95],
+            "penalties": [0.0, 0.01],
+        }
+    ]
+    assert result["search_mode"] == "direct_full_grid"
+    assert result["coarse_races"] == 0
+    assert result["fine_races"] == 20
+    assert result["full_grid_candidates"] == 6

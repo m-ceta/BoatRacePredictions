@@ -2273,6 +2273,44 @@ def optimize_rerank_inference_settings_two_stage(
     workers: int | None = None,
 ) -> dict[str, Any]:
     settings = get_phase3_settings(config)["rerank"]
+    top_n_grid = list(settings["top_n_grid"])
+    weight_grid = list(settings["weight_grid"])
+    penalty_grid = list(settings["rank_penalty_strength_grid"])
+    fine_top_k = max(int(settings.get("fine_top_k", 5)), 1)
+    full_grid_count = len(top_n_grid) * len(weight_grid) * len(penalty_grid)
+    if full_grid_count <= fine_top_k:
+        _emit_progress(
+            progress_callback,
+            "rerank direct full search: "
+            f"races={int(valid_df['race_id'].nunique()) if 'race_id' in valid_df.columns else len(valid_df)}, "
+            f"candidates={full_grid_count}",
+        )
+        result = optimize_rerank_inference_settings(
+            models,
+            weights,
+            valid_df,
+            feature_columns,
+            categorical_columns,
+            classifier_models=classifier_models,
+            flow_model=flow_model,
+            flow_classes=flow_classes,
+            staged_models=staged_models,
+            trifecta_v2_model=trifecta_v2_model,
+            top_n_candidates=top_n_grid,
+            conservative_weights=weight_grid,
+            rank_penalty_strengths=penalty_grid,
+            config=config,
+            checkpoint_path=checkpoint_path,
+            progress_callback=progress_callback,
+            workers=workers,
+        )
+        result = dict(result)
+        result["search_mode"] = "direct_full_grid"
+        result["coarse_races"] = 0
+        result["fine_races"] = int(valid_df["race_id"].nunique()) if "race_id" in valid_df.columns else int(len(valid_df))
+        result["full_grid_candidates"] = int(full_grid_count)
+        return result
+
     coarse_df = _sample_races_for_rerank_search(
         valid_df,
         int(settings.get("coarse_eval_max_races", 750)),
@@ -2293,15 +2331,14 @@ def optimize_rerank_inference_settings_two_stage(
         flow_classes=flow_classes,
         staged_models=staged_models,
         trifecta_v2_model=trifecta_v2_model,
-        top_n_candidates=list(settings["top_n_grid"]),
-        conservative_weights=list(settings["weight_grid"]),
+        top_n_candidates=top_n_grid,
+        conservative_weights=weight_grid,
         rank_penalty_strengths=list(settings.get("coarse_penalty_grid", [0.0])),
         config=config,
         checkpoint_path=_stage_checkpoint_path(checkpoint_path, "coarse"),
         progress_callback=progress_callback,
         workers=workers,
     )
-    fine_top_k = max(int(settings.get("fine_top_k", 5)), 1)
     shortlisted = list(coarse.get("ranked_candidates", []))[:fine_top_k]
     if not shortlisted:
         return coarse
