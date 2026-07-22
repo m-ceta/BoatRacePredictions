@@ -24,6 +24,24 @@ model:
     lightgbm: false
     device_id: 0
 
+models:
+  lightgbm_variants:
+    enabled: true
+    parallel_workers: 1
+    num_threads_per_variant: 2
+    variants:
+      - name: lightgbm_top1
+        params:
+          num_leaves: 15
+          min_data_in_leaf: 50
+          lambda_l2: 3.0
+      - name: lightgbm_stable_top6
+        params:
+          num_leaves: 63
+          min_data_in_leaf: 80
+          feature_fraction: 0.65
+          lambda_l2: 5.0
+
 phase3:
   label_weights:
     exact_full: 1.0
@@ -66,7 +84,7 @@ phase3:
   evaluation:
     scenario_min_races: 100
   dynamic_rerank_weight:
-    enabled: false
+    enabled: true
     optimize: true
     min_subset_races: 500
     top12_min_improvement: 0.0

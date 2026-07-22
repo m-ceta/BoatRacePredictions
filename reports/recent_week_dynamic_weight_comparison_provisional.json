@@ -1,0 +1,166 @@
+{
+  "scope": {
+    "date_from": "2026-07-06",
+    "date_to": "2026-07-12",
+    "race_count": 1080,
+    "rows": 6480,
+    "source_row_groups": [
+      331,
+      332,
+      333,
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      341,
+      342
+    ],
+    "artifact_rerank_top_n": 10,
+    "artifact_base_weight": 0.95,
+    "dynamic_mid_rules": {
+      "stable_escape": 0.95,
+      "neutral": 0.95,
+      "attack_or_collapse": 0.85,
+      "upset_or_flat": 0.85
+    },
+    "threshold_source": "reports\\dynamic_subset_recent_week_q75_summary.json",
+    "thresholds": {
+      "escape_strength_high": 0.29737485670627883,
+      "inner_collapse_risk_high": 0.537972005819257,
+      "inner_collapse_risk_mid": 0.5218669280098873,
+      "attack_pressure_high": 0.38230338004713565,
+      "race_upset_score_high": 0.47345263530241866,
+      "probability_flatness_high": 0.9420901915720841
+    },
+    "note": "Provisional dynamic rules injected for sensitivity check; current artifact has no optimized dynamic rules. top10 is the effective upper hit metric because artifact_rerank_top_n=10."
+  },
+  "metrics": [
+    {
+      "variant": "normal_fixed",
+      "race_count": 1080,
+      "ticket_rows": 16759,
+      "top1_hit_rate": 0.08518518518518518,
+      "top3_hit_rate": 0.20833333333333334,
+      "top5_hit_rate": 0.3074074074074074,
+      "top10_hit_rate": 0.5083333333333333,
+      "mean_actual_probability": 0.1000570210717944,
+      "mean_top_probability": 0.19795894939782976,
+      "subset_counts": {
+        "disabled": 1080
+      },
+      "weight_counts": {
+        "0.95": 1080
+      }
+    },
+    {
+      "variant": "dynamic_mid",
+      "race_count": 1080,
+      "ticket_rows": 16759,
+      "top1_hit_rate": 0.08611111111111111,
+      "top3_hit_rate": 0.20833333333333334,
+      "top5_hit_rate": 0.3111111111111111,
+      "top10_hit_rate": 0.5055555555555555,
+      "mean_actual_probability": 0.09967113271972455,
+      "mean_top_probability": 0.1901192490698349,
+      "subset_counts": {
+        "attack_or_collapse": 395,
+        "neutral": 328,
+        "stable_escape": 230,
+        "upset_or_flat": 127
+      },
+      "weight_counts": {
+        "0.95": 558,
+        "0.85": 522
+      }
+    }
+  ],
+  "top1_change_summary": {
+    "variant": "dynamic_mid",
+    "top1_changed_races": 45,
+    "top1_changed_rate": 0.041666666666666664
+  },
+  "actual_rank_delta_by_subset": [
+    {
+      "subset": "attack_or_collapse",
+      "race_count": 206,
+      "mean_rank_delta_positive_is_better": -0.038834951456310676,
+      "improved_races": 16,
+      "worsened_races": 21,
+      "unchanged_races": 169
+    },
+    {
+      "subset": "neutral",
+      "race_count": 192,
+      "mean_rank_delta_positive_is_better": 0.0,
+      "improved_races": 0,
+      "worsened_races": 0,
+      "unchanged_races": 192
+    },
+    {
+      "subset": "stable_escape",
+      "race_count": 145,
+      "mean_rank_delta_positive_is_better": 0.0,
+      "improved_races": 0,
+      "worsened_races": 0,
+      "unchanged_races": 145
+    },
+    {
+      "subset": "upset_or_flat",
+      "race_count": 53,
+      "mean_rank_delta_positive_is_better": 0.07547169811320754,
+      "improved_races": 8,
+      "worsened_races": 4,
+      "unchanged_races": 41
+    }
+  ],
+  "subset_metrics": [
+    {
+      "variant": "normal_fixed",
+      "subset": "disabled",
+      "race_count": 1080,
+      "top1_hit_rate": 0.08518518518518518,
+      "top3_hit_rate": 0.20833333333333334,
+      "top5_hit_rate": 0.3074074074074074,
+      "top10_hit_rate": 0.5083333333333333
+    },
+    {
+      "variant": "dynamic_mid",
+      "subset": "attack_or_collapse",
+      "race_count": 395,
+      "top1_hit_rate": 0.07088607594936709,
+      "top3_hit_rate": 0.17721518987341772,
+      "top5_hit_rate": 0.28860759493670884,
+      "top10_hit_rate": 0.46835443037974683
+    },
+    {
+      "variant": "dynamic_mid",
+      "subset": "neutral",
+      "race_count": 328,
+      "top1_hit_rate": 0.10365853658536585,
+      "top3_hit_rate": 0.22865853658536586,
+      "top5_hit_rate": 0.3353658536585366,
+      "top10_hit_rate": 0.5457317073170732
+    },
+    {
+      "variant": "dynamic_mid",
+      "subset": "stable_escape",
+      "race_count": 230,
+      "top1_hit_rate": 0.1,
+      "top3_hit_rate": 0.26956521739130435,
+      "top5_hit_rate": 0.3739130434782609,
+      "top10_hit_rate": 0.5956521739130435
+    },
+    {
+      "variant": "dynamic_mid",
+      "subset": "upset_or_flat",
+      "race_count": 127,
+      "top1_hit_rate": 0.06299212598425197,
+      "top3_hit_rate": 0.14173228346456693,
+      "top5_hit_rate": 0.2047244094488189,
+      "top10_hit_rate": 0.3543307086614173
+    }
+  ]
+}

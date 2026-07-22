@@ -8,6 +8,7 @@ import os
 import shutil
 from pathlib import Path
 from typing import Any, Callable
+import re
 
 import joblib
 import lightgbm as lgb
@@ -87,6 +88,8 @@ DEFAULT_ARTIFACT_PATHS = {
 }
 
 
+RESERVED_MODEL_NAMES = {"catboost", "lightgbm"}
+LIGHTGBM_VARIANT_NAME_RE = re.compile(r"^lightgbm_[A-Za-z0-9_]+$")
 TRIFECTA_V2_FEATURE_VERSION = 2
 
 DEFAULT_PHASE3_SETTINGS = {
@@ -163,9 +166,80 @@ PHASE3_SCENARIO_NAMES = {
 PHASE3_SCENARIO_NAMES = SCENARIO_NAMES
 
 
+DEFAULT_LIGHTGBM_VARIANT_SETTINGS = {
+    "enabled": False,
+    "parallel_workers": 1,
+    "num_threads_per_variant": 2,
+    "variants": [
+        {
+            "name": "lightgbm_top1",
+            "params": {
+                "num_leaves": 15,
+                "min_data_in_leaf": 50,
+                "lambda_l2": 3.0,
+            },
+        },
+        {
+            "name": "lightgbm_stable_top6",
+            "params": {
+                "num_leaves": 63,
+                "min_data_in_leaf": 80,
+                "feature_fraction": 0.65,
+                "lambda_l2": 5.0,
+            },
+        },
+    ],
+}
+
+
 def load_config(path: Path) -> dict:
     with path.open("r", encoding="utf-8") as fh:
         return yaml.safe_load(fh)
+
+
+def get_lightgbm_variant_settings(config: dict | None) -> dict[str, Any]:
+    configured = ((config or {}).get("models", {}) or {}).get("lightgbm_variants", {})
+    settings = {
+        **DEFAULT_LIGHTGBM_VARIANT_SETTINGS,
+        **(configured or {}),
+    }
+    settings["variants"] = list((configured or {}).get("variants", DEFAULT_LIGHTGBM_VARIANT_SETTINGS["variants"]))
+    settings["parallel_workers"] = max(int(settings.get("parallel_workers", 1)), 1)
+    settings["num_threads_per_variant"] = max(int(settings.get("num_threads_per_variant", 2)), 1)
+    return settings
+
+
+def get_enabled_lightgbm_variants(config: dict | None) -> list[dict[str, Any]]:
+    settings = get_lightgbm_variant_settings(config)
+    if not bool(settings.get("enabled", False)):
+        return []
+    variants = [dict(variant) for variant in settings.get("variants", [])]
+    seen: set[str] = set()
+    for variant in variants:
+        name = str(variant.get("name", "")).strip()
+        if not name:
+            raise ValueError("LightGBM variant name must not be empty.")
+        if name in RESERVED_MODEL_NAMES:
+            raise ValueError(f"LightGBM variant name conflicts with reserved model name: {name}")
+        if not LIGHTGBM_VARIANT_NAME_RE.match(name):
+            raise ValueError(f"Invalid LightGBM variant name: {name}")
+        if name in seen:
+            raise ValueError(f"Duplicate LightGBM variant name: {name}")
+        seen.add(name)
+        variant["name"] = name
+        variant["params"] = dict(variant.get("params", {}) or {})
+    return variants
+
+
+def is_lightgbm_model_name(model_name: str) -> bool:
+    return model_name == "lightgbm" or model_name.startswith("lightgbm_")
+
+
+def lightgbm_variant_model_path(base_path: Path, variant_name: str) -> Path:
+    if variant_name == "lightgbm":
+        return base_path
+    suffix = variant_name.removeprefix("lightgbm_")
+    return base_path.with_name(f"{base_path.stem}_{suffix}{base_path.suffix}")
 
 
 def get_artifact_paths(config: dict) -> dict[str, Path]:
@@ -697,6 +771,8 @@ def train_ranker(
     collect_garbage()
     lightgbm_model = train_lightgbm(train_df, valid_df, feature_columns, categorical_columns, config)
     collect_garbage()
+    lightgbm_variant_models = train_lightgbm_variants(train_df, valid_df, feature_columns, categorical_columns, config)
+    collect_garbage()
     classifier_models = train_classifiers(train_df, valid_df, feature_columns, categorical_columns, config)
     collect_garbage()
     flow_model = None
@@ -706,6 +782,7 @@ def train_ranker(
     models = {
         "catboost": catboost_model,
         "lightgbm": lightgbm_model,
+        **lightgbm_variant_models,
     }
     ensemble_weights = optimize_ensemble_weights(
         models,
@@ -744,6 +821,18 @@ def train_ranker(
             feature_columns,
             categorical_columns,
         ),
+        **{
+            name: evaluate_model_bundle(
+                model,
+                name,
+                train_df,
+                valid_df,
+                test_df,
+                feature_columns,
+                categorical_columns,
+            )
+            for name, model in lightgbm_variant_models.items()
+        },
         "ensemble": evaluate_ensemble(
             models,
             ensemble_weights,
@@ -922,9 +1011,32 @@ def train_ranker_from_splits(
     )
     collect_garbage()
 
+    lightgbm_variant_models = train_lightgbm_variants(
+        train_df,
+        valid_df,
+        feature_columns,
+        categorical_columns,
+        config,
+        progress_callback=progress,
+    )
+    lightgbm_variant_metrics = {
+        name: evaluate_model_bundle(
+            model,
+            name,
+            train_df,
+            valid_df,
+            test_df,
+            feature_columns,
+            categorical_columns,
+        )
+        for name, model in lightgbm_variant_models.items()
+    }
+    collect_garbage()
+
     models = {
         "catboost": catboost_model,
         "lightgbm": lightgbm_model,
+        **lightgbm_variant_models,
     }
     progress("optimizing ensemble weights")
     ensemble_weights = optimize_ensemble_weights(
@@ -1041,6 +1153,7 @@ def train_ranker_from_splits(
     ranker_metrics = {
         "catboost": catboost_metrics,
         "lightgbm": lightgbm_metrics,
+        **lightgbm_variant_metrics,
         "ensemble": ensemble_metrics,
     }
     metrics = {
@@ -1233,6 +1346,9 @@ def train_lightgbm(
     feature_columns: list[str],
     categorical_columns: list[str],
     config: dict,
+    *,
+    param_overrides: dict[str, Any] | None = None,
+    num_threads: int | None = None,
 ) -> lgb.Booster:
     train_lgb = build_lightgbm_frame(train_df, feature_columns, categorical_columns)
     valid_lgb = build_lightgbm_frame(valid_df, feature_columns, categorical_columns)
@@ -1269,6 +1385,10 @@ def train_lightgbm(
         "seed": config["model"]["random_seed"],
         "ndcg_eval_at": [1, 3, 6],
     }
+    if param_overrides:
+        params.update(param_overrides)
+    if num_threads is not None and int(num_threads) > 0:
+        params["num_threads"] = int(num_threads)
     try:
         return train_lightgbm_with_optional_gpu(
             params,
@@ -1282,6 +1402,52 @@ def train_lightgbm(
     finally:
         del train_lgb, valid_lgb, train_dataset, valid_dataset, train_group, valid_group
         collect_garbage()
+
+
+def train_lightgbm_variants(
+    train_df: pd.DataFrame,
+    valid_df: pd.DataFrame,
+    feature_columns: list[str],
+    categorical_columns: list[str],
+    config: dict,
+    progress_callback: Callable[[str], None] | None = None,
+) -> dict[str, lgb.Booster]:
+    variants = get_enabled_lightgbm_variants(config)
+    if not variants:
+        return {}
+    settings = get_lightgbm_variant_settings(config)
+    workers = min(int(settings.get("parallel_workers", 1)), len(variants))
+    num_threads = int(settings.get("num_threads_per_variant", 2))
+    _emit_progress(
+        progress_callback,
+        f"training lightgbm variants: workers={workers}, variants={len(variants)}",
+    )
+
+    def train_one(variant: dict[str, Any]) -> tuple[str, lgb.Booster]:
+        name = str(variant["name"])
+        _emit_progress(progress_callback, f"training lightgbm variant: {name}")
+        model = train_lightgbm(
+            train_df,
+            valid_df,
+            feature_columns,
+            categorical_columns,
+            config,
+            param_overrides=dict(variant.get("params", {}) or {}),
+            num_threads=num_threads,
+        )
+        _emit_progress(progress_callback, f"completed lightgbm variant: {name}")
+        return name, model
+
+    if workers <= 1 or len(variants) <= 1:
+        return dict(train_one(variant) for variant in variants)
+
+    trained: dict[str, lgb.Booster] = {}
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_name = {executor.submit(train_one, variant): str(variant["name"]) for variant in variants}
+        for future in as_completed(future_to_name):
+            name, model = future.result()
+            trained[name] = model
+    return trained
 
 
 def build_lightgbm_frame(
@@ -1379,7 +1545,7 @@ def score_frame(
     if model_type == "catboost":
         pool = build_catboost_pool(df, feature_columns, categorical_columns)
         raw_scores = model.predict(pool)
-    elif model_type == "lightgbm":
+    elif is_lightgbm_model_name(model_type):
         frame = build_lightgbm_frame(df, feature_columns, categorical_columns)
         raw_scores = model.predict(frame)
     else:
@@ -1461,6 +1627,12 @@ def save_artifacts(
 
     models["catboost"].save_model(catboost_model_path)
     models["lightgbm"].save_model(str(lightgbm_model_path))
+    for model_name, model in models.items():
+        if model_name in RESERVED_MODEL_NAMES or not is_lightgbm_model_name(model_name):
+            continue
+        path = lightgbm_variant_model_path(lightgbm_model_path, model_name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        model.save_model(str(path))
     features_path.write_text(json.dumps(feature_columns, ensure_ascii=False, indent=2), encoding="utf-8")
     ensemble_weights_path.write_text(
         json.dumps(metrics["ensemble_weights"], ensure_ascii=False, indent=2),
@@ -1510,7 +1682,7 @@ def predict_race_order(
         if model_type == "catboost":
             pool = build_catboost_pool_for_inference(base, feature_columns, categorical_columns)
             raw_scores = model.predict(pool)
-        elif model_type == "lightgbm":
+        elif is_lightgbm_model_name(model_type):
             frame = build_lightgbm_frame(base, feature_columns, categorical_columns)
             raw_scores = model.predict(frame)
         else:
@@ -1949,10 +2121,17 @@ def load_models(config: dict) -> dict[str, Any]:
     catboost_model = CatBoostRanker()
     catboost_model.load_model(str(artifacts["catboost_model_path"]))
     lightgbm_model = lgb.Booster(model_file=str(artifacts["lightgbm_model_path"]))
-    return {
+    models: dict[str, Any] = {
         "catboost": catboost_model,
         "lightgbm": lightgbm_model,
     }
+    for variant in get_enabled_lightgbm_variants(config):
+        name = str(variant["name"])
+        path = lightgbm_variant_model_path(artifacts["lightgbm_model_path"], name)
+        if not path.exists():
+            raise FileNotFoundError(f"Configured LightGBM variant artifact not found: {path}")
+        models[name] = lgb.Booster(model_file=str(path))
+    return models
 
 
 def load_classifier_artifacts(config: dict) -> dict[str, lgb.Booster]:
@@ -1990,6 +2169,24 @@ def load_optional_trifecta_calibrator(path: Path) -> IsotonicRegression | None:
     return joblib.load(path)
 
 
+def simplex_weight_vectors(model_count: int, steps: int = 20) -> list[tuple[float, ...]]:
+    if model_count <= 0:
+        return []
+    if model_count == 1:
+        return [(1.0,)]
+    vectors: list[tuple[float, ...]] = []
+
+    def build(prefix: list[int], remaining: int, slots: int) -> None:
+        if slots == 1:
+            vectors.append(tuple([*prefix, remaining]))
+            return
+        for value in range(remaining + 1):
+            build([*prefix, value], remaining - value, slots - 1)
+
+    build([], int(steps), model_count)
+    return [tuple(float(value) / float(steps) for value in vector) for vector in vectors]
+
+
 def optimize_ensemble_weights(
     models: dict[str, Any],
     valid_df: pd.DataFrame,
@@ -1997,32 +2194,37 @@ def optimize_ensemble_weights(
     categorical_columns: list[str],
 ) -> dict[str, float]:
     valid_df = apply_prediction_time_measurement_proxies(valid_df)
-    cat_scores = score_frame(models["catboost"], "catboost", valid_df, feature_columns, categorical_columns)
-    lgb_scores = score_frame(models["lightgbm"], "lightgbm", valid_df, feature_columns, categorical_columns)
+    model_names = list(models.keys())
+    score_by_model = {
+        model_name: score_frame(model, model_name, valid_df, feature_columns, categorical_columns)
+        for model_name, model in models.items()
+    }
+    score_arrays = {
+        model_name: score_by_model[model_name]["score_probability_like"].to_numpy(dtype=float)
+        for model_name in model_names
+    }
 
-    best_weight = 0.5
+    best_weights = {model_name: 1.0 / len(model_names) for model_name in model_names}
     best_metrics: dict[str, float] | None = None
     best_objective = float("-inf")
-    base = cat_scores[["race_id", "lane", "finish_position"]].copy()
+    base = score_by_model[model_names[0]][["race_id", "lane", "finish_position"]].copy()
 
-    for cat_weight in np.linspace(0.0, 1.0, 21):
-        lgb_weight = 1.0 - cat_weight
+    for weight_values in simplex_weight_vectors(len(model_names), steps=20):
+        candidate_weights = dict(zip(model_names, weight_values, strict=True))
         scored = base.copy()
-        scored["score"] = (
-            cat_weight * cat_scores["score_probability_like"].to_numpy()
-            + lgb_weight * lgb_scores["score_probability_like"].to_numpy()
-        )
+        scored["score"] = np.zeros(len(base), dtype=float)
+        for model_name, model_weight in candidate_weights.items():
+            scored["score"] += float(model_weight) * score_arrays[model_name]
         scored["pred_rank"] = scored.groupby("race_id")["score"].rank(ascending=False, method="first")
         metrics = summarize_rank_metrics(scored)
         objective = metrics["top1_accuracy"] + 0.1 * metrics["avg_top3_overlap"]
         if objective > best_objective:
             best_objective = objective
-            best_weight = float(cat_weight)
+            best_weights = {name: float(weight) for name, weight in candidate_weights.items()}
             best_metrics = metrics
 
     return {
-        "catboost": best_weight,
-        "lightgbm": 1.0 - best_weight,
+        **best_weights,
         "validation_objective": best_objective,
         "validation_top1_accuracy": 0.0 if best_metrics is None else best_metrics["top1_accuracy"],
         "validation_avg_top3_overlap": 0.0 if best_metrics is None else best_metrics["avg_top3_overlap"],

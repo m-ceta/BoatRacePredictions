@@ -253,17 +253,32 @@ def train_main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--training-device", choices=["cpu", "gpu"], default=None)
+    parser.add_argument("--max-races", type=int, default=None, help="maximum train races for quick base-model experiments")
+    parser.add_argument("--enable-lightgbm-variants", action="store_true")
+    parser.add_argument("--disable-lightgbm-variants", action="store_true")
+    parser.add_argument("--lightgbm-variant-workers", type=int, default=None)
     args = parser.parse_args()
+    if args.enable_lightgbm_variants and args.disable_lightgbm_variants:
+        parser.error("--enable-lightgbm-variants and --disable-lightgbm-variants cannot be used together")
 
     progress = print_train_progress
     progress("start")
     progress("loading config and training splits")
     config = load_config(args.config)
     config = with_training_device_override(config, args.training_device)
+    config = with_lightgbm_variant_cli_overrides(
+        config,
+        enable=args.enable_lightgbm_variants,
+        disable=args.disable_lightgbm_variants,
+        workers=args.lightgbm_variant_workers,
+    )
     train_df, valid_df, test_df, config = load_training_splits_from_parquet(
         Path(config["data"]["training_table"]),
         config,
     )
+    if args.max_races is not None and args.max_races > 0:
+        train_df = sample_races_for_evaluation(train_df, args.max_races)
+        progress(f"sampled train races for quick experiment: max_races={args.max_races}, train_races={race_count(train_df)}")
     progress(
         "loaded splits: "
         f"train_races={race_count(train_df)}, valid_races={race_count(valid_df)}, "
@@ -311,6 +326,27 @@ def train_main() -> None:
     progress("cleaning intermediate files")
     cleanup_processed_intermediate_dirs(config)
     progress("completed")
+
+
+def with_lightgbm_variant_cli_overrides(
+    config: dict,
+    *,
+    enable: bool = False,
+    disable: bool = False,
+    workers: int | None = None,
+) -> dict:
+    updated = dict(config)
+    models_config = dict(updated.get("models", {}) or {})
+    variant_config = dict(models_config.get("lightgbm_variants", {}) or {})
+    if enable:
+        variant_config["enabled"] = True
+    if disable:
+        variant_config["enabled"] = False
+    if workers is not None:
+        variant_config["parallel_workers"] = max(int(workers), 1)
+    models_config["lightgbm_variants"] = variant_config
+    updated["models"] = models_config
+    return updated
 
 
 def predict_main() -> None:
