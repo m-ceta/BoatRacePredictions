@@ -168,7 +168,7 @@ PHASE3_SCENARIO_NAMES = SCENARIO_NAMES
 
 DEFAULT_LIGHTGBM_VARIANT_SETTINGS = {
     "enabled": False,
-    "parallel_workers": 1,
+    "parallel_workers": 2,
     "num_threads_per_variant": 2,
     "variants": [
         {
@@ -192,6 +192,12 @@ DEFAULT_LIGHTGBM_VARIANT_SETTINGS = {
 }
 
 
+DEFAULT_ENSEMBLE_SETTINGS = {
+    "parallel_workers": 1,
+    "max_eval_races": 0,
+}
+
+
 def load_config(path: Path) -> dict:
     with path.open("r", encoding="utf-8") as fh:
         return yaml.safe_load(fh)
@@ -206,6 +212,17 @@ def get_lightgbm_variant_settings(config: dict | None) -> dict[str, Any]:
     settings["variants"] = list((configured or {}).get("variants", DEFAULT_LIGHTGBM_VARIANT_SETTINGS["variants"]))
     settings["parallel_workers"] = max(int(settings.get("parallel_workers", 1)), 1)
     settings["num_threads_per_variant"] = max(int(settings.get("num_threads_per_variant", 2)), 1)
+    return settings
+
+
+def get_ensemble_settings(config: dict | None) -> dict[str, Any]:
+    configured = ((config or {}).get("models", {}) or {}).get("ensemble", {})
+    settings = {
+        **DEFAULT_ENSEMBLE_SETTINGS,
+        **(configured or {}),
+    }
+    settings["parallel_workers"] = max(int(settings.get("parallel_workers", 1)), 1)
+    settings["max_eval_races"] = max(int(settings.get("max_eval_races", 0)), 0)
     return settings
 
 
@@ -789,6 +806,7 @@ def train_ranker(
         valid_df,
         feature_columns,
         categorical_columns,
+        config=config,
     )
     ensemble_weights["scenario_metric_min_races"] = int(
         get_phase3_settings(config)["evaluation"].get("scenario_min_races", 100)
@@ -1044,6 +1062,8 @@ def train_ranker_from_splits(
         valid_df,
         feature_columns,
         categorical_columns,
+        config=config,
+        progress_callback=progress,
     )
     ensemble_weights["scenario_metric_min_races"] = int(
         get_phase3_settings(config)["evaluation"].get("scenario_min_races", 100)
@@ -2187,14 +2207,36 @@ def simplex_weight_vectors(model_count: int, steps: int = 20) -> list[tuple[floa
     return [tuple(float(value) / float(steps) for value in vector) for vector in vectors]
 
 
+def sample_races_evenly(df: pd.DataFrame, max_races: int) -> pd.DataFrame:
+    if df.empty or max_races <= 0 or "race_id" not in df.columns:
+        return df.copy()
+    races = df[["race_id"]].drop_duplicates().reset_index(drop=True)
+    if len(races) <= max_races:
+        return df.copy()
+    indices = np.linspace(0, len(races) - 1, num=max_races, dtype=int)
+    selected_ids = set(races.iloc[np.unique(indices)]["race_id"].tolist())
+    return df[df["race_id"].isin(selected_ids)].copy()
+
+
 def optimize_ensemble_weights(
     models: dict[str, Any],
     valid_df: pd.DataFrame,
     feature_columns: list[str],
     categorical_columns: list[str],
+    config: dict | None = None,
+    progress_callback: Callable[[str], None] | None = None,
 ) -> dict[str, float]:
+    settings = get_ensemble_settings(config)
+    valid_df = sample_races_evenly(valid_df, int(settings.get("max_eval_races", 0)))
     valid_df = apply_prediction_time_measurement_proxies(valid_df)
     model_names = list(models.keys())
+    eval_races = int(valid_df["race_id"].nunique()) if "race_id" in valid_df.columns else len(valid_df)
+    candidate_vectors = simplex_weight_vectors(len(model_names), steps=20)
+    workers = min(int(settings.get("parallel_workers", 1)), len(candidate_vectors))
+    _emit_progress(
+        progress_callback,
+        f"ensemble weight search: models={len(model_names)}, races={eval_races}, candidates={len(candidate_vectors)}, workers={workers}",
+    )
     score_by_model = {
         model_name: score_frame(model, model_name, valid_df, feature_columns, categorical_columns)
         for model_name, model in models.items()
@@ -2209,7 +2251,7 @@ def optimize_ensemble_weights(
     best_objective = float("-inf")
     base = score_by_model[model_names[0]][["race_id", "lane", "finish_position"]].copy()
 
-    for weight_values in simplex_weight_vectors(len(model_names), steps=20):
+    def evaluate_weight_values(weight_values: tuple[float, ...]) -> tuple[float, dict[str, float], dict[str, float]]:
         candidate_weights = dict(zip(model_names, weight_values, strict=True))
         scored = base.copy()
         scored["score"] = np.zeros(len(base), dtype=float)
@@ -2218,16 +2260,38 @@ def optimize_ensemble_weights(
         scored["pred_rank"] = scored.groupby("race_id")["score"].rank(ascending=False, method="first")
         metrics = summarize_rank_metrics(scored)
         objective = metrics["top1_accuracy"] + 0.1 * metrics["avg_top3_overlap"]
-        if objective > best_objective:
-            best_objective = objective
-            best_weights = {name: float(weight) for name, weight in candidate_weights.items()}
-            best_metrics = metrics
+        return float(objective), {name: float(weight) for name, weight in candidate_weights.items()}, metrics
+
+    if workers <= 1 or len(candidate_vectors) <= 1:
+        evaluated = (evaluate_weight_values(weight_values) for weight_values in candidate_vectors)
+        for objective, candidate_weights, metrics in evaluated:
+            if objective > best_objective:
+                best_objective = objective
+                best_weights = candidate_weights
+                best_metrics = metrics
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [executor.submit(evaluate_weight_values, weight_values) for weight_values in candidate_vectors]
+            for future in as_completed(futures):
+                objective, candidate_weights, metrics = future.result()
+                if objective > best_objective:
+                    best_objective = objective
+                    best_weights = candidate_weights
+                    best_metrics = metrics
+
+    _emit_progress(
+        progress_callback,
+        f"ensemble weight search completed: objective={best_objective:.6g}",
+    )
 
     return {
         **best_weights,
         "validation_objective": best_objective,
         "validation_top1_accuracy": 0.0 if best_metrics is None else best_metrics["top1_accuracy"],
         "validation_avg_top3_overlap": 0.0 if best_metrics is None else best_metrics["avg_top3_overlap"],
+        "validation_eval_races": float(eval_races),
+        "validation_candidate_count": float(len(candidate_vectors)),
+        "validation_parallel_workers": float(workers),
     }
 
 

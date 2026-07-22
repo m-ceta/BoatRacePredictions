@@ -257,6 +257,8 @@ def train_main() -> None:
     parser.add_argument("--enable-lightgbm-variants", action="store_true")
     parser.add_argument("--disable-lightgbm-variants", action="store_true")
     parser.add_argument("--lightgbm-variant-workers", type=int, default=None)
+    parser.add_argument("--ensemble-workers", type=int, default=None)
+    parser.add_argument("--ensemble-max-eval-races", type=int, default=None)
     args = parser.parse_args()
     if args.enable_lightgbm_variants and args.disable_lightgbm_variants:
         parser.error("--enable-lightgbm-variants and --disable-lightgbm-variants cannot be used together")
@@ -270,7 +272,9 @@ def train_main() -> None:
         config,
         enable=args.enable_lightgbm_variants,
         disable=args.disable_lightgbm_variants,
-        workers=args.lightgbm_variant_workers,
+        variant_workers=args.lightgbm_variant_workers,
+        ensemble_workers=args.ensemble_workers,
+        ensemble_max_eval_races=args.ensemble_max_eval_races,
     )
     train_df, valid_df, test_df, config = load_training_splits_from_parquet(
         Path(config["data"]["training_table"]),
@@ -333,7 +337,9 @@ def with_lightgbm_variant_cli_overrides(
     *,
     enable: bool = False,
     disable: bool = False,
-    workers: int | None = None,
+    variant_workers: int | None = None,
+    ensemble_workers: int | None = None,
+    ensemble_max_eval_races: int | None = None,
 ) -> dict:
     updated = dict(config)
     models_config = dict(updated.get("models", {}) or {})
@@ -342,9 +348,15 @@ def with_lightgbm_variant_cli_overrides(
         variant_config["enabled"] = True
     if disable:
         variant_config["enabled"] = False
-    if workers is not None:
-        variant_config["parallel_workers"] = max(int(workers), 1)
+    if variant_workers is not None:
+        variant_config["parallel_workers"] = max(int(variant_workers), 1)
     models_config["lightgbm_variants"] = variant_config
+    ensemble_config = dict(models_config.get("ensemble", {}) or {})
+    if ensemble_workers is not None:
+        ensemble_config["parallel_workers"] = max(int(ensemble_workers), 1)
+    if ensemble_max_eval_races is not None:
+        ensemble_config["max_eval_races"] = max(int(ensemble_max_eval_races), 0)
+    models_config["ensemble"] = ensemble_config
     updated["models"] = models_config
     return updated
 

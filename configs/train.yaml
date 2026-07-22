@@ -25,9 +25,12 @@ model:
     device_id: 0
 
 models:
+  ensemble:
+    parallel_workers: 8
+    max_eval_races: 10000
   lightgbm_variants:
     enabled: true
-    parallel_workers: 1
+    parallel_workers: 2
     num_threads_per_variant: 2
     variants:
       - name: lightgbm_top1
