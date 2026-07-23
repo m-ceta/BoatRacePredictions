@@ -28,6 +28,11 @@ models:
   ensemble:
     parallel_workers: 8
     max_eval_races: 10000
+    grid_step: 0.10
+    objective: trifecta_fast
+    objective_top12_weight: 0.60
+    objective_top5_weight: 0.30
+    objective_log_loss_weight: 0.10
   lightgbm_variants:
     enabled: true
     parallel_workers: 2

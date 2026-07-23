@@ -195,6 +195,11 @@ DEFAULT_LIGHTGBM_VARIANT_SETTINGS = {
 DEFAULT_ENSEMBLE_SETTINGS = {
     "parallel_workers": 1,
     "max_eval_races": 0,
+    "grid_step": 0.10,
+    "objective": "trifecta_fast",
+    "objective_top12_weight": 0.60,
+    "objective_top5_weight": 0.30,
+    "objective_log_loss_weight": 0.10,
 }
 
 
@@ -223,6 +228,9 @@ def get_ensemble_settings(config: dict | None) -> dict[str, Any]:
     }
     settings["parallel_workers"] = max(int(settings.get("parallel_workers", 1)), 1)
     settings["max_eval_races"] = max(int(settings.get("max_eval_races", 0)), 0)
+    settings["grid_step"] = float(settings.get("grid_step", 0.10))
+    if settings["grid_step"] <= 0 or settings["grid_step"] > 1:
+        raise ValueError("models.ensemble.grid_step must be in the range (0, 1].")
     return settings
 
 
@@ -2207,6 +2215,105 @@ def simplex_weight_vectors(model_count: int, steps: int = 20) -> list[tuple[floa
     return [tuple(float(value) / float(steps) for value in vector) for vector in vectors]
 
 
+TRIFECTA_FAST_PERMUTATIONS = np.asarray(list(itertools.permutations(range(6), 3)), dtype=np.int16)
+TRIFECTA_FAST_PERMUTATION_INDEX = {
+    tuple(int(value) for value in permutation): idx
+    for idx, permutation in enumerate(TRIFECTA_FAST_PERMUTATIONS.tolist())
+}
+
+
+def build_fast_trifecta_eval_context(base: pd.DataFrame) -> dict[str, Any]:
+    if base.empty or not {"race_id", "lane", "finish_position"}.issubset(base.columns):
+        return {"race_count": 0}
+    row_groups: list[np.ndarray] = []
+    actual_indices: list[int] = []
+    for _, race_df in base.groupby("race_id", sort=False):
+        if len(race_df) != 6:
+            continue
+        lanes = pd.to_numeric(race_df["lane"], errors="coerce").astype("Int64")
+        finishes = pd.to_numeric(race_df["finish_position"], errors="coerce")
+        if lanes.isna().any() or finishes.isna().any():
+            continue
+        lane_values = [int(value) for value in lanes.tolist()]
+        if len(set(lane_values)) != 6:
+            continue
+        ordered_actual = race_df.assign(_finish=finishes).sort_values("_finish").head(3)
+        if len(ordered_actual) < 3:
+            continue
+        lane_to_position = {lane: position for position, lane in enumerate(lane_values)}
+        actual_tuple = tuple(lane_to_position.get(int(lane), -1) for lane in ordered_actual["lane"].tolist())
+        actual_index = TRIFECTA_FAST_PERMUTATION_INDEX.get(actual_tuple)
+        if actual_index is None:
+            continue
+        row_groups.append(race_df.index.to_numpy(dtype=np.int64))
+        actual_indices.append(int(actual_index))
+    if not row_groups:
+        return {"race_count": 0}
+    return {
+        "race_count": len(row_groups),
+        "row_indices": np.vstack(row_groups),
+        "actual_indices": np.asarray(actual_indices, dtype=np.int16),
+    }
+
+
+def _softmax_rows(values: np.ndarray) -> np.ndarray:
+    shifted = values - np.nanmax(values, axis=1, keepdims=True)
+    exps = np.exp(shifted)
+    denom = exps.sum(axis=1, keepdims=True)
+    return np.divide(exps, denom, out=np.full_like(exps, 1.0 / values.shape[1]), where=denom > 0)
+
+
+def evaluate_fast_trifecta_ensemble_candidate(
+    score_arrays: dict[str, np.ndarray],
+    model_names: list[str],
+    weight_values: tuple[float, ...],
+    context: dict[str, Any],
+    settings: dict[str, Any],
+) -> tuple[float, dict[str, float], dict[str, float]]:
+    row_indices = context["row_indices"]
+    actual_indices = context["actual_indices"]
+    combined = np.zeros(row_indices.shape, dtype=float)
+    candidate_weights = dict(zip(model_names, weight_values, strict=True))
+    for model_name, model_weight in candidate_weights.items():
+        if model_weight == 0:
+            continue
+        combined += float(model_weight) * score_arrays[model_name][row_indices]
+    lane_probs = _softmax_rows(combined)
+
+    first = TRIFECTA_FAST_PERMUTATIONS[:, 0]
+    second = TRIFECTA_FAST_PERMUTATIONS[:, 1]
+    third = TRIFECTA_FAST_PERMUTATIONS[:, 2]
+    p1 = lane_probs[:, first]
+    p2_base = lane_probs[:, second]
+    p3_base = lane_probs[:, third]
+    denom2 = np.clip(1.0 - p1, 1e-12, None)
+    denom3 = np.clip(1.0 - p1 - p2_base, 1e-12, None)
+    trifecta_probs = p1 * (p2_base / denom2) * (p3_base / denom3)
+    actual_probs = np.clip(trifecta_probs[np.arange(len(actual_indices)), actual_indices], 1e-12, 1.0)
+
+    top12_idx = np.argpartition(-trifecta_probs, kth=11, axis=1)[:, :12]
+    top5_idx = np.argpartition(-trifecta_probs, kth=4, axis=1)[:, :5]
+    top12_hit = np.any(top12_idx == actual_indices[:, None], axis=1)
+    top5_hit = np.any(top5_idx == actual_indices[:, None], axis=1)
+    log_loss = -float(np.mean(np.log(actual_probs)))
+    top12_hit_rate = float(np.mean(top12_hit))
+    top5_hit_rate = float(np.mean(top5_hit))
+    normalized_log_loss = log_loss / float(np.log(120.0))
+    objective = (
+        float(settings.get("objective_top12_weight", 0.60)) * top12_hit_rate
+        + float(settings.get("objective_top5_weight", 0.30)) * top5_hit_rate
+        - float(settings.get("objective_log_loss_weight", 0.10)) * normalized_log_loss
+    )
+    metrics = {
+        "top12_hit_rate": top12_hit_rate,
+        "top5_hit_rate": top5_hit_rate,
+        "log_loss": log_loss,
+        "normalized_log_loss": normalized_log_loss,
+        "race_count": float(len(actual_indices)),
+    }
+    return float(objective), {name: float(weight) for name, weight in candidate_weights.items()}, metrics
+
+
 def sample_races_evenly(df: pd.DataFrame, max_races: int) -> pd.DataFrame:
     if df.empty or max_races <= 0 or "race_id" not in df.columns:
         return df.copy()
@@ -2231,11 +2338,15 @@ def optimize_ensemble_weights(
     valid_df = apply_prediction_time_measurement_proxies(valid_df)
     model_names = list(models.keys())
     eval_races = int(valid_df["race_id"].nunique()) if "race_id" in valid_df.columns else len(valid_df)
-    candidate_vectors = simplex_weight_vectors(len(model_names), steps=20)
+    grid_step = float(settings.get("grid_step", 0.10))
+    grid_steps = max(int(round(1.0 / grid_step)), 1)
+    candidate_vectors = simplex_weight_vectors(len(model_names), steps=grid_steps)
     workers = min(int(settings.get("parallel_workers", 1)), len(candidate_vectors))
     _emit_progress(
         progress_callback,
-        f"ensemble weight search: models={len(model_names)}, races={eval_races}, candidates={len(candidate_vectors)}, workers={workers}",
+        "ensemble weight search: "
+        f"models={len(model_names)}, races={eval_races}, candidates={len(candidate_vectors)}, "
+        f"workers={workers}, objective={settings.get('objective', 'trifecta_fast')}, grid_step={grid_step:.4g}",
     )
     score_by_model = {
         model_name: score_frame(model, model_name, valid_df, feature_columns, categorical_columns)
@@ -2250,8 +2361,21 @@ def optimize_ensemble_weights(
     best_metrics: dict[str, float] | None = None
     best_objective = float("-inf")
     base = score_by_model[model_names[0]][["race_id", "lane", "finish_position"]].copy()
+    fast_context = build_fast_trifecta_eval_context(base)
+    use_fast_trifecta = (
+        str(settings.get("objective", "trifecta_fast")) == "trifecta_fast"
+        and int(fast_context.get("race_count", 0)) > 0
+    )
 
     def evaluate_weight_values(weight_values: tuple[float, ...]) -> tuple[float, dict[str, float], dict[str, float]]:
+        if use_fast_trifecta:
+            return evaluate_fast_trifecta_ensemble_candidate(
+                score_arrays,
+                model_names,
+                weight_values,
+                fast_context,
+                settings,
+            )
         candidate_weights = dict(zip(model_names, weight_values, strict=True))
         scored = base.copy()
         scored["score"] = np.zeros(len(base), dtype=float)
@@ -2283,15 +2407,23 @@ def optimize_ensemble_weights(
         progress_callback,
         f"ensemble weight search completed: objective={best_objective:.6g}",
     )
+    best_metrics = best_metrics or {}
 
     return {
         **best_weights,
         "validation_objective": best_objective,
-        "validation_top1_accuracy": 0.0 if best_metrics is None else best_metrics["top1_accuracy"],
-        "validation_avg_top3_overlap": 0.0 if best_metrics is None else best_metrics["avg_top3_overlap"],
+        "validation_top1_accuracy": float(best_metrics.get("top1_accuracy", 0.0)),
+        "validation_avg_top3_overlap": float(best_metrics.get("avg_top3_overlap", 0.0)),
+        "validation_top5_hit_rate": float(best_metrics.get("top5_hit_rate", 0.0)),
+        "validation_top12_hit_rate": float(best_metrics.get("top12_hit_rate", 0.0)),
+        "validation_log_loss": float(best_metrics.get("log_loss", 0.0)),
+        "validation_normalized_log_loss": float(best_metrics.get("normalized_log_loss", 0.0)),
         "validation_eval_races": float(eval_races),
         "validation_candidate_count": float(len(candidate_vectors)),
         "validation_parallel_workers": float(workers),
+        "validation_grid_step": float(grid_step),
+        "validation_objective_name": str(settings.get("objective", "trifecta_fast")),
+        "validation_fast_trifecta_races": float(fast_context.get("race_count", 0)),
     }
 
 

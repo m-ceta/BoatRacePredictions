@@ -74,3 +74,57 @@ def test_ensemble_weight_optimization_includes_lightgbm_variants(monkeypatch) ->
 
     assert weights["lightgbm_top1"] > 0.0
     assert weights["validation_top1_accuracy"] == 1.0
+
+
+def test_ensemble_weight_optimization_uses_fast_trifecta_objective(monkeypatch) -> None:
+    valid_df = pd.DataFrame(
+        {
+            "race_id": ["R1"] * 6,
+            "lane": [1, 2, 3, 4, 5, 6],
+            "finish_position": [1, 2, 3, 4, 5, 6],
+        }
+    )
+
+    def fake_score_frame(model, model_type, df, feature_columns, categorical_columns):
+        if model_type == "lightgbm_top1":
+            scores = [0.70, 0.12, 0.10, 0.04, 0.03, 0.01]
+        elif model_type == "lightgbm_stable_top6":
+            scores = [0.40, 0.22, 0.18, 0.10, 0.06, 0.04]
+        elif model_type == "lightgbm":
+            scores = [0.30, 0.25, 0.20, 0.10, 0.08, 0.07]
+        else:
+            scores = [0.10, 0.15, 0.20, 0.25, 0.16, 0.14]
+        frame = valid_df.copy()
+        frame["score_probability_like"] = scores
+        return frame
+
+    monkeypatch.setattr(ranker, "score_frame", fake_score_frame)
+    config = {
+        "models": {
+            "ensemble": {
+                "grid_step": 0.10,
+                "objective": "trifecta_fast",
+                "parallel_workers": 1,
+            }
+        }
+    }
+
+    weights = ranker.optimize_ensemble_weights(
+        {
+            "catboost": object(),
+            "lightgbm": object(),
+            "lightgbm_top1": object(),
+            "lightgbm_stable_top6": object(),
+        },
+        valid_df,
+        feature_columns=[],
+        categorical_columns=[],
+        config=config,
+    )
+
+    assert weights["validation_candidate_count"] == 286.0
+    assert weights["validation_objective_name"] == "trifecta_fast"
+    assert weights["validation_fast_trifecta_races"] == 1.0
+    assert weights["validation_top12_hit_rate"] == 1.0
+    assert weights["validation_top5_hit_rate"] == 1.0
+    assert weights["validation_log_loss"] > 0.0
