@@ -37,7 +37,7 @@ if exist "%PIPELINE_STATE_DIR%\04_train.done" (
 ) else (
     call "%~dp0_common.bat" :run_step "[4/6] train with resumable rerank optimization" boatrace-train --config configs/train.yaml --resume
     if errorlevel 1 exit /b %errorlevel%
-    call "%~dp0_common.bat" :run_step "[4/6] train trifecta v2/v3" boatrace-train-trifecta-v2 --config configs/train.yaml --max-races %MAX_RACES% --eval-max-races %EVAL_MAX_RACES% --optimize-rerank --optimize-rerank-workers %OPTIMIZE_RERANK_WORKERS%
+    call "%~dp0_common.bat" :run_step "[4/6] train trifecta v2/v3" boatrace-train-trifecta-v2 --config configs/train.yaml --max-races %MAX_RACES% --eval-max-races %EVAL_MAX_RACES% --optimize-rerank --optimize-rerank-workers %OPTIMIZE_RERANK_WORKERS% --resume
     if errorlevel 1 exit /b %errorlevel%
     type nul > "%PIPELINE_STATE_DIR%\04_train.done"
 )

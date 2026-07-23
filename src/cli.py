@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime
+import hashlib
 import json
 from pathlib import Path
 from typing import Callable
@@ -45,12 +46,18 @@ from src.models.ranker import (
     load_models,
     load_optional_trifecta_calibrator,
     load_staged_model_artifacts,
+    load_train_checkpoint,
     load_trifecta_v2_model_artifact,
+    load_trifecta_v2_model_artifact_payload,
     load_trifecta_calibrator,
+    mark_train_stage_completed,
     prepare_training_table,
     predict_trifecta_probabilities,
     predict_race_order,
     save_artifacts,
+    save_train_checkpoint,
+    save_trifecta_calibrator_artifact,
+    save_trifecta_v2_model_artifact,
     optimize_trifecta_v2_blend_weight,
     train_phase3_conditional_trifecta_model,
     train_trifecta_v2_model,
@@ -68,11 +75,13 @@ from src.models.ranker import (
     infer_latest_available_race_date,
     load_training_splits_from_parquet,
     train_ranker_from_splits,
+    train_checkpoint_signature,
+    train_stage_completed,
     with_latest_available_dates,
 )
 from src.models.training_device import with_training_device_override
-from src.models.flow import evaluate_flow_model, train_flow_model
-from src.models.staged import evaluate_staged_models, train_staged_models
+from src.models.flow import evaluate_flow_model, save_flow_model, train_flow_model
+from src.models.staged import evaluate_staged_models, save_staged_models, train_staged_models
 
 
 LOG_TZ = ZoneInfo("Asia/Tokyo")
@@ -423,6 +432,43 @@ def race_count(df: pd.DataFrame) -> int:
     return int(df["race_id"].nunique()) if "race_id" in df.columns and not df.empty else 0
 
 
+def trifecta_train_checkpoint_signature(
+    config: dict,
+    artifacts: dict[str, Path],
+    train_df: pd.DataFrame,
+    valid_df: pd.DataFrame,
+    valid_tune_df: pd.DataFrame,
+    final_eval_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    *,
+    max_races: int,
+    eval_max_races: int,
+    final_eval_max_races: int,
+    final_eval_months: int,
+) -> str:
+    base_train_checkpoint_signature = None
+    base_train_checkpoint_path = artifacts.get("train_checkpoint_path")
+    if base_train_checkpoint_path is not None and base_train_checkpoint_path.exists():
+        try:
+            base_train_checkpoint_signature = json.loads(
+                base_train_checkpoint_path.read_text(encoding="utf-8")
+            ).get("signature")
+        except Exception:
+            base_train_checkpoint_signature = None
+    payload = {
+        "base_signature": train_checkpoint_signature(config, train_df, valid_df, test_df),
+        "base_train_checkpoint_signature": base_train_checkpoint_signature,
+        "valid_tune_races": race_count(valid_tune_df),
+        "final_eval_races": race_count(final_eval_df),
+        "max_races": int(max_races),
+        "eval_max_races": int(eval_max_races),
+        "final_eval_max_races": int(final_eval_max_races),
+        "final_eval_months": int(final_eval_months),
+    }
+    raw = json.dumps(payload, sort_keys=True, default=str, ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 def train_trifecta_v2_main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
@@ -438,6 +484,12 @@ def train_trifecta_v2_main() -> None:
         help="rerank optimization parallel workers. 1 keeps sequential execution, 0 uses cpu_count - 1.",
     )
     parser.add_argument("--reset-rerank-optimization", action="store_true")
+    parser.add_argument("--resume", action="store_true", help="resume v2/v3 training stages when matching artifacts exist.")
+    parser.add_argument(
+        "--reset-trifecta-train-checkpoint",
+        action="store_true",
+        help="reset v2/v3 training checkpoint before running.",
+    )
     args = parser.parse_args()
 
     progress = print_train_trifecta_v2_progress
@@ -461,6 +513,25 @@ def train_trifecta_v2_main() -> None:
         f"eval_final_races={race_count(eval_final_df)}, "
         f"eval_test_races={race_count(eval_test_df)}"
     )
+    trifecta_checkpoint_path = artifacts["trifecta_train_checkpoint_path"]
+    if args.reset_trifecta_train_checkpoint and trifecta_checkpoint_path.exists():
+        progress(f"resetting trifecta train checkpoint: {trifecta_checkpoint_path}")
+        trifecta_checkpoint_path.unlink()
+    trifecta_signature = trifecta_train_checkpoint_signature(
+        config,
+        artifacts,
+        train_df,
+        valid_df,
+        valid_tune_df,
+        final_eval_df,
+        test_df,
+        max_races=args.max_races,
+        eval_max_races=args.eval_max_races,
+        final_eval_max_races=args.final_eval_max_races,
+        final_eval_months=final_eval_months,
+    )
+    trifecta_checkpoint = load_train_checkpoint(trifecta_checkpoint_path, trifecta_signature)
+    save_train_checkpoint(trifecta_checkpoint_path, trifecta_checkpoint)
 
     progress("inferring feature columns")
     schema_df = pd.concat(
@@ -483,57 +554,138 @@ def train_trifecta_v2_main() -> None:
     trifecta_calibrator = load_trifecta_calibrator(artifacts["trifecta_calibrator_path"])
     eval_rerank_top_n = get_default_rerank_top_n(config)
 
-    progress("training flow model")
-    flow_model, flow_classes = train_flow_model(train_df, valid_tune_df, feature_columns, categorical_columns, config)
+    if args.resume and train_stage_completed(
+        trifecta_checkpoint,
+        "flow_model",
+        [artifacts["flow_model_path"], artifacts["flow_meta_path"]],
+    ):
+        progress("skipping flow model: checkpoint and artifacts match")
+        flow_model, flow_classes = load_flow_artifacts(config)
+    else:
+        progress("training flow model")
+        flow_model, flow_classes = train_flow_model(train_df, valid_tune_df, feature_columns, categorical_columns, config)
+        save_flow_model(flow_model, flow_classes, artifacts["flow_model_path"], artifacts["flow_meta_path"])
+        mark_train_stage_completed(
+            trifecta_checkpoint_path,
+            trifecta_checkpoint,
+            "flow_model",
+            {"train_races": race_count(train_df), "valid_tune_races": race_count(valid_tune_df)},
+        )
     collect_garbage()
-    progress("training staged models")
-    staged_models = train_staged_models(train_df, valid_tune_df, feature_columns, categorical_columns, config)
+    if args.resume and train_stage_completed(trifecta_checkpoint, "staged_models", [artifacts["staged_dir"]]):
+        progress("skipping staged models: checkpoint and artifacts match")
+        staged_models = load_staged_model_artifacts(config)
+        if not staged_models:
+            progress("staged model artifacts are empty; retraining")
+            staged_models = train_staged_models(train_df, valid_tune_df, feature_columns, categorical_columns, config)
+            save_staged_models(staged_models, artifacts["staged_dir"])
+            mark_train_stage_completed(
+                trifecta_checkpoint_path,
+                trifecta_checkpoint,
+                "staged_models",
+                {"model_count": len(staged_models)},
+            )
+    else:
+        progress("training staged models")
+        staged_models = train_staged_models(train_df, valid_tune_df, feature_columns, categorical_columns, config)
+        save_staged_models(staged_models, artifacts["staged_dir"])
+        mark_train_stage_completed(
+            trifecta_checkpoint_path,
+            trifecta_checkpoint,
+            "staged_models",
+            {"model_count": len(staged_models)},
+        )
     collect_garbage()
-    progress("optimizing trifecta v2 blend weight")
-    trifecta_v2_v1_weight = optimize_trifecta_v2_blend_weight(
-        models,
-        ensemble_weights,
-        eval_valid_tune_df,
-        feature_columns,
-        categorical_columns,
-        classifier_models=classifier_models,
-        flow_model=flow_model,
-        flow_classes=flow_classes,
-        staged_models=staged_models,
-    )
+    blend_metrics = trifecta_checkpoint.get("metrics", {}).get("trifecta_v2_blend_weight", {})
+    if args.resume and train_stage_completed(trifecta_checkpoint, "trifecta_v2_blend_weight") and "v1_weight" in blend_metrics:
+        trifecta_v2_v1_weight = float(blend_metrics["v1_weight"])
+        progress(f"skipping trifecta v2 blend weight: checkpoint match, v1_weight={trifecta_v2_v1_weight:.4g}")
+    else:
+        progress("optimizing trifecta v2 blend weight")
+        trifecta_v2_v1_weight = optimize_trifecta_v2_blend_weight(
+            models,
+            ensemble_weights,
+            eval_valid_tune_df,
+            feature_columns,
+            categorical_columns,
+            classifier_models=classifier_models,
+            flow_model=flow_model,
+            flow_classes=flow_classes,
+            staged_models=staged_models,
+        )
+        mark_train_stage_completed(
+            trifecta_checkpoint_path,
+            trifecta_checkpoint,
+            "trifecta_v2_blend_weight",
+            {"v1_weight": float(trifecta_v2_v1_weight), "eval_valid_tune_races": race_count(eval_valid_tune_df)},
+        )
     ensemble_weights["trifecta_v2_v1_weight"] = trifecta_v2_v1_weight
     progress(f"optimized trifecta v2 blend weight: v1_weight={trifecta_v2_v1_weight:.4g}")
     collect_garbage()
-    progress(f"training trifecta v2 model: max_races={args.max_races}")
-    trifecta_v2_model = train_trifecta_v2_model(
-        train_df,
-        models=models,
-        ensemble_weights=ensemble_weights,
-        feature_columns=feature_columns,
-        categorical_columns=categorical_columns,
-        classifier_models=classifier_models,
-        flow_model=flow_model,
-        flow_classes=flow_classes,
-        staged_models=staged_models,
-        max_races=args.max_races,
-        config=config,
-    )
+    if args.resume and train_stage_completed(
+        trifecta_checkpoint,
+        "trifecta_v2_model",
+        [artifacts["trifecta_v2_phase2_model_path"]],
+    ):
+        progress("skipping trifecta v2 model: checkpoint and artifacts match")
+        trifecta_v2_model = load_trifecta_v2_model_artifact_payload(artifacts["trifecta_v2_phase2_model_path"])
+    else:
+        progress(f"training trifecta v2 model: max_races={args.max_races}")
+        trifecta_v2_model = train_trifecta_v2_model(
+            train_df,
+            models=models,
+            ensemble_weights=ensemble_weights,
+            feature_columns=feature_columns,
+            categorical_columns=categorical_columns,
+            classifier_models=classifier_models,
+            flow_model=flow_model,
+            flow_classes=flow_classes,
+            staged_models=staged_models,
+            max_races=args.max_races,
+            config=config,
+        )
+        save_trifecta_v2_model_artifact(trifecta_v2_model, artifacts["trifecta_v2_phase2_model_path"])
+        mark_train_stage_completed(
+            trifecta_checkpoint_path,
+            trifecta_checkpoint,
+            "trifecta_v2_model",
+            {"max_races": int(args.max_races)},
+        )
     collect_garbage()
-    progress(f"training phase3 conditional trifecta model: max_races={args.max_races}")
-    trifecta_v3_model = train_phase3_conditional_trifecta_model(
-        train_df,
-        models=models,
-        ensemble_weights=ensemble_weights,
-        feature_columns=feature_columns,
-        categorical_columns=categorical_columns,
-        classifier_models=classifier_models,
-        flow_model=flow_model,
-        flow_classes=flow_classes,
-        staged_models=staged_models,
-        base_model=trifecta_v2_model,
-        max_races=args.max_races,
-        config=config,
-    )
+    if trifecta_v2_model is None:
+        raise RuntimeError("Trifecta v2 model artifact could not be loaded for resume.")
+    if args.resume and train_stage_completed(
+        trifecta_checkpoint,
+        "trifecta_v3_model",
+        [artifacts["trifecta_v3_base_model_path"]],
+    ):
+        progress("skipping phase3 conditional trifecta model: checkpoint and artifacts match")
+        trifecta_v3_model = load_trifecta_v2_model_artifact_payload(artifacts["trifecta_v3_base_model_path"])
+    else:
+        progress(f"training phase3 conditional trifecta model: max_races={args.max_races}")
+        trifecta_v3_model = train_phase3_conditional_trifecta_model(
+            train_df,
+            models=models,
+            ensemble_weights=ensemble_weights,
+            feature_columns=feature_columns,
+            categorical_columns=categorical_columns,
+            classifier_models=classifier_models,
+            flow_model=flow_model,
+            flow_classes=flow_classes,
+            staged_models=staged_models,
+            base_model=trifecta_v2_model,
+            max_races=args.max_races,
+            config=config,
+        )
+        save_trifecta_v2_model_artifact(trifecta_v3_model, artifacts["trifecta_v3_base_model_path"])
+        mark_train_stage_completed(
+            trifecta_checkpoint_path,
+            trifecta_checkpoint,
+            "trifecta_v3_model",
+            {"max_races": int(args.max_races)},
+        )
+    if trifecta_v3_model is None:
+        raise RuntimeError("Trifecta v3 model artifact could not be loaded for resume.")
     collect_garbage()
     rerank_optimization = {}
     if args.optimize_rerank and not eval_valid_tune_df.empty:
@@ -619,37 +771,82 @@ def train_trifecta_v2_main() -> None:
         rerank_optimization=rerank_optimization,
         calibration_optimization=calibration_optimization,
     )
-    progress("fitting trifecta v2 calibrator")
-    trifecta_v2_calibrator = fit_model_trifecta_calibrator(
-        models,
-        ensemble_weights,
-        valid_tune_df,
-        feature_columns,
-        categorical_columns,
-        classifier_models=classifier_models,
-        flow_model=flow_model,
-        flow_classes=flow_classes,
-        staged_models=staged_models,
-        trifecta_v2_model=trifecta_v2_model,
-        use_v2=True,
-        rerank_top_n=eval_rerank_top_n,
-    )
-    progress("fitting trifecta v3 calibrator")
-    trifecta_v3_calibrator = fit_model_trifecta_calibrator(
-        models,
-        ensemble_weights,
-        valid_tune_df,
-        feature_columns,
-        categorical_columns,
-        classifier_models=classifier_models,
-        flow_model=flow_model,
-        flow_classes=flow_classes,
-        staged_models=staged_models,
-        trifecta_v2_model=trifecta_v3_model,
-        use_v2=True,
-        rerank_top_n=eval_rerank_top_n,
-        calibration_window_days=calibration_window_days,
-    )
+    v2_calibrator_metrics = trifecta_checkpoint.get("metrics", {}).get("trifecta_v2_calibrator", {})
+    if (
+        args.resume
+        and train_stage_completed(
+            trifecta_checkpoint,
+            "trifecta_v2_calibrator",
+            [artifacts["trifecta_v2_calibrator_path"]],
+        )
+        and int(v2_calibrator_metrics.get("rerank_top_n", -1)) == int(eval_rerank_top_n)
+    ):
+        progress("skipping trifecta v2 calibrator: checkpoint and artifacts match")
+        trifecta_v2_calibrator = load_optional_trifecta_calibrator(artifacts["trifecta_v2_calibrator_path"])
+    else:
+        progress("fitting trifecta v2 calibrator")
+        trifecta_v2_calibrator = fit_model_trifecta_calibrator(
+            models,
+            ensemble_weights,
+            valid_tune_df,
+            feature_columns,
+            categorical_columns,
+            classifier_models=classifier_models,
+            flow_model=flow_model,
+            flow_classes=flow_classes,
+            staged_models=staged_models,
+            trifecta_v2_model=trifecta_v2_model,
+            use_v2=True,
+            rerank_top_n=eval_rerank_top_n,
+        )
+        save_trifecta_calibrator_artifact(trifecta_v2_calibrator, artifacts["trifecta_v2_calibrator_path"])
+        mark_train_stage_completed(
+            trifecta_checkpoint_path,
+            trifecta_checkpoint,
+            "trifecta_v2_calibrator",
+            {"rerank_top_n": int(eval_rerank_top_n), "valid_tune_races": race_count(valid_tune_df)},
+        )
+    v3_calibrator_metrics = trifecta_checkpoint.get("metrics", {}).get("trifecta_v3_calibrator", {})
+    if (
+        args.resume
+        and train_stage_completed(
+            trifecta_checkpoint,
+            "trifecta_v3_calibrator",
+            [artifacts["trifecta_v3_calibrator_path"]],
+        )
+        and int(v3_calibrator_metrics.get("rerank_top_n", -1)) == int(eval_rerank_top_n)
+        and int(v3_calibrator_metrics.get("calibration_window_days", -1)) == int(calibration_window_days)
+    ):
+        progress("skipping trifecta v3 calibrator: checkpoint and artifacts match")
+        trifecta_v3_calibrator = load_optional_trifecta_calibrator(artifacts["trifecta_v3_calibrator_path"])
+    else:
+        progress("fitting trifecta v3 calibrator")
+        trifecta_v3_calibrator = fit_model_trifecta_calibrator(
+            models,
+            ensemble_weights,
+            valid_tune_df,
+            feature_columns,
+            categorical_columns,
+            classifier_models=classifier_models,
+            flow_model=flow_model,
+            flow_classes=flow_classes,
+            staged_models=staged_models,
+            trifecta_v2_model=trifecta_v3_model,
+            use_v2=True,
+            rerank_top_n=eval_rerank_top_n,
+            calibration_window_days=calibration_window_days,
+        )
+        save_trifecta_calibrator_artifact(trifecta_v3_calibrator, artifacts["trifecta_v3_calibrator_path"])
+        mark_train_stage_completed(
+            trifecta_checkpoint_path,
+            trifecta_checkpoint,
+            "trifecta_v3_calibrator",
+            {
+                "rerank_top_n": int(eval_rerank_top_n),
+                "calibration_window_days": int(calibration_window_days),
+                "valid_tune_races": race_count(valid_tune_df),
+            },
+        )
 
     progress("saving model artifacts")
     save_artifacts(

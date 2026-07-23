@@ -40,6 +40,7 @@ run_train_with_resumable_rerank_optimization() {
     --eval-max-races "${EVAL_MAX_RACES}"
     --optimize-rerank
     --optimize-rerank-workers "${OPTIMIZE_RERANK_WORKERS}"
+    --resume
   )
   boatrace-train-trifecta-v2 "${train_args[@]}"
 }

@@ -84,6 +84,9 @@ DEFAULT_ARTIFACT_PATHS = {
     "classifier_dir": "artifacts/classifiers",
     "flow_model_path": "artifacts/flow_lightgbm.txt",
     "flow_meta_path": "artifacts/flow_classes.json",
+    "trifecta_train_checkpoint_path": "artifacts/trifecta_train_checkpoint.json",
+    "trifecta_v2_phase2_model_path": "artifacts/trifecta_v2_phase2_model.joblib",
+    "trifecta_v3_base_model_path": "artifacts/trifecta_v3_base_model.joblib",
     "trifecta_v2_model_path": "artifacts/trifecta_v2_model.joblib",
     "staged_dir": "artifacts/staged",
     "rerank_optimization_checkpoint_path": "artifacts/rerank_optimization_checkpoint.json",
@@ -420,6 +423,7 @@ def is_trifecta_v2_bundle(model: Any) -> bool:
 def save_trifecta_v2_model_artifact(model: Any, path: Path) -> None:
     if model is None:
         return
+    path.parent.mkdir(parents=True, exist_ok=True)
     payload = model
     if is_trifecta_v2_bundle(model) and isinstance(model.get("booster"), lgb.Booster):
         payload = dict(model)
@@ -2869,6 +2873,13 @@ def load_optional_trifecta_calibrator(path: Path) -> IsotonicRegression | None:
     if not path.exists():
         return None
     return joblib.load(path)
+
+
+def save_trifecta_calibrator_artifact(calibrator: IsotonicRegression | None, path: Path) -> None:
+    if calibrator is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(calibrator, path)
 
 
 def train_checkpoint_signature(
