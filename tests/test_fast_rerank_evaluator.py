@@ -67,3 +67,56 @@ def test_fast_calibrated_metrics_normalize_probabilities_per_race() -> None:
     assert metrics["top12_hit_rate"] == 1.0
     assert metrics["log_loss"] >= 0.0
     assert metrics["rerank_metrics"]["coverage_races"] == 2.0
+
+
+def test_fast_v1_trifecta_metrics_match_dataframe_metrics() -> None:
+    ranked = pd.DataFrame(
+        {
+            "race_id": ["R1"] * 6 + ["R2"] * 6,
+            "lane": [1, 2, 3, 4, 5, 6] * 2,
+            "finish_position": [1, 2, 3, 4, 5, 6, 3, 1, 2, 4, 5, 6],
+            "win_probability_like": [0.42, 0.21, 0.16, 0.09, 0.07, 0.05, 0.18, 0.32, 0.24, 0.12, 0.08, 0.06],
+        }
+    )
+
+    fast = ranker._evaluate_fast_v1_trifecta_metrics_from_ranked(ranked, calibrator=None, weights={})
+    trifecta = ranker.build_trifecta_prediction_frame(ranked, trifecta_calibrator=None, use_v2=False)
+    trifecta["probability"] = trifecta["probability_v1"]
+    expected = ranker.compute_trifecta_metrics(trifecta, probability_col="probability")
+
+    assert fast is not None
+    for key in (
+        "race_count",
+        "covered_races",
+        "top1_hit_rate",
+        "top3_hit_rate",
+        "top5_hit_rate",
+        "top10_hit_rate",
+        "top12_hit_rate",
+        "log_loss",
+        "brier_score",
+        "mean_actual_probability",
+        "mean_top_probability",
+    ):
+        assert np.isclose(float(fast[key]), float(expected[key]))
+
+
+def test_fast_v1_calibrator_matches_dataframe_training_payload() -> None:
+    ranked = pd.DataFrame(
+        {
+            "race_id": ["R1"] * 6 + ["R2"] * 6,
+            "lane": [1, 2, 3, 4, 5, 6] * 2,
+            "finish_position": [1, 2, 3, 4, 5, 6, 3, 1, 2, 4, 5, 6],
+            "win_probability_like": [0.42, 0.21, 0.16, 0.09, 0.07, 0.05, 0.18, 0.32, 0.24, 0.12, 0.08, 0.06],
+        }
+    )
+    fast_calibrator = ranker.fit_trifecta_calibrator_fast_from_ranked(ranked)
+    trifecta = ranker.build_trifecta_prediction_frame(ranked, trifecta_calibrator=None, use_v2=False)
+    dataframe_calibrator = ranker._fit_isotonic_from_raw(
+        trifecta["raw_probability_v1"].to_numpy(dtype=float),
+        trifecta["is_actual"].astype(int).to_numpy(dtype=float),
+    )
+    probe = np.linspace(0.0, 0.5, 20)
+
+    assert fast_calibrator is not None
+    assert np.allclose(fast_calibrator.predict(probe), dataframe_calibrator.predict(probe))

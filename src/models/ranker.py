@@ -887,6 +887,204 @@ def _fast_calibrated_metrics_from_frame(
     return metrics
 
 
+def _fast_matrix_metrics(prob_matrix: np.ndarray, actual_indices: np.ndarray) -> dict[str, Any]:
+    probs = np.asarray(prob_matrix, dtype=float)
+    actual = np.asarray(actual_indices, dtype=int)
+    race_count = int(len(actual))
+    if race_count == 0 or probs.size == 0:
+        return {}
+    valid_mask = (actual >= 0) & (actual < probs.shape[1])
+    covered = int(valid_mask.sum())
+    top_hits = {1: 0, 3: 0, 5: 0, 10: 0, 12: 0}
+    if covered:
+        valid_probs = probs[valid_mask]
+        valid_actual = actual[valid_mask]
+        order = np.argsort(-valid_probs, axis=1, kind="mergesort")
+        positions = np.empty_like(order)
+        positions[np.arange(len(order))[:, None], order] = np.arange(order.shape[1], dtype=int)
+        actual_ranks = positions[np.arange(len(valid_actual)), valid_actual]
+        actual_probabilities = np.clip(valid_probs[np.arange(len(valid_actual)), valid_actual], 1e-15, 1.0)
+        for top_k in top_hits:
+            top_hits[top_k] = int(np.sum(actual_ranks < top_k))
+        brier_scores = (
+            np.sum(valid_probs * valid_probs, axis=1)
+            - (2.0 * valid_probs[np.arange(len(valid_actual)), valid_actual])
+            + 1.0
+        ) / float(valid_probs.shape[1])
+        log_loss_value = float(np.mean(-np.log(actual_probabilities)))
+        brier_value = float(np.mean(brier_scores))
+        mean_actual = float(np.mean(actual_probabilities))
+        mean_top = float(np.mean(valid_probs[np.arange(len(order)), order[:, 0]]))
+    else:
+        log_loss_value = 0.0
+        brier_value = 0.0
+        mean_actual = 0.0
+        mean_top = 0.0
+
+    return {
+        "race_count": float(race_count),
+        "covered_races": float(covered),
+        "candidate_coverage_rate": covered / race_count if race_count else 0.0,
+        "top1_hit_rate": top_hits[1] / race_count if race_count else 0.0,
+        "top3_hit_rate": top_hits[3] / race_count if race_count else 0.0,
+        "top5_hit_rate": top_hits[5] / race_count if race_count else 0.0,
+        "top10_hit_rate": top_hits[10] / race_count if race_count else 0.0,
+        "top12_hit_rate": top_hits[12] / race_count if race_count else 0.0,
+        "log_loss": log_loss_value,
+        "brier_score": brier_value,
+        "mean_actual_probability": mean_actual,
+        "mean_top_probability": mean_top,
+    }
+
+
+def _evaluate_fast_v1_trifecta_metrics_from_ranked(
+    ranked: pd.DataFrame,
+    calibrator: IsotonicRegression | None,
+    weights: dict[str, float],
+) -> dict[str, Any] | None:
+    if ranked.empty or not {"race_id", "lane", "finish_position", "win_probability_like"}.issubset(ranked.columns):
+        return None
+
+    lane_prob_rows: list[np.ndarray] = []
+    actual_indices: list[int] = []
+    scenario_labels: list[str] = []
+    race_ids: list[str] = []
+    for race_id, race_df in ranked.groupby("race_id", sort=False):
+        if len(race_df) != 6:
+            continue
+        race_df = race_df.sort_values("lane").reset_index(drop=True)
+        lanes = pd.to_numeric(race_df["lane"], errors="coerce")
+        finishes = pd.to_numeric(race_df["finish_position"], errors="coerce")
+        lane_probs = pd.to_numeric(race_df["win_probability_like"], errors="coerce").fillna(0.0).to_numpy(dtype=float)
+        if lanes.isna().any() or finishes.isna().any() or len(set(lanes.astype(int).tolist())) != 6:
+            continue
+        prob_sum = float(lane_probs.sum())
+        if prob_sum <= 0:
+            continue
+        lane_probs = lane_probs / prob_sum
+        lane_to_position = {int(lane): position for position, lane in enumerate(lanes.astype(int).tolist())}
+        ordered_actual = race_df.assign(_finish=finishes).sort_values("_finish").head(3)
+        actual_tuple = tuple(lane_to_position.get(int(lane), -1) for lane in ordered_actual["lane"].tolist())
+        actual_index = TRIFECTA_FAST_PERMUTATION_INDEX.get(actual_tuple, -1)
+        lane_prob_rows.append(lane_probs)
+        actual_indices.append(int(actual_index))
+        scenario_labels.append(_phase3_scenario_label(_phase3_scenario_context(race_df.set_index("lane"))))
+        race_ids.append(str(race_id))
+    if not lane_prob_rows:
+        return None
+
+    lane_probs_matrix = np.vstack(lane_prob_rows)
+    first = TRIFECTA_FAST_PERMUTATIONS[:, 0]
+    second = TRIFECTA_FAST_PERMUTATIONS[:, 1]
+    third = TRIFECTA_FAST_PERMUTATIONS[:, 2]
+    p1 = lane_probs_matrix[:, first]
+    p2_base = lane_probs_matrix[:, second]
+    p3_base = lane_probs_matrix[:, third]
+    denom2 = np.clip(1.0 - p1, 1e-12, None)
+    denom3 = np.clip(1.0 - p1 - p2_base, 1e-12, None)
+    raw_matrix = p1 * (p2_base / denom2) * (p3_base / denom3)
+    if calibrator is not None:
+        calibrated = np.asarray(calibrator.predict(raw_matrix.reshape(-1)), dtype=float).reshape(raw_matrix.shape)
+        row_sums = calibrated.sum(axis=1, keepdims=True)
+        prob_matrix = np.divide(
+            calibrated,
+            row_sums,
+            out=np.full_like(calibrated, 1.0 / calibrated.shape[1]),
+            where=row_sums > 0,
+        )
+    else:
+        row_sums = raw_matrix.sum(axis=1, keepdims=True)
+        prob_matrix = np.divide(
+            raw_matrix,
+            row_sums,
+            out=np.full_like(raw_matrix, 1.0 / raw_matrix.shape[1]),
+            where=row_sums > 0,
+        )
+
+    actual_array = np.asarray(actual_indices, dtype=int)
+    scenario_array = np.asarray(scenario_labels, dtype=object)
+    metrics = _fast_matrix_metrics(prob_matrix, actual_array)
+    if not metrics:
+        return None
+
+    scenario_min_races = int(weights.get("scenario_metric_min_races", DEFAULT_PHASE3_SETTINGS["evaluation"]["scenario_min_races"]))
+    scenario_metrics: dict[str, Any] = {}
+    scenario_groups: dict[str, np.ndarray] = {}
+    for scenario_label in sorted(set(scenario_labels)):
+        mask = scenario_array == scenario_label
+        scenario_result = _fast_matrix_metrics(prob_matrix[mask], actual_array[mask])
+        scenario_result["scenario_id"] = float(scenario_numeric_id(scenario_label))
+        scenario_result["scenario_min_races"] = float(scenario_min_races)
+        scenario_result["is_small_sample"] = float(int(mask.sum()) < scenario_min_races)
+        scenario_metrics[scenario_label] = scenario_result
+        grouped_label = scenario_label if int(mask.sum()) >= scenario_min_races else "__small_sample__"
+        scenario_groups[grouped_label] = mask if grouped_label not in scenario_groups else (scenario_groups[grouped_label] | mask)
+    metrics["scenario_metrics"] = scenario_metrics
+
+    grouped_metrics: dict[str, Any] = {}
+    for scenario_label, mask in sorted(scenario_groups.items()):
+        scenario_result = _fast_matrix_metrics(prob_matrix[mask], actual_array[mask])
+        scenario_result["scenario_min_races"] = float(scenario_min_races)
+        scenario_result["is_small_sample_group"] = float(scenario_label == "__small_sample__")
+        grouped_metrics[scenario_label] = scenario_result
+    metrics["scenario_metrics_grouped"] = grouped_metrics
+    metrics["evaluation_mode"] = "fast_numpy_v1"
+    metrics["fast_eval_races"] = float(len(race_ids))
+    return metrics
+
+
+def _fast_v1_raw_and_labels_from_ranked(ranked: pd.DataFrame) -> tuple[np.ndarray, np.ndarray] | None:
+    if ranked.empty or not {"race_id", "lane", "finish_position", "win_probability_like"}.issubset(ranked.columns):
+        return None
+    raw_rows: list[np.ndarray] = []
+    actual_indices: list[int] = []
+    for _, race_df in ranked.groupby("race_id", sort=False):
+        if len(race_df) != 6:
+            continue
+        race_df = race_df.sort_values("lane").reset_index(drop=True)
+        lanes = pd.to_numeric(race_df["lane"], errors="coerce")
+        finishes = pd.to_numeric(race_df["finish_position"], errors="coerce")
+        lane_probs = pd.to_numeric(race_df["win_probability_like"], errors="coerce").fillna(0.0).to_numpy(dtype=float)
+        if lanes.isna().any() or finishes.isna().any() or len(set(lanes.astype(int).tolist())) != 6:
+            continue
+        prob_sum = float(lane_probs.sum())
+        if prob_sum <= 0:
+            continue
+        lane_probs = lane_probs / prob_sum
+        lane_to_position = {int(lane): position for position, lane in enumerate(lanes.astype(int).tolist())}
+        ordered_actual = race_df.assign(_finish=finishes).sort_values("_finish").head(3)
+        actual_tuple = tuple(lane_to_position.get(int(lane), -1) for lane in ordered_actual["lane"].tolist())
+        actual_index = TRIFECTA_FAST_PERMUTATION_INDEX.get(actual_tuple, -1)
+        raw_rows.append(lane_probs)
+        actual_indices.append(int(actual_index))
+    if not raw_rows:
+        return None
+    lane_probs_matrix = np.vstack(raw_rows)
+    first = TRIFECTA_FAST_PERMUTATIONS[:, 0]
+    second = TRIFECTA_FAST_PERMUTATIONS[:, 1]
+    third = TRIFECTA_FAST_PERMUTATIONS[:, 2]
+    p1 = lane_probs_matrix[:, first]
+    p2_base = lane_probs_matrix[:, second]
+    p3_base = lane_probs_matrix[:, third]
+    denom2 = np.clip(1.0 - p1, 1e-12, None)
+    denom3 = np.clip(1.0 - p1 - p2_base, 1e-12, None)
+    raw_matrix = p1 * (p2_base / denom2) * (p3_base / denom3)
+    labels = np.zeros(raw_matrix.shape, dtype=float)
+    actual = np.asarray(actual_indices, dtype=int)
+    valid_mask = (actual >= 0) & (actual < raw_matrix.shape[1])
+    if valid_mask.any():
+        labels[np.flatnonzero(valid_mask), actual[valid_mask]] = 1.0
+    return raw_matrix.reshape(-1), labels.reshape(-1)
+
+
+def fit_trifecta_calibrator_fast_from_ranked(ranked: pd.DataFrame) -> IsotonicRegression | None:
+    payload = _fast_v1_raw_and_labels_from_ranked(ranked)
+    if payload is None:
+        return None
+    raw, labels = payload
+    return _fit_isotonic_from_raw(raw, labels)
+
+
 def build_fast_rerank_payloads_from_ranked(
     ranked: pd.DataFrame,
     weights: dict[str, float],
@@ -2838,6 +3036,9 @@ def fit_trifecta_calibrator(
         feature_columns,
         categorical_columns,
     )
+    fast_calibrator = fit_trifecta_calibrator_fast_from_ranked(race_probs)
+    if fast_calibrator is not None:
+        return fast_calibrator
     trifecta = build_trifecta_prediction_frame(race_probs, trifecta_calibrator=None, use_v2=False)
     if trifecta.empty or "is_actual" not in trifecta.columns:
         calibrator = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip")
@@ -3829,6 +4030,10 @@ def evaluate_trifecta(
         flow_classes=flow_classes,
         staged_models=staged_models,
     )
+    if not use_v2 and rerank_top_n is None and odds_df is None:
+        fast_metrics = _evaluate_fast_v1_trifecta_metrics_from_ranked(race_probs, calibrator, weights)
+        if fast_metrics is not None:
+            return fast_metrics
     trifecta = build_trifecta_prediction_frame(
         race_probs,
         trifecta_calibrator=calibrator,
