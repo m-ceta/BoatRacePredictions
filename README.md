@@ -137,6 +137,12 @@ boatrace-build --rowdata rowdata --output data/processed --max-date 2026-05-24
 boatrace-train --config configs/train.yaml
 ```
 
+resume する場合:
+
+```bash
+boatrace-train --config configs/train.yaml --resume
+```
+
 GPU を使う場合:
 
 ```bash

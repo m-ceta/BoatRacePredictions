@@ -33,7 +33,7 @@ run_pipeline_step_once() {
 }
 
 run_train_with_resumable_rerank_optimization() {
-  boatrace-train --config configs/train.yaml
+  boatrace-train --config configs/train.yaml --resume
   local train_args=(
     --config configs/train.yaml
     --max-races "${MAX_RACES}"

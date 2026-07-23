@@ -259,6 +259,8 @@ def train_main() -> None:
     parser.add_argument("--lightgbm-variant-workers", type=int, default=None)
     parser.add_argument("--ensemble-workers", type=int, default=None)
     parser.add_argument("--ensemble-max-eval-races", type=int, default=None)
+    parser.add_argument("--resume", action="store_true", help="resume completed boatrace-train stages from artifacts/train_checkpoint.json")
+    parser.add_argument("--reset-train-checkpoint", action="store_true", help="clear boatrace-train checkpoint before training")
     args = parser.parse_args()
     if args.enable_lightgbm_variants and args.disable_lightgbm_variants:
         parser.error("--enable-lightgbm-variants and --disable-lightgbm-variants cannot be used together")
@@ -300,7 +302,15 @@ def train_main() -> None:
         flow_classes,
         staged_models,
         trifecta_v2_model,
-    ) = train_ranker_from_splits(train_df, valid_df, test_df, config, progress_callback=progress)
+    ) = train_ranker_from_splits(
+        train_df,
+        valid_df,
+        test_df,
+        config,
+        progress_callback=progress,
+        resume=args.resume,
+        reset_train_checkpoint=args.reset_train_checkpoint,
+    )
     del train_df, valid_df, test_df
     collect_garbage()
     artifacts = get_artifact_paths(config)

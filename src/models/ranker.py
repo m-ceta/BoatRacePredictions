@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 import gc
+import hashlib
 import itertools
 import json
 import os
@@ -86,6 +87,7 @@ DEFAULT_ARTIFACT_PATHS = {
     "trifecta_v2_model_path": "artifacts/trifecta_v2_model.joblib",
     "staged_dir": "artifacts/staged",
     "rerank_optimization_checkpoint_path": "artifacts/rerank_optimization_checkpoint.json",
+    "train_checkpoint_path": "artifacts/train_checkpoint.json",
 }
 
 
@@ -1575,6 +1577,8 @@ def train_ranker_from_splits(
     test_df: pd.DataFrame,
     config: dict,
     progress_callback: Callable[[str], None] | None = None,
+    resume: bool = False,
+    reset_train_checkpoint: bool = False,
 ) -> tuple[
     dict[str, Any],
     list[str],
@@ -1603,54 +1607,100 @@ def train_ranker_from_splits(
     collect_garbage()
     progress(f"inferred features: numeric_and_categorical={len(feature_columns)}, categorical={len(categorical_columns)}")
 
-    progress("training catboost ranker")
-    catboost_model = train_catboost(train_df, valid_df, feature_columns, categorical_columns, config)
-    progress("evaluating catboost ranker")
-    catboost_metrics = evaluate_model_bundle(
-        catboost_model,
-        "catboost",
-        train_df,
-        valid_df,
-        test_df,
-        feature_columns,
-        categorical_columns,
-    )
-    collect_garbage()
+    artifacts = get_artifact_paths(config)
+    checkpoint_path = artifacts["train_checkpoint_path"]
+    signature = train_checkpoint_signature(config, train_df, valid_df, test_df)
+    if reset_train_checkpoint and checkpoint_path.exists():
+        progress(f"resetting train checkpoint: {checkpoint_path}")
+        checkpoint_path.unlink()
+    checkpoint = load_train_checkpoint(checkpoint_path, signature) if resume else {
+        "signature": signature,
+        "completed": {},
+        "metrics": {},
+    }
+    save_train_checkpoint(checkpoint_path, checkpoint)
+    artifacts["features_path"].parent.mkdir(parents=True, exist_ok=True)
+    artifacts["features_path"].write_text(json.dumps(feature_columns, ensure_ascii=False, indent=2), encoding="utf-8")
+    checkpoint_metrics = checkpoint.setdefault("metrics", {})
 
-    progress("training lightgbm ranker")
-    lightgbm_model = train_lightgbm(train_df, valid_df, feature_columns, categorical_columns, config)
-    progress("evaluating lightgbm ranker")
-    lightgbm_metrics = evaluate_model_bundle(
-        lightgbm_model,
-        "lightgbm",
-        train_df,
-        valid_df,
-        test_df,
-        feature_columns,
-        categorical_columns,
-    )
-    collect_garbage()
-
-    lightgbm_variant_models = train_lightgbm_variants(
-        train_df,
-        valid_df,
-        feature_columns,
-        categorical_columns,
-        config,
-        progress_callback=progress,
-    )
-    lightgbm_variant_metrics = {
-        name: evaluate_model_bundle(
-            model,
-            name,
+    if resume and train_stage_completed(checkpoint, "catboost", [artifacts["catboost_model_path"]]) and "catboost" in checkpoint_metrics:
+        progress("skipping catboost ranker: train checkpoint completed")
+        catboost_model = CatBoostRanker()
+        catboost_model.load_model(str(artifacts["catboost_model_path"]))
+        catboost_metrics = checkpoint_metrics.get("catboost", {})
+    else:
+        progress("training catboost ranker")
+        catboost_model = train_catboost(train_df, valid_df, feature_columns, categorical_columns, config)
+        artifacts["catboost_model_path"].parent.mkdir(parents=True, exist_ok=True)
+        catboost_model.save_model(artifacts["catboost_model_path"])
+        progress("evaluating catboost ranker")
+        catboost_metrics = evaluate_model_bundle(
+            catboost_model,
+            "catboost",
             train_df,
             valid_df,
             test_df,
             feature_columns,
             categorical_columns,
         )
-        for name, model in lightgbm_variant_models.items()
-    }
+        mark_train_stage_completed(checkpoint_path, checkpoint, "catboost", catboost_metrics)
+    collect_garbage()
+
+    if resume and train_stage_completed(checkpoint, "lightgbm", [artifacts["lightgbm_model_path"]]) and "lightgbm" in checkpoint_metrics:
+        progress("skipping lightgbm ranker: train checkpoint completed")
+        lightgbm_model = lgb.Booster(model_file=str(artifacts["lightgbm_model_path"]))
+        lightgbm_metrics = checkpoint_metrics.get("lightgbm", {})
+    else:
+        progress("training lightgbm ranker")
+        lightgbm_model = train_lightgbm(train_df, valid_df, feature_columns, categorical_columns, config)
+        artifacts["lightgbm_model_path"].parent.mkdir(parents=True, exist_ok=True)
+        lightgbm_model.save_model(str(artifacts["lightgbm_model_path"]))
+        progress("evaluating lightgbm ranker")
+        lightgbm_metrics = evaluate_model_bundle(
+            lightgbm_model,
+            "lightgbm",
+            train_df,
+            valid_df,
+            test_df,
+            feature_columns,
+            categorical_columns,
+        )
+        mark_train_stage_completed(checkpoint_path, checkpoint, "lightgbm", lightgbm_metrics)
+    collect_garbage()
+
+    variant_paths = enabled_lightgbm_variant_paths(config, artifacts["lightgbm_model_path"])
+    if resume and train_stage_completed(checkpoint, "lightgbm_variants", variant_paths) and "lightgbm_variants" in checkpoint_metrics:
+        progress("skipping lightgbm variants: train checkpoint completed")
+        lightgbm_variant_models = {
+            str(variant["name"]): lgb.Booster(
+                model_file=str(lightgbm_variant_model_path(artifacts["lightgbm_model_path"], str(variant["name"])))
+            )
+            for variant in get_enabled_lightgbm_variants(config)
+        }
+        lightgbm_variant_metrics = checkpoint_metrics.get("lightgbm_variants", {})
+    else:
+        lightgbm_variant_models = train_lightgbm_variants(
+            train_df,
+            valid_df,
+            feature_columns,
+            categorical_columns,
+            config,
+            progress_callback=progress,
+        )
+        save_lightgbm_variants(lightgbm_variant_models, artifacts["lightgbm_model_path"])
+        lightgbm_variant_metrics = {
+            name: evaluate_model_bundle(
+                model,
+                name,
+                train_df,
+                valid_df,
+                test_df,
+                feature_columns,
+                categorical_columns,
+            )
+            for name, model in lightgbm_variant_models.items()
+        }
+        mark_train_stage_completed(checkpoint_path, checkpoint, "lightgbm_variants", lightgbm_variant_metrics)
     collect_garbage()
 
     models = {
@@ -1658,44 +1708,62 @@ def train_ranker_from_splits(
         "lightgbm": lightgbm_model,
         **lightgbm_variant_models,
     }
-    progress("optimizing ensemble weights")
-    ensemble_weights = optimize_ensemble_weights(
-        models,
-        valid_df,
-        feature_columns,
-        categorical_columns,
-        config=config,
-        progress_callback=progress,
-    )
-    ensemble_weights["scenario_metric_min_races"] = int(
-        get_phase3_settings(config)["evaluation"].get("scenario_min_races", 100)
-    )
-    progress("evaluating ensemble")
-    ensemble_metrics = evaluate_ensemble(
-        models,
-        ensemble_weights,
-        train_df,
-        valid_df,
-        test_df,
-        feature_columns,
-        categorical_columns,
-    )
+    if resume and train_stage_completed(checkpoint, "ensemble", [artifacts["ensemble_weights_path"]]) and "ensemble" in checkpoint_metrics:
+        progress("skipping ensemble optimization: train checkpoint completed")
+        ensemble_weights = load_ensemble_weights(artifacts["ensemble_weights_path"])
+        ensemble_metrics = checkpoint_metrics.get("ensemble", {})
+    else:
+        progress("optimizing ensemble weights")
+        ensemble_weights = optimize_ensemble_weights(
+            models,
+            valid_df,
+            feature_columns,
+            categorical_columns,
+            config=config,
+            progress_callback=progress,
+        )
+        ensemble_weights["scenario_metric_min_races"] = int(
+            get_phase3_settings(config)["evaluation"].get("scenario_min_races", 100)
+        )
+        artifacts["ensemble_weights_path"].parent.mkdir(parents=True, exist_ok=True)
+        artifacts["ensemble_weights_path"].write_text(
+            json.dumps(ensemble_weights, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        progress("evaluating ensemble")
+        ensemble_metrics = evaluate_ensemble(
+            models,
+            ensemble_weights,
+            train_df,
+            valid_df,
+            test_df,
+            feature_columns,
+            categorical_columns,
+        )
+        mark_train_stage_completed(checkpoint_path, checkpoint, "ensemble", ensemble_metrics)
     collect_garbage()
 
-    progress("training classifier models")
-    classifier_models = train_classifiers(train_df, valid_df, feature_columns, categorical_columns, config)
-    progress("evaluating classifier models")
     train_eval_df = apply_prediction_time_measurement_proxies(train_df)
     valid_eval_df = apply_prediction_time_measurement_proxies(valid_df)
     test_eval_df = apply_prediction_time_measurement_proxies(test_df)
-    classifier_metrics = evaluate_classifier_models(
-        classifier_models,
-        train_eval_df,
-        valid_eval_df,
-        test_eval_df,
-        feature_columns,
-        categorical_columns,
-    )
+    if resume and train_stage_completed(checkpoint, "classifiers", [artifacts["classifier_dir"]]) and "classifiers" in checkpoint_metrics:
+        progress("skipping classifier models: train checkpoint completed")
+        classifier_models = load_classifier_models(artifacts["classifier_dir"])
+        classifier_metrics = checkpoint_metrics.get("classifiers", {})
+    else:
+        progress("training classifier models")
+        classifier_models = train_classifiers(train_df, valid_df, feature_columns, categorical_columns, config)
+        save_classifier_models(classifier_models, artifacts["classifier_dir"])
+        progress("evaluating classifier models")
+        classifier_metrics = evaluate_classifier_models(
+            classifier_models,
+            train_eval_df,
+            valid_eval_df,
+            test_eval_df,
+            feature_columns,
+            categorical_columns,
+        )
+        mark_train_stage_completed(checkpoint_path, checkpoint, "classifiers", classifier_metrics)
     collect_garbage()
 
     flow_model = None
@@ -1705,71 +1773,83 @@ def train_ranker_from_splits(
     staged_metrics = {"status": "skipped_by_base_train"}
     progress("skipping flow and staged models in base train")
 
-    progress("fitting trifecta v1 calibrator")
-    trifecta_calibrator = fit_trifecta_calibrator(
-        models,
-        ensemble_weights,
-        valid_df,
-        feature_columns,
-        categorical_columns,
-    )
+    if resume and train_stage_completed(checkpoint, "trifecta_v1_calibrator", [artifacts["trifecta_calibrator_path"]]):
+        progress("skipping trifecta v1 calibrator: train checkpoint completed")
+        trifecta_calibrator = load_trifecta_calibrator(artifacts["trifecta_calibrator_path"])
+    else:
+        progress("fitting trifecta v1 calibrator")
+        trifecta_calibrator = fit_trifecta_calibrator(
+            models,
+            ensemble_weights,
+            valid_df,
+            feature_columns,
+            categorical_columns,
+        )
+        artifacts["trifecta_calibrator_path"].parent.mkdir(parents=True, exist_ok=True)
+        joblib.dump(trifecta_calibrator, artifacts["trifecta_calibrator_path"])
+        mark_train_stage_completed(checkpoint_path, checkpoint, "trifecta_v1_calibrator", {"status": "completed"})
     collect_garbage()
 
-    progress("evaluating trifecta v1 metrics")
-    trifecta_v1_metrics = {
-        "valid_raw": evaluate_trifecta(
-            models,
-            ensemble_weights,
-            None,
-            valid_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
-            use_v2=False,
-        ),
-        "valid_calibrated": evaluate_trifecta(
-            models,
-            ensemble_weights,
-            trifecta_calibrator,
-            valid_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
-            use_v2=False,
-        ),
-        "test_raw": evaluate_trifecta(
-            models,
-            ensemble_weights,
-            None,
-            test_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
-            use_v2=False,
-        ),
-        "test_calibrated": evaluate_trifecta(
-            models,
-            ensemble_weights,
-            trifecta_calibrator,
-            test_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
-            use_v2=False,
-        ),
-    }
+    if resume and train_stage_completed(checkpoint, "trifecta_v1_metrics") and "trifecta_v1_metrics" in checkpoint_metrics:
+        progress("skipping trifecta v1 metrics: train checkpoint completed")
+        trifecta_v1_metrics = checkpoint_metrics.get("trifecta_v1_metrics", {})
+    else:
+        progress("evaluating trifecta v1 metrics")
+        trifecta_v1_metrics = {
+            "valid_raw": evaluate_trifecta(
+                models,
+                ensemble_weights,
+                None,
+                valid_df,
+                feature_columns,
+                categorical_columns,
+                classifier_models=classifier_models,
+                flow_model=flow_model,
+                flow_classes=flow_classes,
+                staged_models=staged_models,
+                use_v2=False,
+            ),
+            "valid_calibrated": evaluate_trifecta(
+                models,
+                ensemble_weights,
+                trifecta_calibrator,
+                valid_df,
+                feature_columns,
+                categorical_columns,
+                classifier_models=classifier_models,
+                flow_model=flow_model,
+                flow_classes=flow_classes,
+                staged_models=staged_models,
+                use_v2=False,
+            ),
+            "test_raw": evaluate_trifecta(
+                models,
+                ensemble_weights,
+                None,
+                test_df,
+                feature_columns,
+                categorical_columns,
+                classifier_models=classifier_models,
+                flow_model=flow_model,
+                flow_classes=flow_classes,
+                staged_models=staged_models,
+                use_v2=False,
+            ),
+            "test_calibrated": evaluate_trifecta(
+                models,
+                ensemble_weights,
+                trifecta_calibrator,
+                test_df,
+                feature_columns,
+                categorical_columns,
+                classifier_models=classifier_models,
+                flow_model=flow_model,
+                flow_classes=flow_classes,
+                staged_models=staged_models,
+                use_v2=False,
+            ),
+        }
+        mark_train_stage_completed(checkpoint_path, checkpoint, "trifecta_v1_metrics", trifecta_v1_metrics)
     collect_garbage()
 
     ranker_metrics = {
@@ -2789,6 +2869,97 @@ def load_optional_trifecta_calibrator(path: Path) -> IsotonicRegression | None:
     if not path.exists():
         return None
     return joblib.load(path)
+
+
+def train_checkpoint_signature(
+    config: dict,
+    train_df: pd.DataFrame,
+    valid_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+) -> str:
+    payload = {
+        "config": config,
+        "train_races": race_count_from_frame(train_df),
+        "valid_races": race_count_from_frame(valid_df),
+        "test_races": race_count_from_frame(test_df),
+        "train_min_date": _frame_date_bound(train_df, "min"),
+        "train_max_date": _frame_date_bound(train_df, "max"),
+        "valid_min_date": _frame_date_bound(valid_df, "min"),
+        "valid_max_date": _frame_date_bound(valid_df, "max"),
+        "test_min_date": _frame_date_bound(test_df, "min"),
+        "test_max_date": _frame_date_bound(test_df, "max"),
+    }
+    raw = json.dumps(payload, sort_keys=True, default=str, ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def race_count_from_frame(df: pd.DataFrame) -> int:
+    return int(df["race_id"].nunique()) if "race_id" in df.columns and not df.empty else 0
+
+
+def _frame_date_bound(df: pd.DataFrame, bound: str) -> str | None:
+    if df.empty or "race_date" not in df.columns:
+        return None
+    dates = pd.to_datetime(df["race_date"], errors="coerce").dropna()
+    if dates.empty:
+        return None
+    value = dates.min() if bound == "min" else dates.max()
+    return pd.Timestamp(value).strftime("%Y-%m-%d")
+
+
+def load_train_checkpoint(path: Path, signature: str) -> dict[str, Any]:
+    if not path.exists():
+        return {"signature": signature, "completed": {}, "metrics": {}}
+    try:
+        checkpoint = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"signature": signature, "completed": {}, "metrics": {}}
+    if checkpoint.get("signature") != signature:
+        return {"signature": signature, "completed": {}, "metrics": {}}
+    checkpoint.setdefault("completed", {})
+    checkpoint.setdefault("metrics", {})
+    return checkpoint
+
+
+def save_train_checkpoint(path: Path, checkpoint: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(checkpoint, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def mark_train_stage_completed(
+    checkpoint_path: Path,
+    checkpoint: dict[str, Any],
+    stage: str,
+    metrics: dict[str, Any] | None = None,
+) -> None:
+    checkpoint.setdefault("completed", {})[stage] = True
+    if metrics is not None:
+        checkpoint.setdefault("metrics", {})[stage] = metrics
+    save_train_checkpoint(checkpoint_path, checkpoint)
+
+
+def train_stage_completed(
+    checkpoint: dict[str, Any],
+    stage: str,
+    required_paths: list[Path] | None = None,
+) -> bool:
+    if not bool(checkpoint.get("completed", {}).get(stage, False)):
+        return False
+    return all(path.exists() for path in (required_paths or []))
+
+
+def save_lightgbm_variants(models: dict[str, lgb.Booster], lightgbm_model_path: Path) -> None:
+    for model_name, model in models.items():
+        path = lightgbm_variant_model_path(lightgbm_model_path, model_name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        model.save_model(str(path))
+
+
+def enabled_lightgbm_variant_paths(config: dict, lightgbm_model_path: Path) -> list[Path]:
+    return [
+        lightgbm_variant_model_path(lightgbm_model_path, str(variant["name"]))
+        for variant in get_enabled_lightgbm_variants(config)
+    ]
 
 
 def simplex_weight_vectors(model_count: int, steps: int = 20) -> list[tuple[float, ...]]:
