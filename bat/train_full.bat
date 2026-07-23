@@ -6,8 +6,8 @@ call "%~dp0_common.bat" :activate_conda
 if errorlevel 1 exit /b %errorlevel%
 
 if not defined PIPELINE_STATE_DIR set "PIPELINE_STATE_DIR=%CD%\.gcloud_pipeline_state"
-if not defined MAX_RACES set "MAX_RACES=1000"
-if not defined EVAL_MAX_RACES set "EVAL_MAX_RACES=3000"
+if not defined MAX_RACES set "MAX_RACES=0"
+if not defined EVAL_MAX_RACES set "EVAL_MAX_RACES=10000"
 if not defined OPTIMIZE_RERANK_WORKERS set "OPTIMIZE_RERANK_WORKERS=2"
 
 if exist "%PIPELINE_STATE_DIR%" rmdir /s /q "%PIPELINE_STATE_DIR%"

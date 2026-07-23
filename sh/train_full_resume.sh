@@ -4,8 +4,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 STATE_DIR="${PIPELINE_STATE_DIR:-${PROJECT_ROOT}/.gcloud_pipeline_state}"
-MAX_RACES="${MAX_RACES:-10000}"
-EVAL_MAX_RACES="${EVAL_MAX_RACES:-3000}"
+MAX_RACES="${MAX_RACES:-0}"
+EVAL_MAX_RACES="${EVAL_MAX_RACES:-10000}"
 OPTIMIZE_RERANK_WORKERS="${OPTIMIZE_RERANK_WORKERS:-2}"
 
 # shellcheck disable=SC1091

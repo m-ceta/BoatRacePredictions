@@ -417,8 +417,9 @@ def train_trifecta_v2_main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--training-device", choices=["cpu", "gpu"], default=None)
-    parser.add_argument("--max-races", type=int, default=10000)
-    parser.add_argument("--eval-max-races", type=int, default=5000)
+    parser.add_argument("--max-races", type=int, default=0, help="maximum train races for v2/v3 models. 0 uses all races.")
+    parser.add_argument("--eval-max-races", type=int, default=10000, help="maximum races for tuning/optimization. 0 uses all races.")
+    parser.add_argument("--final-eval-max-races", type=int, default=0, help="maximum races for final_eval metrics. 0 uses all races.")
     parser.add_argument("--optimize-rerank", action="store_true")
     parser.add_argument(
         "--optimize-rerank-workers",
@@ -439,7 +440,7 @@ def train_trifecta_v2_main() -> None:
     final_eval_months = get_final_eval_months(config)
     valid_tune_df, final_eval_df = split_valid_for_final_eval(valid_df, final_eval_months)
     eval_valid_tune_df = sample_races_for_evaluation(valid_tune_df, args.eval_max_races)
-    eval_final_df = sample_races_for_evaluation(final_eval_df, args.eval_max_races)
+    eval_final_df = sample_races_for_evaluation(final_eval_df, args.final_eval_max_races)
     eval_report_df = eval_final_df if not eval_final_df.empty else eval_valid_tune_df
     eval_test_df = sample_races_for_evaluation(test_df, args.eval_max_races)
     progress(
@@ -482,7 +483,7 @@ def train_trifecta_v2_main() -> None:
     trifecta_v2_v1_weight = optimize_trifecta_v2_blend_weight(
         models,
         ensemble_weights,
-        valid_tune_df,
+        eval_valid_tune_df,
         feature_columns,
         categorical_columns,
         classifier_models=classifier_models,
@@ -695,6 +696,7 @@ def train_trifecta_v2_main() -> None:
         "eval_final_eval_races": int(eval_final_df["race_id"].nunique()) if not eval_final_df.empty else 0,
         "test_races": int(eval_test_df["race_id"].nunique()) if not eval_test_df.empty else 0,
         "eval_max_races": int(args.eval_max_races),
+        "final_eval_max_races": int(args.final_eval_max_races),
         "eval_rerank_top_n": int(eval_rerank_top_n),
         "final_eval_months": int(final_eval_months),
         "scenario_min_races": int(ensemble_weights.get("scenario_metric_min_races", 100)),

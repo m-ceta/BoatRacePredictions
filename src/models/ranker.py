@@ -3633,7 +3633,7 @@ def train_trifecta_v2_model(
     flow_model: lgb.Booster | None = None,
     flow_classes: list[str] | None = None,
     staged_models: dict[str, lgb.Booster] | None = None,
-    max_races: int = 1000,
+    max_races: int = 0,
     top_n_candidates: int = 24,
     config: dict | None = None,
 ) -> Any | None:
@@ -3641,7 +3641,7 @@ def train_trifecta_v2_model(
         return None
 
     race_ids = train_df["race_id"].drop_duplicates().tolist()
-    if len(race_ids) > max_races:
+    if max_races and max_races > 0 and len(race_ids) > max_races:
         race_ids = race_ids[-max_races:]
         train_df = train_df[train_df["race_id"].isin(race_ids)].copy()
 
@@ -3815,14 +3815,14 @@ def train_phase3_conditional_trifecta_model(
     flow_classes: list[str] | None = None,
     staged_models: dict[str, lgb.Booster] | None = None,
     base_model: Any | None = None,
-    max_races: int = 1000,
+    max_races: int = 0,
     config: dict | None = None,
 ) -> Any | None:
     if base_model is None or train_df.empty or not classifier_models:
         return base_model
 
     race_ids = train_df["race_id"].drop_duplicates().tolist()
-    if len(race_ids) > max_races:
+    if max_races and max_races > 0 and len(race_ids) > max_races:
         race_ids = race_ids[-max_races:]
         train_df = train_df[train_df["race_id"].isin(race_ids)].copy()
 
