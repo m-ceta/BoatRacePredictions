@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 import gc
 import itertools
 import json
@@ -607,6 +608,268 @@ def blend_conservative_rerank_scores(
         overflow = np.clip((base_rank_order - float(rank_penalty_start)) / penalty_denom, 0.0, 1.0)
         update_rank_score = np.clip(update_rank_score - (overflow * rank_penalty_strength), 0.0, 1.0)
     return conservative_weight * base_rank_score + (1.0 - conservative_weight) * update_rank_score
+
+
+@dataclass(frozen=True)
+class FastRerankRacePayload:
+    race_id: str
+    raw_v1: np.ndarray
+    base_rank_score: np.ndarray
+    update_rank_score: np.ndarray
+    rank_penalty_overflow: np.ndarray
+    actual_index: int
+    flat_update: bool
+
+
+def _normalize_fast_scores(scores: np.ndarray) -> np.ndarray:
+    values = np.asarray(scores, dtype=float)
+    total = float(values.sum())
+    if total <= 0 or len(values) == 0:
+        return np.full(len(values), 1.0 / max(len(values), 1), dtype=float)
+    return values / total
+
+
+def _stable_desc_rank_position(values: np.ndarray, actual_index: int) -> int | None:
+    if actual_index < 0 or actual_index >= len(values):
+        return None
+    order = np.argsort(-np.asarray(values, dtype=float), kind="mergesort")
+    positions = np.empty(len(order), dtype=int)
+    positions[order] = np.arange(len(order), dtype=int)
+    return int(positions[int(actual_index)])
+
+
+def _fast_rank_components(
+    raw_v1: np.ndarray,
+    rerank_scores: np.ndarray,
+    rank_penalty_start: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, bool]:
+    base = np.asarray(raw_v1, dtype=float)
+    update = np.asarray(rerank_scores, dtype=float)
+    if len(base) == 0:
+        empty = np.asarray([], dtype=float)
+        return empty, empty, empty, True
+    flat_update = bool(np.allclose(update, update[0])) if len(update) else True
+    denom = float(max(len(base) - 1, 1))
+    base_rank_order = pd.Series(base).rank(ascending=False, method="first").to_numpy(dtype=float)
+    base_rank = pd.Series(base).rank(ascending=False, method="average").to_numpy(dtype=float)
+    update_rank = pd.Series(update).rank(ascending=False, method="average").to_numpy(dtype=float)
+    base_rank_score = 1.0 - ((base_rank - 1.0) / denom)
+    update_rank_score = 1.0 - ((update_rank - 1.0) / denom)
+    penalty_denom = float(max(len(base_rank_order) - int(rank_penalty_start), 1))
+    overflow = np.clip((base_rank_order - float(rank_penalty_start)) / penalty_denom, 0.0, 1.0)
+    return base_rank_score, update_rank_score, overflow, flat_update
+
+
+def _fast_rerank_scores(
+    payload: FastRerankRacePayload,
+    conservative_weight: float,
+    rank_penalty_strength: float,
+) -> np.ndarray:
+    if payload.flat_update:
+        return np.asarray(payload.raw_v1, dtype=float)
+    weight = float(np.clip(conservative_weight, 0.0, 1.0))
+    penalty = float(max(rank_penalty_strength, 0.0))
+    update_score = np.clip(
+        payload.update_rank_score - (payload.rank_penalty_overflow * penalty),
+        0.0,
+        1.0,
+    )
+    return weight * payload.base_rank_score + (1.0 - weight) * update_score
+
+
+def _evaluate_fast_rerank_payloads(
+    payloads: list[FastRerankRacePayload],
+    conservative_weight: float | None = None,
+    rank_penalty_strength: float = 0.0,
+    use_v2: bool = True,
+) -> dict[str, Any]:
+    race_count = len(payloads)
+    top_hits = {1: 0, 3: 0, 5: 0, 10: 0, 12: 0}
+    covered = 0
+    rerank_top1 = 0
+    rerank_mrr = 0.0
+    baseline_mrr = 0.0
+    mean_rank_improvement = 0.0
+    log_losses: list[float] = []
+    brier_scores: list[float] = []
+    actual_probabilities: list[float] = []
+    top_probabilities: list[float] = []
+
+    for payload in payloads:
+        if use_v2:
+            scores = _fast_rerank_scores(
+                payload,
+                float(conservative_weight if conservative_weight is not None else 1.0),
+                rank_penalty_strength,
+            )
+        else:
+            scores = np.asarray(payload.raw_v1, dtype=float)
+        probs = _normalize_fast_scores(scores)
+        actual_rank = _stable_desc_rank_position(probs, payload.actual_index)
+        if actual_rank is None:
+            continue
+
+        covered += 1
+        actual_probability = max(float(probs[payload.actual_index]), 1e-15)
+        labels = np.zeros(len(probs), dtype=float)
+        labels[payload.actual_index] = 1.0
+        for top_k in top_hits:
+            top_hits[top_k] += int(actual_rank < top_k)
+        log_losses.append(-np.log(actual_probability))
+        brier_scores.append(float(np.mean((probs - labels) ** 2)))
+        actual_probabilities.append(actual_probability)
+        top_probabilities.append(float(probs[np.argsort(-probs, kind="mergesort")[0]]))
+
+        baseline_probs = _normalize_fast_scores(payload.raw_v1)
+        baseline_rank = _stable_desc_rank_position(baseline_probs, payload.actual_index)
+        if baseline_rank is not None:
+            rerank_pos = actual_rank + 1
+            baseline_pos = baseline_rank + 1
+            rerank_top1 += int(rerank_pos == 1)
+            rerank_mrr += 1.0 / rerank_pos
+            baseline_mrr += 1.0 / baseline_pos
+            mean_rank_improvement += baseline_pos - rerank_pos
+
+    metrics: dict[str, Any] = {
+        "race_count": float(race_count),
+        "covered_races": float(covered),
+        "candidate_coverage_rate": covered / race_count if race_count else 0.0,
+        "top1_hit_rate": top_hits[1] / race_count if race_count else 0.0,
+        "top3_hit_rate": top_hits[3] / race_count if race_count else 0.0,
+        "top5_hit_rate": top_hits[5] / race_count if race_count else 0.0,
+        "top10_hit_rate": top_hits[10] / race_count if race_count else 0.0,
+        "top12_hit_rate": top_hits[12] / race_count if race_count else 0.0,
+        "log_loss": float(np.mean(log_losses)) if log_losses else 0.0,
+        "brier_score": float(np.mean(brier_scores)) if brier_scores else 0.0,
+        "mean_actual_probability": float(np.mean(actual_probabilities)) if actual_probabilities else 0.0,
+        "mean_top_probability": float(np.mean(top_probabilities)) if top_probabilities else 0.0,
+    }
+    metrics["rerank_metrics"] = {
+        "coverage_races": float(covered),
+        "rerank_top1_hit_rate": rerank_top1 / covered if covered else 0.0,
+        "rerank_mrr": rerank_mrr / covered if covered else 0.0,
+        "baseline_mrr": baseline_mrr / covered if covered else 0.0,
+        "mean_rank_improvement": mean_rank_improvement / covered if covered else 0.0,
+    }
+    return metrics
+
+
+def build_fast_rerank_payloads_from_ranked(
+    ranked: pd.DataFrame,
+    weights: dict[str, float],
+    trifecta_v2_model: Any,
+    top_n: int,
+) -> list[FastRerankRacePayload]:
+    if ranked.empty or "lane" not in ranked.columns or "finish_position" not in ranked.columns:
+        return []
+    if not is_trifecta_v2_bundle(trifecta_v2_model) or "booster" not in trifecta_v2_model:
+        return []
+
+    payloads: list[FastRerankRacePayload] = []
+    v2_v1_weight = float(weights.get("trifecta_v2_v1_weight", 0.9))
+    scenario_top_n = get_scenario_candidate_top_n(trifecta_v2_model)
+    rank_penalty_start = get_rank_penalty_start(trifecta_v2_model)
+
+    for race_id, race_df in ranked.groupby("race_id", sort=False):
+        actual_order = actual_trifecta_order(race_df)
+        v1 = enumerate_trifecta_probabilities_from_scores(race_df).rename(
+            columns={"raw_probability": "raw_probability_v1"}
+        )
+        if v1.empty:
+            continue
+        v2 = enumerate_trifecta_probabilities_v2(race_df).rename(columns={"raw_probability": "raw_probability_v2"})
+        candidate_mask = select_rerank_candidate_mask(
+            v1,
+            race_df,
+            top_n=int(top_n),
+            scenario_top_n=scenario_top_n,
+        )
+        selected_v1 = v1.loc[candidate_mask].reset_index(drop=True)
+        selected_v2 = v2.loc[candidate_mask].reset_index(drop=True)
+        if selected_v1.empty:
+            payloads.append(
+                FastRerankRacePayload(
+                    race_id=str(race_id),
+                    raw_v1=np.asarray([], dtype=float),
+                    base_rank_score=np.asarray([], dtype=float),
+                    update_rank_score=np.asarray([], dtype=float),
+                    rank_penalty_overflow=np.asarray([], dtype=float),
+                    actual_index=-1,
+                    flat_update=True,
+                )
+            )
+            continue
+
+        selected_v2["raw_probability_v2"] = blend_trifecta_raw_probabilities(
+            selected_v1["raw_probability_v1"].to_numpy(dtype=float),
+            selected_v2["raw_probability_v2"].to_numpy(dtype=float),
+            v2_v1_weight,
+        )
+        features = build_trifecta_feature_frame(
+            race_df,
+            selected_v1,
+            selected_v2,
+            scenario_model_bundle=trifecta_v2_model,
+        )
+        rerank_scores = predict_trifecta_v2_scores(trifecta_v2_model, features)
+        if is_trifecta_v2_bundle(trifecta_v2_model) and trifecta_v2_model.get("phase") == "phase3_conditional":
+            rerank_scores = apply_phase3_conditional_scores(
+                race_df=race_df,
+                trifecta_df=selected_v2,
+                base_scores=rerank_scores,
+                model_bundle=trifecta_v2_model,
+            )
+        raw_v1 = selected_v1["raw_probability_v1"].to_numpy(dtype=float)
+        base_rank_score, update_rank_score, overflow, flat_update = _fast_rank_components(
+            raw_v1,
+            rerank_scores,
+            rank_penalty_start,
+        )
+        actual_index = -1
+        if actual_order is not None:
+            actual_label = "-".join(str(value) for value in actual_order)
+            matches = np.flatnonzero(selected_v1["trifecta"].astype(str).to_numpy() == actual_label)
+            if len(matches) == 1:
+                actual_index = int(matches[0])
+        payloads.append(
+            FastRerankRacePayload(
+                race_id=str(race_id),
+                raw_v1=raw_v1,
+                base_rank_score=base_rank_score,
+                update_rank_score=update_rank_score,
+                rank_penalty_overflow=overflow,
+                actual_index=actual_index,
+                flat_update=flat_update,
+            )
+        )
+    return payloads
+
+
+def build_fast_rerank_ranked_frame(
+    models: dict[str, Any],
+    weights: dict[str, float],
+    valid_df: pd.DataFrame,
+    feature_columns: list[str],
+    categorical_columns: list[str],
+    classifier_models: dict[str, lgb.Booster] | None = None,
+    flow_model: lgb.Booster | None = None,
+    flow_classes: list[str] | None = None,
+    staged_models: dict[str, lgb.Booster] | None = None,
+) -> pd.DataFrame | None:
+    if not models or valid_df.empty or not {"race_id", "lane", "finish_position"}.issubset(valid_df.columns):
+        return None
+    eval_df = apply_prediction_time_measurement_proxies(valid_df)
+    return build_weighted_lane_probabilities(
+        models,
+        weights,
+        eval_df,
+        feature_columns,
+        categorical_columns,
+        classifier_models=classifier_models,
+        flow_model=flow_model,
+        flow_classes=flow_classes,
+        staged_models=staged_models,
+    )
 
 
 def build_disabled_dynamic_rerank_weight_metadata(
@@ -2849,6 +3112,54 @@ def optimize_rerank_inference_settings(
     )
     _emit_progress(progress_callback, f"rerank optimization workers: {worker_count}")
     baseline_by_top_n: dict[int, dict[str, Any]] = {}
+    fast_ranked: pd.DataFrame | None = None
+    fast_payloads_by_top_n: dict[int, list[FastRerankRacePayload]] = {}
+    try:
+        fast_ranked = build_fast_rerank_ranked_frame(
+            models,
+            weights,
+            valid_df,
+            feature_columns,
+            categorical_columns,
+            classifier_models=classifier_models,
+            flow_model=flow_model,
+            flow_classes=flow_classes,
+            staged_models=staged_models,
+        )
+        if fast_ranked is not None:
+            _emit_progress(
+                progress_callback,
+                f"rerank optimization fast evaluator prepared: races={int(fast_ranked['race_id'].nunique())}",
+            )
+    except Exception as exc:
+        fast_ranked = None
+        _emit_progress(progress_callback, f"rerank optimization fast evaluator disabled: {type(exc).__name__}: {exc}")
+
+    def get_fast_payloads(top_n_int: int) -> list[FastRerankRacePayload]:
+        if fast_ranked is None:
+            return []
+        if top_n_int not in fast_payloads_by_top_n:
+            try:
+                fast_payloads_by_top_n[top_n_int] = build_fast_rerank_payloads_from_ranked(
+                    fast_ranked,
+                    weights,
+                    trifecta_v2_model,
+                    top_n_int,
+                )
+                _emit_progress(
+                    progress_callback,
+                    (
+                        f"rerank optimization fast payloads: "
+                        f"top_n={top_n_int}, races={len(fast_payloads_by_top_n[top_n_int])}"
+                    ),
+                )
+            except Exception as exc:
+                fast_payloads_by_top_n[top_n_int] = []
+                _emit_progress(
+                    progress_callback,
+                    f"rerank optimization fast payloads disabled top_n={top_n_int}: {type(exc).__name__}: {exc}",
+                )
+        return fast_payloads_by_top_n[top_n_int]
 
     def evaluate_candidate(
         top_n_int: int,
@@ -2856,41 +3167,50 @@ def optimize_rerank_inference_settings(
         rank_penalty_strength: float,
     ) -> tuple[str, dict[str, Any], dict[str, float]]:
         checkpoint_key = _rerank_checkpoint_key(top_n_int, conservative_weight, rank_penalty_strength)
-        candidate_model = with_conservative_rerank_weight(trifecta_v2_model, conservative_weight)
-        candidate_model = with_rank_penalty_settings(
-            candidate_model,
-            rank_penalty_strength,
-            get_rank_penalty_start(trifecta_v2_model),
-        )
-        calibrator = fit_model_trifecta_calibrator(
-            models,
-            weights,
-            valid_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
-            trifecta_v2_model=candidate_model,
-            use_v2=True,
-            rerank_top_n=top_n_int,
-        )
-        metrics = evaluate_trifecta(
-            models,
-            weights,
-            calibrator,
-            valid_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
-            trifecta_v2_model=candidate_model,
-            use_v2=True,
-            rerank_top_n=top_n_int,
-        )
+        fast_payloads = get_fast_payloads(top_n_int)
+        if fast_payloads:
+            metrics = _evaluate_fast_rerank_payloads(
+                fast_payloads,
+                conservative_weight=conservative_weight,
+                rank_penalty_strength=rank_penalty_strength,
+                use_v2=True,
+            )
+        else:
+            candidate_model = with_conservative_rerank_weight(trifecta_v2_model, conservative_weight)
+            candidate_model = with_rank_penalty_settings(
+                candidate_model,
+                rank_penalty_strength,
+                get_rank_penalty_start(trifecta_v2_model),
+            )
+            calibrator = fit_model_trifecta_calibrator(
+                models,
+                weights,
+                valid_df,
+                feature_columns,
+                categorical_columns,
+                classifier_models=classifier_models,
+                flow_model=flow_model,
+                flow_classes=flow_classes,
+                staged_models=staged_models,
+                trifecta_v2_model=candidate_model,
+                use_v2=True,
+                rerank_top_n=top_n_int,
+            )
+            metrics = evaluate_trifecta(
+                models,
+                weights,
+                calibrator,
+                valid_df,
+                feature_columns,
+                categorical_columns,
+                classifier_models=classifier_models,
+                flow_model=flow_model,
+                flow_classes=flow_classes,
+                staged_models=staged_models,
+                trifecta_v2_model=candidate_model,
+                use_v2=True,
+                rerank_top_n=top_n_int,
+            )
         baseline_metrics = baseline_by_top_n[top_n_int]
         objective, allowed_log_loss, log_loss_excess, within_guard = _phase3_tuning_objective(
             metrics,
@@ -2961,35 +3281,39 @@ def optimize_rerank_inference_settings(
             _emit_progress(progress_callback, f"rerank optimization skip top_n={top_n_int}: already completed")
             continue
         _emit_progress(progress_callback, f"rerank optimization baseline top_n={top_n_int}")
-        baseline_calibrator = fit_model_trifecta_calibrator(
-            models,
-            weights,
-            valid_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
-            trifecta_v2_model=trifecta_v2_model,
-            use_v2=False,
-            rerank_top_n=top_n_int,
-        )
-        baseline_by_top_n[top_n_int] = evaluate_trifecta(
-            models,
-            weights,
-            baseline_calibrator,
-            valid_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
-            trifecta_v2_model=trifecta_v2_model,
-            use_v2=False,
-            rerank_top_n=top_n_int,
-        )
+        fast_payloads = get_fast_payloads(top_n_int)
+        if fast_payloads:
+            baseline_by_top_n[top_n_int] = _evaluate_fast_rerank_payloads(fast_payloads, use_v2=False)
+        else:
+            baseline_calibrator = fit_model_trifecta_calibrator(
+                models,
+                weights,
+                valid_df,
+                feature_columns,
+                categorical_columns,
+                classifier_models=classifier_models,
+                flow_model=flow_model,
+                flow_classes=flow_classes,
+                staged_models=staged_models,
+                trifecta_v2_model=trifecta_v2_model,
+                use_v2=False,
+                rerank_top_n=top_n_int,
+            )
+            baseline_by_top_n[top_n_int] = evaluate_trifecta(
+                models,
+                weights,
+                baseline_calibrator,
+                valid_df,
+                feature_columns,
+                categorical_columns,
+                classifier_models=classifier_models,
+                flow_model=flow_model,
+                flow_classes=flow_classes,
+                staged_models=staged_models,
+                trifecta_v2_model=trifecta_v2_model,
+                use_v2=False,
+                rerank_top_n=top_n_int,
+            )
         pending_candidates = [
             (float(conservative_weight), float(rank_penalty_strength))
             for conservative_weight in weight_grid
@@ -3313,6 +3637,26 @@ def optimize_dynamic_rerank_weights(
     candidate_weights = sorted(set(candidate_weights))
     top12_min_improvement = float(settings.get("top12_min_improvement", 0.0))
     log_loss_max_delta = float(settings.get("log_loss_max_delta", 0.03))
+    fast_payload_by_race: dict[str, FastRerankRacePayload] = {}
+    if rerank_top_n is not None and rerank_top_n > 0:
+        try:
+            fast_payloads = build_fast_rerank_payloads_from_ranked(
+                ranked,
+                weights,
+                trifecta_v2_model,
+                int(rerank_top_n),
+            )
+            fast_payload_by_race = {payload.race_id: payload for payload in fast_payloads}
+            _emit_progress(
+                progress_callback,
+                f"dynamic rerank weight: fast evaluator payloads={len(fast_payload_by_race)}",
+            )
+        except Exception as exc:
+            fast_payload_by_race = {}
+            _emit_progress(
+                progress_callback,
+                f"dynamic rerank weight: fast evaluator disabled: {type(exc).__name__}: {exc}",
+            )
 
     default_model = with_dynamic_rerank_weight_metadata(
         with_conservative_rerank_weight(trifecta_v2_model, default_weight),
@@ -3335,31 +3679,16 @@ def optimize_dynamic_rerank_weights(
             }
             continue
         subset_df = valid_df[valid_df["race_id"].astype(str).isin(race_ids)].copy()
-        baseline_metrics = evaluate_trifecta(
-            models,
-            weights,
-            None,
-            subset_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
-            trifecta_v2_model=default_model,
-            use_v2=True,
-            rerank_top_n=rerank_top_n,
-        )
-        baseline_top12 = float(baseline_metrics.get("top12_hit_rate", 0.0))
-        baseline_log_loss = float(baseline_metrics.get("log_loss", 0.0))
-        best_weight = float(default_weight)
-        best_metrics = dict(baseline_metrics)
-        for candidate_weight in candidate_weights:
-            candidate_model = with_dynamic_rerank_weight_metadata(
-                with_conservative_rerank_weight(trifecta_v2_model, candidate_weight),
-                {"enabled": False, "rules": [], "default_weight": candidate_weight},
+        subset_payloads = [fast_payload_by_race[race_id] for race_id in race_ids if race_id in fast_payload_by_race]
+        if subset_payloads:
+            baseline_metrics = _evaluate_fast_rerank_payloads(
+                subset_payloads,
+                conservative_weight=default_weight,
+                rank_penalty_strength=get_rank_penalty_strength(trifecta_v2_model),
+                use_v2=True,
             )
-            candidate_metrics = evaluate_trifecta(
+        else:
+            baseline_metrics = evaluate_trifecta(
                 models,
                 weights,
                 None,
@@ -3370,10 +3699,42 @@ def optimize_dynamic_rerank_weights(
                 flow_model=flow_model,
                 flow_classes=flow_classes,
                 staged_models=staged_models,
-                trifecta_v2_model=candidate_model,
+                trifecta_v2_model=default_model,
                 use_v2=True,
                 rerank_top_n=rerank_top_n,
             )
+        baseline_top12 = float(baseline_metrics.get("top12_hit_rate", 0.0))
+        baseline_log_loss = float(baseline_metrics.get("log_loss", 0.0))
+        best_weight = float(default_weight)
+        best_metrics = dict(baseline_metrics)
+        for candidate_weight in candidate_weights:
+            if subset_payloads:
+                candidate_metrics = _evaluate_fast_rerank_payloads(
+                    subset_payloads,
+                    conservative_weight=candidate_weight,
+                    rank_penalty_strength=get_rank_penalty_strength(trifecta_v2_model),
+                    use_v2=True,
+                )
+            else:
+                candidate_model = with_dynamic_rerank_weight_metadata(
+                    with_conservative_rerank_weight(trifecta_v2_model, candidate_weight),
+                    {"enabled": False, "rules": [], "default_weight": candidate_weight},
+                )
+                candidate_metrics = evaluate_trifecta(
+                    models,
+                    weights,
+                    None,
+                    subset_df,
+                    feature_columns,
+                    categorical_columns,
+                    classifier_models=classifier_models,
+                    flow_model=flow_model,
+                    flow_classes=flow_classes,
+                    staged_models=staged_models,
+                    trifecta_v2_model=candidate_model,
+                    use_v2=True,
+                    rerank_top_n=rerank_top_n,
+                )
             if (
                 float(candidate_metrics.get("top12_hit_rate", 0.0)) > float(best_metrics.get("top12_hit_rate", 0.0))
                 and float(candidate_metrics.get("log_loss", 0.0)) <= baseline_log_loss + log_loss_max_delta
