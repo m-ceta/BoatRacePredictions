@@ -141,6 +141,7 @@ def train_from_config(config_path: str | Path) -> dict[str, Any]:
         trifecta_calibrator=trifecta_calibrator,
         catboost_model_path=artifacts["catboost_model_path"],
         lightgbm_model_path=artifacts["lightgbm_model_path"],
+        xgboost_model_path=artifacts["xgboost_model_path"],
         features_path=artifacts["features_path"],
         ensemble_weights_path=artifacts["ensemble_weights_path"],
         trifecta_calibrator_path=artifacts["trifecta_calibrator_path"],

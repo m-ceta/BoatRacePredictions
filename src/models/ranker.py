@@ -20,6 +20,11 @@ import yaml
 from catboost import CatBoostError, CatBoostRanker, Pool
 from sklearn.isotonic import IsotonicRegression
 
+try:
+    import xgboost as xgb
+except ImportError:  # pragma: no cover - exercised only when optional dependency is missing
+    xgb = None
+
 from src.evaluation.metrics import compute_trifecta_metrics, compute_trifecta_rerank_metrics
 from src.features.scenario import (
     SCENARIO_NAMES,
@@ -75,6 +80,7 @@ DEFAULT_DROP_COLUMNS = {
 DEFAULT_ARTIFACT_PATHS = {
     "catboost_model_path": "artifacts/catboost_ranker.cbm",
     "lightgbm_model_path": "artifacts/lightgbm_ranker.txt",
+    "xgboost_model_path": "artifacts/xgboost_ranker.json",
     "features_path": "artifacts/feature_columns.json",
     "ensemble_weights_path": "artifacts/ensemble_weights.json",
     "trifecta_calibrator_path": "artifacts/trifecta_isotonic.joblib",
@@ -94,9 +100,14 @@ DEFAULT_ARTIFACT_PATHS = {
 }
 
 
-RESERVED_MODEL_NAMES = {"catboost", "lightgbm"}
+RESERVED_MODEL_NAMES = {"catboost", "lightgbm", "xgboost"}
 LIGHTGBM_VARIANT_NAME_RE = re.compile(r"^lightgbm_[A-Za-z0-9_]+$")
+XGBOOST_VARIANT_NAME_RE = re.compile(r"^xgboost_[A-Za-z0-9_]+$")
 TRIFECTA_V2_FEATURE_VERSION = 2
+
+DEFAULT_CATBOOST_SETTINGS = {
+    "params": {},
+}
 
 DEFAULT_PHASE3_SETTINGS = {
     "label_weights": {
@@ -198,6 +209,30 @@ DEFAULT_LIGHTGBM_VARIANT_SETTINGS = {
 }
 
 
+DEFAULT_XGBOOST_VARIANT_SETTINGS = {
+    "enabled": False,
+    "parallel_workers": 1,
+    "num_threads_per_variant": 2,
+    "variants": [
+        {
+            "name": "xgboost_pairwise_conservative",
+            "params": {
+                "objective": "rank:pairwise",
+                "eval_metric": "ndcg@12",
+                "max_depth": 3,
+                "eta": 0.025,
+                "min_child_weight": 8.0,
+                "subsample": 0.75,
+                "colsample_bytree": 0.70,
+                "lambda": 8.0,
+                "alpha": 1.0,
+                "gamma": 0.5,
+            },
+        },
+    ],
+}
+
+
 DEFAULT_ENSEMBLE_SETTINGS = {
     "parallel_workers": 1,
     "max_eval_races": 0,
@@ -221,6 +256,28 @@ def get_lightgbm_variant_settings(config: dict | None) -> dict[str, Any]:
         **(configured or {}),
     }
     settings["variants"] = list((configured or {}).get("variants", DEFAULT_LIGHTGBM_VARIANT_SETTINGS["variants"]))
+    settings["parallel_workers"] = max(int(settings.get("parallel_workers", 1)), 1)
+    settings["num_threads_per_variant"] = max(int(settings.get("num_threads_per_variant", 2)), 1)
+    return settings
+
+
+def get_catboost_settings(config: dict | None) -> dict[str, Any]:
+    configured = ((config or {}).get("models", {}) or {}).get("catboost", {})
+    settings = {
+        **DEFAULT_CATBOOST_SETTINGS,
+        **(configured or {}),
+    }
+    settings["params"] = dict((configured or {}).get("params", DEFAULT_CATBOOST_SETTINGS["params"]))
+    return settings
+
+
+def get_xgboost_variant_settings(config: dict | None) -> dict[str, Any]:
+    configured = ((config or {}).get("models", {}) or {}).get("xgboost_variants", {})
+    settings = {
+        **DEFAULT_XGBOOST_VARIANT_SETTINGS,
+        **(configured or {}),
+    }
+    settings["variants"] = list((configured or {}).get("variants", DEFAULT_XGBOOST_VARIANT_SETTINGS["variants"]))
     settings["parallel_workers"] = max(int(settings.get("parallel_workers", 1)), 1)
     settings["num_threads_per_variant"] = max(int(settings.get("num_threads_per_variant", 2)), 1)
     return settings
@@ -262,14 +319,47 @@ def get_enabled_lightgbm_variants(config: dict | None) -> list[dict[str, Any]]:
     return variants
 
 
+def get_enabled_xgboost_variants(config: dict | None) -> list[dict[str, Any]]:
+    settings = get_xgboost_variant_settings(config)
+    if not bool(settings.get("enabled", False)):
+        return []
+    variants = [dict(variant) for variant in settings.get("variants", [])]
+    seen: set[str] = set()
+    for variant in variants:
+        name = str(variant.get("name", "")).strip()
+        if not name:
+            raise ValueError("XGBoost variant name must not be empty.")
+        if name in RESERVED_MODEL_NAMES:
+            raise ValueError(f"XGBoost variant name conflicts with reserved model name: {name}")
+        if not XGBOOST_VARIANT_NAME_RE.match(name):
+            raise ValueError(f"Invalid XGBoost variant name: {name}")
+        if name in seen:
+            raise ValueError(f"Duplicate XGBoost variant name: {name}")
+        seen.add(name)
+        variant["name"] = name
+        variant["params"] = dict(variant.get("params", {}) or {})
+    return variants
+
+
 def is_lightgbm_model_name(model_name: str) -> bool:
     return model_name == "lightgbm" or model_name.startswith("lightgbm_")
+
+
+def is_xgboost_model_name(model_name: str) -> bool:
+    return model_name == "xgboost" or model_name.startswith("xgboost_")
 
 
 def lightgbm_variant_model_path(base_path: Path, variant_name: str) -> Path:
     if variant_name == "lightgbm":
         return base_path
     suffix = variant_name.removeprefix("lightgbm_")
+    return base_path.with_name(f"{base_path.stem}_{suffix}{base_path.suffix}")
+
+
+def xgboost_variant_model_path(base_path: Path, variant_name: str) -> Path:
+    if variant_name == "xgboost":
+        return base_path
+    suffix = variant_name.removeprefix("xgboost_")
     return base_path.with_name(f"{base_path.stem}_{suffix}{base_path.suffix}")
 
 
@@ -1398,6 +1488,8 @@ def train_ranker(
     collect_garbage()
     lightgbm_variant_models = train_lightgbm_variants(train_df, valid_df, feature_columns, categorical_columns, config)
     collect_garbage()
+    xgboost_variant_models = train_xgboost_variants(train_df, valid_df, feature_columns, categorical_columns, config)
+    collect_garbage()
     classifier_models = train_classifiers(train_df, valid_df, feature_columns, categorical_columns, config)
     collect_garbage()
     flow_model = None
@@ -1408,6 +1500,7 @@ def train_ranker(
         "catboost": catboost_model,
         "lightgbm": lightgbm_model,
         **lightgbm_variant_models,
+        **xgboost_variant_models,
     }
     ensemble_weights = optimize_ensemble_weights(
         models,
@@ -1458,6 +1551,18 @@ def train_ranker(
                 categorical_columns,
             )
             for name, model in lightgbm_variant_models.items()
+        },
+        **{
+            name: evaluate_model_bundle(
+                model,
+                name,
+                train_df,
+                valid_df,
+                test_df,
+                feature_columns,
+                categorical_columns,
+            )
+            for name, model in xgboost_variant_models.items()
         },
         "ensemble": evaluate_ensemble(
             models,
@@ -1707,10 +1812,51 @@ def train_ranker_from_splits(
         mark_train_stage_completed(checkpoint_path, checkpoint, "lightgbm_variants", lightgbm_variant_metrics)
     collect_garbage()
 
+    xgboost_variant_paths = enabled_xgboost_variant_paths(config, artifacts["xgboost_model_path"])
+    if (
+        resume
+        and train_stage_completed(checkpoint, "xgboost_variants", xgboost_variant_paths)
+        and "xgboost_variants" in checkpoint_metrics
+    ):
+        progress("skipping xgboost variants: train checkpoint completed")
+        xgb_module = require_xgboost()
+        xgboost_variant_models = {}
+        for variant in get_enabled_xgboost_variants(config):
+            name = str(variant["name"])
+            model = xgb_module.Booster()
+            model.load_model(str(xgboost_variant_model_path(artifacts["xgboost_model_path"], name)))
+            xgboost_variant_models[name] = model
+        xgboost_variant_metrics = checkpoint_metrics.get("xgboost_variants", {})
+    else:
+        xgboost_variant_models = train_xgboost_variants(
+            train_df,
+            valid_df,
+            feature_columns,
+            categorical_columns,
+            config,
+            progress_callback=progress,
+        )
+        save_xgboost_variants(xgboost_variant_models, artifacts["xgboost_model_path"])
+        xgboost_variant_metrics = {
+            name: evaluate_model_bundle(
+                model,
+                name,
+                train_df,
+                valid_df,
+                test_df,
+                feature_columns,
+                categorical_columns,
+            )
+            for name, model in xgboost_variant_models.items()
+        }
+        mark_train_stage_completed(checkpoint_path, checkpoint, "xgboost_variants", xgboost_variant_metrics)
+    collect_garbage()
+
     models = {
         "catboost": catboost_model,
         "lightgbm": lightgbm_model,
         **lightgbm_variant_models,
+        **xgboost_variant_models,
     }
     if resume and train_stage_completed(checkpoint, "ensemble", [artifacts["ensemble_weights_path"]]) and "ensemble" in checkpoint_metrics:
         progress("skipping ensemble optimization: train checkpoint completed")
@@ -1860,6 +2006,7 @@ def train_ranker_from_splits(
         "catboost": catboost_metrics,
         "lightgbm": lightgbm_metrics,
         **lightgbm_variant_metrics,
+        **xgboost_variant_metrics,
         "ensemble": ensemble_metrics,
     }
     metrics = {
@@ -1986,21 +2133,23 @@ def train_catboost(
     train_pool = build_catboost_pool(train_df, feature_columns, categorical_columns)
     valid_pool = build_catboost_pool(valid_df, feature_columns, categorical_columns)
     gpu_kwargs = catboost_training_kwargs(config)
-    eval_metric = config["model"]["eval_metric"]
+    catboost_params = dict(get_catboost_settings(config).get("params", {}) or {})
+    eval_metric = catboost_params.pop("eval_metric", config["model"]["eval_metric"])
     if gpu_kwargs and str(eval_metric).upper() == "NDCG":
         print("CatBoost GPU training detected; omitting eval_metric=NDCG to avoid CPU-side metric evaluation.")
         eval_metric = None
 
     model_kwargs = dict(
-        iterations=config["model"]["iterations"],
-        learning_rate=config["model"]["learning_rate"],
-        depth=config["model"]["depth"],
-        loss_function=config["model"]["loss_function"],
-        random_seed=config["model"]["random_seed"],
+        iterations=catboost_params.pop("iterations", config["model"]["iterations"]),
+        learning_rate=catboost_params.pop("learning_rate", config["model"]["learning_rate"]),
+        depth=catboost_params.pop("depth", config["model"]["depth"]),
+        loss_function=catboost_params.pop("loss_function", config["model"]["loss_function"]),
+        random_seed=catboost_params.pop("random_seed", config["model"]["random_seed"]),
         verbose=100,
     )
     if eval_metric is not None:
         model_kwargs["eval_metric"] = eval_metric
+    model_kwargs.update(catboost_params)
     model_kwargs.update(gpu_kwargs)
 
     model = CatBoostRanker(**model_kwargs)
@@ -2156,6 +2305,136 @@ def train_lightgbm_variants(
     return trained
 
 
+def require_xgboost() -> Any:
+    if xgb is None:
+        raise ImportError(
+            "xgboost is required when models.xgboost_variants.enabled=true. "
+            "Install dependencies with: python -m pip install -r requirements.txt"
+        )
+    return xgb
+
+
+def build_xgboost_frame(
+    df: pd.DataFrame,
+    feature_columns: list[str],
+    categorical_columns: list[str],
+) -> pd.DataFrame:
+    df = sort_for_grouping(df)
+    data = df[feature_columns].copy()
+    for column in feature_columns:
+        if column in categorical_columns:
+            values = data[column].fillna("NA").astype(str)
+            data[column] = (
+                pd.util.hash_pandas_object(values, index=False).to_numpy(dtype=np.uint64) % np.uint64(2_000_000_000)
+            ).astype("float32")
+        else:
+            data[column] = pd.to_numeric(data[column], errors="coerce").astype("float32")
+    return data
+
+
+def train_xgboost_ranker(
+    train_df: pd.DataFrame,
+    valid_df: pd.DataFrame,
+    feature_columns: list[str],
+    categorical_columns: list[str],
+    config: dict,
+    *,
+    param_overrides: dict[str, Any] | None = None,
+    num_threads: int | None = None,
+) -> Any:
+    xgb_module = require_xgboost()
+    train_sorted = sort_for_grouping(train_df)
+    valid_sorted = sort_for_grouping(valid_df)
+    train_xgb = build_xgboost_frame(train_sorted, feature_columns, categorical_columns)
+    valid_xgb = build_xgboost_frame(valid_sorted, feature_columns, categorical_columns)
+    train_group = train_sorted.groupby("race_id", sort=False).size().tolist()
+    valid_group = valid_sorted.groupby("race_id", sort=False).size().tolist()
+    train_dataset = xgb_module.DMatrix(
+        train_xgb,
+        label=pd.to_numeric(train_sorted["target_rank"], errors="coerce").astype(float),
+    )
+    valid_dataset = xgb_module.DMatrix(
+        valid_xgb,
+        label=pd.to_numeric(valid_sorted["target_rank"], errors="coerce").astype(float),
+    )
+    train_dataset.set_group(train_group)
+    valid_dataset.set_group(valid_group)
+    params = {
+        "objective": "rank:ndcg",
+        "eval_metric": "ndcg@6",
+        "eta": config["model"]["learning_rate"],
+        "max_depth": 4,
+        "subsample": 0.85,
+        "colsample_bytree": 0.85,
+        "lambda": 3.0,
+        "alpha": 0.0,
+        "seed": config["model"]["random_seed"],
+        "verbosity": 1,
+        "tree_method": "hist",
+    }
+    if param_overrides:
+        params.update(param_overrides)
+    if num_threads is not None and int(num_threads) > 0:
+        params["nthread"] = int(num_threads)
+    try:
+        return xgb_module.train(
+            params,
+            train_dataset,
+            num_boost_round=int(config["model"]["iterations"]),
+            evals=[(valid_dataset, "valid")],
+            verbose_eval=100,
+        )
+    finally:
+        del train_sorted, valid_sorted, train_xgb, valid_xgb, train_dataset, valid_dataset
+        collect_garbage()
+
+
+def train_xgboost_variants(
+    train_df: pd.DataFrame,
+    valid_df: pd.DataFrame,
+    feature_columns: list[str],
+    categorical_columns: list[str],
+    config: dict,
+    progress_callback: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    variants = get_enabled_xgboost_variants(config)
+    if not variants:
+        return {}
+    settings = get_xgboost_variant_settings(config)
+    workers = min(int(settings.get("parallel_workers", 1)), len(variants))
+    num_threads = int(settings.get("num_threads_per_variant", 2))
+    _emit_progress(
+        progress_callback,
+        f"training xgboost variants: workers={workers}, variants={len(variants)}",
+    )
+
+    def train_one(variant: dict[str, Any]) -> tuple[str, Any]:
+        name = str(variant["name"])
+        _emit_progress(progress_callback, f"training xgboost variant: {name}")
+        model = train_xgboost_ranker(
+            train_df,
+            valid_df,
+            feature_columns,
+            categorical_columns,
+            config,
+            param_overrides=dict(variant.get("params", {}) or {}),
+            num_threads=num_threads,
+        )
+        _emit_progress(progress_callback, f"completed xgboost variant: {name}")
+        return name, model
+
+    if workers <= 1 or len(variants) <= 1:
+        return dict(train_one(variant) for variant in variants)
+
+    trained: dict[str, Any] = {}
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_name = {executor.submit(train_one, variant): str(variant["name"]) for variant in variants}
+        for future in as_completed(future_to_name):
+            name, model = future.result()
+            trained[name] = model
+    return trained
+
+
 def build_lightgbm_frame(
     df: pd.DataFrame,
     feature_columns: list[str],
@@ -2254,6 +2533,10 @@ def score_frame(
     elif is_lightgbm_model_name(model_type):
         frame = build_lightgbm_frame(df, feature_columns, categorical_columns)
         raw_scores = model.predict(frame)
+    elif is_xgboost_model_name(model_type):
+        xgb_module = require_xgboost()
+        frame = build_xgboost_frame(df, feature_columns, categorical_columns)
+        raw_scores = model.predict(xgb_module.DMatrix(frame))
     else:
         raise ValueError(f"Unknown model_type: {model_type}")
 
@@ -2323,6 +2606,7 @@ def save_artifacts(
     trifecta_v2_calibrator_path: Path | None = None,
     trifecta_v3_calibrator: IsotonicRegression | None = None,
     trifecta_v3_calibrator_path: Path | None = None,
+    xgboost_model_path: Path | None = None,
 ) -> None:
     catboost_model_path.parent.mkdir(parents=True, exist_ok=True)
     lightgbm_model_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2339,6 +2623,13 @@ def save_artifacts(
         path = lightgbm_variant_model_path(lightgbm_model_path, model_name)
         path.parent.mkdir(parents=True, exist_ok=True)
         model.save_model(str(path))
+    if xgboost_model_path is not None:
+        for model_name, model in models.items():
+            if not is_xgboost_model_name(model_name):
+                continue
+            path = xgboost_variant_model_path(xgboost_model_path, model_name)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            model.save_model(str(path))
     features_path.write_text(json.dumps(feature_columns, ensure_ascii=False, indent=2), encoding="utf-8")
     ensemble_weights_path.write_text(
         json.dumps(metrics["ensemble_weights"], ensure_ascii=False, indent=2),
@@ -2391,6 +2682,10 @@ def predict_race_order(
         elif is_lightgbm_model_name(model_type):
             frame = build_lightgbm_frame(base, feature_columns, categorical_columns)
             raw_scores = model.predict(frame)
+        elif is_xgboost_model_name(model_type):
+            xgb_module = require_xgboost()
+            frame = build_xgboost_frame(base, feature_columns, categorical_columns)
+            raw_scores = model.predict(xgb_module.DMatrix(frame))
         else:
             continue
 
@@ -2837,6 +3132,16 @@ def load_models(config: dict) -> dict[str, Any]:
         if not path.exists():
             raise FileNotFoundError(f"Configured LightGBM variant artifact not found: {path}")
         models[name] = lgb.Booster(model_file=str(path))
+    if get_enabled_xgboost_variants(config):
+        xgb_module = require_xgboost()
+        for variant in get_enabled_xgboost_variants(config):
+            name = str(variant["name"])
+            path = xgboost_variant_model_path(artifacts["xgboost_model_path"], name)
+            if not path.exists():
+                raise FileNotFoundError(f"Configured XGBoost variant artifact not found: {path}")
+            model = xgb_module.Booster()
+            model.load_model(str(path))
+            models[name] = model
     return models
 
 
@@ -2966,10 +3271,24 @@ def save_lightgbm_variants(models: dict[str, lgb.Booster], lightgbm_model_path: 
         model.save_model(str(path))
 
 
+def save_xgboost_variants(models: dict[str, Any], xgboost_model_path: Path) -> None:
+    for model_name, model in models.items():
+        path = xgboost_variant_model_path(xgboost_model_path, model_name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        model.save_model(str(path))
+
+
 def enabled_lightgbm_variant_paths(config: dict, lightgbm_model_path: Path) -> list[Path]:
     return [
         lightgbm_variant_model_path(lightgbm_model_path, str(variant["name"]))
         for variant in get_enabled_lightgbm_variants(config)
+    ]
+
+
+def enabled_xgboost_variant_paths(config: dict, xgboost_model_path: Path) -> list[Path]:
+    return [
+        xgboost_variant_model_path(xgboost_model_path, str(variant["name"]))
+        for variant in get_enabled_xgboost_variants(config)
     ]
 
 
