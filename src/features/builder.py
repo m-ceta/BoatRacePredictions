@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 
@@ -239,9 +240,172 @@ def add_race_relative_features(df: pd.DataFrame) -> pd.DataFrame:
         df[f"{column}_race_rank"] = race_groups[column].rank(ascending=False, method="min")
         df[f"{column}_race_diff_mean"] = df[column] - race_groups[column].transform("mean")
 
+    df = add_measurement_relative_features(df, race_groups)
+    df = add_neighbor_gap_features(df)
+    df = add_pre_race_attack_candidate_features(df)
+
     df["lane_is_inner"] = (df["lane"] <= 3).astype(int)
     df["lane_is_outer"] = (df["lane"] >= 5).astype(int)
     return df
+
+
+def add_measurement_relative_features(df: pd.DataFrame, race_groups: pd.core.groupby.DataFrameGroupBy) -> pd.DataFrame:
+    lower_is_better_columns = [
+        "exhibition_time",
+        "racer_prev_avg_st",
+        "racer_prev_avg_st_5",
+        "racer_prev_avg_st_10",
+        "racer_lane_prev_avg_st",
+        "racer_venue_lane_prev_avg_st",
+    ]
+    higher_is_better_columns = [
+        "national_win_rate",
+        "national_place_rate",
+        "racer_prev_win_rate",
+        "racer_prev_top3_rate",
+        "racer_prev_top3_rate_5",
+        "motor_place_rate",
+        "boat_place_rate",
+        "venue_course_prev_win_rate",
+        "venue_course_prev_top2_rate",
+        "venue_course_prev_top3_rate",
+        "venue_lane_prev_win_rate",
+        "venue_lane_prev_top2_rate",
+        "venue_lane_prev_top3_rate",
+    ]
+
+    feature_frames: dict[str, pd.Series] = {}
+    for column in lower_is_better_columns:
+        if column not in df.columns:
+            continue
+        values = pd.to_numeric(df[column], errors="coerce")
+        group_values = values.groupby(df["race_id"])
+        race_min = group_values.transform("min")
+        race_mean = group_values.transform("mean")
+        race_std = group_values.transform("std")
+        feature_frames[f"{column}_race_rank_low"] = group_values.rank(ascending=True, method="min")
+        feature_frames[f"{column}_race_diff_best"] = values - race_min
+        feature_frames[f"{column}_race_diff_mean_safe"] = values - race_mean
+        feature_frames[f"{column}_race_mean"] = race_mean
+        feature_frames[f"{column}_race_std"] = race_std
+        feature_frames[f"{column}_race_zscore"] = (values - race_mean) / race_std.replace(0, np.nan)
+
+    for column in higher_is_better_columns:
+        if column not in df.columns:
+            continue
+        values = pd.to_numeric(df[column], errors="coerce")
+        group_values = values.groupby(df["race_id"])
+        race_max = group_values.transform("max")
+        race_mean = group_values.transform("mean")
+        race_std = group_values.transform("std")
+        feature_frames[f"{column}_race_diff_best"] = values - race_max
+        feature_frames[f"{column}_race_mean"] = race_mean
+        feature_frames[f"{column}_race_std"] = race_std
+        feature_frames[f"{column}_race_zscore"] = (values - race_mean) / race_std.replace(0, np.nan)
+    if not feature_frames:
+        return df
+    return pd.concat([df, pd.DataFrame(feature_frames, index=df.index)], axis=1)
+
+
+def add_neighbor_gap_features(df: pd.DataFrame) -> pd.DataFrame:
+    gap_columns = [
+        "racer_prev_avg_st",
+        "racer_prev_avg_st_5",
+        "racer_prev_avg_st_10",
+        "racer_lane_prev_avg_st",
+        "racer_venue_lane_prev_avg_st",
+        "exhibition_time",
+        "national_win_rate",
+        "national_place_rate",
+        "racer_prev_win_rate",
+        "racer_prev_top3_rate",
+        "motor_place_rate",
+        "boat_place_rate",
+        "venue_course_prev_win_rate",
+        "venue_course_prev_top3_rate",
+    ]
+    ordered = df.sort_values(["race_id", "lane"]).copy()
+    feature_frames: dict[str, pd.Series] = {}
+    for column in gap_columns:
+        if column not in ordered.columns:
+            continue
+        values = pd.to_numeric(ordered[column], errors="coerce")
+        inner_values = values.groupby(ordered["race_id"]).shift(1)
+        outer_values = values.groupby(ordered["race_id"]).shift(-1)
+        feature_frames[f"{column}_gap_inner"] = values - inner_values
+        feature_frames[f"{column}_gap_outer"] = values - outer_values
+    if feature_frames:
+        ordered = pd.concat([ordered, pd.DataFrame(feature_frames, index=ordered.index)], axis=1)
+    return ordered.sort_index()
+
+
+def add_pre_race_attack_candidate_features(df: pd.DataFrame) -> pd.DataFrame:
+    if "lane" not in df.columns:
+        return df
+    frame = df.copy()
+    lane = pd.to_numeric(frame["lane"], errors="coerce")
+    st_score = _race_scale_feature(frame, "racer_prev_avg_st_5", lower_is_better=True).fillna(
+        _race_scale_feature(frame, "racer_prev_avg_st", lower_is_better=True)
+    )
+    exhibition_score = _race_scale_feature(frame, "exhibition_time", lower_is_better=True)
+    top3_score = _race_scale_feature(frame, "racer_prev_top3_rate", lower_is_better=False)
+    motor_score = _race_scale_feature(frame, "motor_place_rate", lower_is_better=False)
+    venue_score = _race_scale_feature(frame, "venue_course_prev_top3_rate", lower_is_better=False).fillna(
+        _race_scale_feature(frame, "venue_lane_prev_top3_rate", lower_is_better=False)
+    )
+    lane_bias = lane.map({2: 0.08, 3: 0.13, 4: 0.15, 5: 0.08, 6: 0.05}).fillna(0.0)
+    attack_score = (
+        0.30 * st_score.fillna(0.0)
+        + 0.18 * exhibition_score.fillna(0.0)
+        + 0.18 * top3_score.fillna(0.0)
+        + 0.14 * motor_score.fillna(0.0)
+        + 0.12 * venue_score.fillna(0.0)
+        + lane_bias
+    )
+    attack_score = attack_score.where(lane != 1, 0.0)
+    frame["pre_race_attack_score"] = attack_score.astype("float32")
+
+    candidate_score = frame.groupby("race_id")["pre_race_attack_score"].transform("max")
+    candidate_lane_raw = (
+        frame.assign(
+            _candidate_lane=lane.where(
+                (lane != 1)
+                & (frame["pre_race_attack_score"] == candidate_score)
+                & (candidate_score > 0)
+            )
+        )
+        .groupby("race_id")["_candidate_lane"]
+        .transform("min")
+    )
+    candidate_lane = candidate_lane_raw.fillna(0)
+    has_candidate = candidate_lane > 0
+    frame["pre_race_attack_candidate_lane"] = candidate_lane.astype("float32")
+    frame["pre_race_attack_candidate_score"] = candidate_score.astype("float32")
+    frame["pre_race_attack_score_gap_candidate"] = (
+        frame["pre_race_attack_score"] - frame["pre_race_attack_candidate_score"]
+    ).astype("float32")
+    frame["distance_from_attack_candidate"] = (lane - candidate_lane).abs().where(has_candidate, 0).astype("float32")
+    frame["is_attack_candidate"] = ((lane == candidate_lane) & has_candidate).astype("int8")
+    frame["is_inside_of_attack_candidate"] = ((lane < candidate_lane) & has_candidate).astype("int8")
+    frame["is_outside_of_attack_candidate"] = ((lane > candidate_lane) & has_candidate).astype("int8")
+    frame["attack_candidate_inner_count"] = (candidate_lane - 1).clip(lower=0).where(has_candidate, 0).astype("float32")
+    frame["attack_candidate_outer_count"] = (6 - candidate_lane).clip(lower=0).where(has_candidate, 0).astype("float32")
+    return frame
+
+
+def _race_scale_feature(df: pd.DataFrame, column: str, *, lower_is_better: bool) -> pd.Series:
+    if column not in df.columns:
+        return pd.Series(pd.NA, index=df.index, dtype="float32")
+    values = pd.to_numeric(df[column], errors="coerce")
+    group_values = values.groupby(df["race_id"])
+    race_min = group_values.transform("min")
+    race_max = group_values.transform("max")
+    denom = (race_max - race_min).replace(0, np.nan)
+    if lower_is_better:
+        scaled = (race_max - values) / denom
+    else:
+        scaled = (values - race_min) / denom
+    return scaled.clip(lower=0.0, upper=1.0).astype("float32")
 
 
 def add_current_meet_features(df: pd.DataFrame) -> pd.DataFrame:
