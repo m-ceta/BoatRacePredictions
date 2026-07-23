@@ -754,6 +754,139 @@ def _evaluate_fast_rerank_payloads(
     return metrics
 
 
+def _fit_isotonic_from_raw(raw_values: np.ndarray, labels: np.ndarray) -> IsotonicRegression:
+    raw = np.asarray(raw_values, dtype=float)
+    y = np.asarray(labels, dtype=float)
+    calibrator = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip")
+    if len(raw) == 0 or len(y) == 0:
+        calibrator.fit(np.asarray([0.0, 1.0]), np.asarray([0.0, 1.0]))
+        return calibrator
+    calibrator.fit(raw, y)
+    return calibrator
+
+
+def _fast_calibrated_probabilities(
+    raw_values: np.ndarray,
+    race_ids: np.ndarray,
+    calibrator: IsotonicRegression,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if len(raw_values) == 0:
+        empty = np.asarray([], dtype=float)
+        return empty, np.asarray([], dtype=int), np.asarray([0], dtype=int)
+    race_codes, _ = pd.factorize(race_ids, sort=False)
+    order = np.argsort(race_codes, kind="mergesort")
+    sorted_codes = race_codes[order]
+    sorted_raw = np.asarray(raw_values, dtype=float)[order]
+    calibrated = np.asarray(calibrator.predict(sorted_raw), dtype=float)
+    starts = np.r_[0, np.flatnonzero(np.diff(sorted_codes)) + 1]
+    ends = np.r_[starts[1:], len(sorted_codes)]
+    sums = np.add.reduceat(calibrated, starts)
+    lengths = ends - starts
+    normalized = np.empty_like(calibrated, dtype=float)
+    for start, end, total, length in zip(starts, ends, sums, lengths, strict=True):
+        if total > 0:
+            normalized[start:end] = calibrated[start:end] / float(total)
+        else:
+            normalized[start:end] = 1.0 / float(max(length, 1))
+    inverse = np.empty_like(order)
+    inverse[order] = np.arange(len(order))
+    return normalized[inverse], race_codes, starts
+
+
+def _fast_calibrated_metrics_from_frame(
+    trifecta_frame: pd.DataFrame,
+    raw_col: str,
+    calibrator: IsotonicRegression,
+    baseline_raw_col: str | None = None,
+) -> dict[str, Any]:
+    if trifecta_frame.empty or raw_col not in trifecta_frame.columns or "is_actual" not in trifecta_frame.columns:
+        return {}
+    race_ids = trifecta_frame["race_id"].astype(str).to_numpy()
+    race_codes, race_labels = pd.factorize(race_ids, sort=False)
+    probabilities, _, _ = _fast_calibrated_probabilities(
+        trifecta_frame[raw_col].to_numpy(dtype=float),
+        race_ids,
+        calibrator,
+    )
+    baseline_probabilities: np.ndarray | None = None
+    if baseline_raw_col is not None and baseline_raw_col in trifecta_frame.columns:
+        baseline_probabilities, _, _ = _fast_calibrated_probabilities(
+            trifecta_frame[baseline_raw_col].to_numpy(dtype=float),
+            race_ids,
+            calibrator,
+        )
+    actual = trifecta_frame["is_actual"].astype(bool).to_numpy()
+    top_hits = {1: 0, 3: 0, 5: 0, 10: 0, 12: 0}
+    covered = 0
+    rerank_top1 = 0
+    rerank_mrr = 0.0
+    baseline_mrr = 0.0
+    mean_rank_improvement = 0.0
+    log_losses: list[float] = []
+    brier_scores: list[float] = []
+    actual_probabilities: list[float] = []
+    top_probabilities: list[float] = []
+
+    for code in range(len(race_labels)):
+        indices = np.flatnonzero(race_codes == code)
+        actual_positions = np.flatnonzero(actual[indices])
+        if len(actual_positions) != 1:
+            continue
+        covered += 1
+        probs = probabilities[indices]
+        actual_idx = int(actual_positions[0])
+        actual_probability = max(float(probs[actual_idx]), 1e-15)
+        order = np.argsort(-probs, kind="mergesort")
+        ranked_positions = np.empty(len(order), dtype=int)
+        ranked_positions[order] = np.arange(len(order), dtype=int)
+        actual_rank = int(ranked_positions[actual_idx])
+        labels = np.zeros(len(indices), dtype=float)
+        labels[actual_idx] = 1.0
+        for top_k in top_hits:
+            top_hits[top_k] += int(actual_rank < top_k)
+        log_losses.append(-np.log(actual_probability))
+        brier_scores.append(float(np.mean((probs - labels) ** 2)))
+        actual_probabilities.append(actual_probability)
+        top_probabilities.append(float(probs[order[0]]))
+
+        if baseline_probabilities is not None:
+            baseline_probs = baseline_probabilities[indices]
+            baseline_order = np.argsort(-baseline_probs, kind="mergesort")
+            baseline_positions = np.empty(len(baseline_order), dtype=int)
+            baseline_positions[baseline_order] = np.arange(len(baseline_order), dtype=int)
+            rerank_pos = actual_rank + 1
+            baseline_pos = int(baseline_positions[actual_idx]) + 1
+            rerank_top1 += int(rerank_pos == 1)
+            rerank_mrr += 1.0 / rerank_pos
+            baseline_mrr += 1.0 / baseline_pos
+            mean_rank_improvement += baseline_pos - rerank_pos
+
+    race_count = int(len(race_labels))
+    metrics: dict[str, Any] = {
+        "race_count": float(race_count),
+        "covered_races": float(covered),
+        "candidate_coverage_rate": covered / race_count if race_count else 0.0,
+        "top1_hit_rate": top_hits[1] / race_count if race_count else 0.0,
+        "top3_hit_rate": top_hits[3] / race_count if race_count else 0.0,
+        "top5_hit_rate": top_hits[5] / race_count if race_count else 0.0,
+        "top10_hit_rate": top_hits[10] / race_count if race_count else 0.0,
+        "top12_hit_rate": top_hits[12] / race_count if race_count else 0.0,
+        "log_loss": float(np.mean(log_losses)) if log_losses else 0.0,
+        "brier_score": float(np.mean(brier_scores)) if brier_scores else 0.0,
+        "mean_actual_probability": float(np.mean(actual_probabilities)) if actual_probabilities else 0.0,
+        "mean_top_probability": float(np.mean(top_probabilities)) if top_probabilities else 0.0,
+    }
+    if baseline_probabilities is not None:
+        metrics["rerank_metrics"] = {
+            "coverage_races": float(covered),
+            "rerank_top1_hit_rate": rerank_top1 / covered if covered else 0.0,
+            "rerank_mrr": rerank_mrr / covered if covered else 0.0,
+            "baseline_mrr": baseline_mrr / covered if covered else 0.0,
+            "mean_rank_improvement": mean_rank_improvement / covered if covered else 0.0,
+        }
+    return metrics
+
+
 def build_fast_rerank_payloads_from_ranked(
     ranked: pd.DataFrame,
     weights: dict[str, float],
@@ -3378,6 +3511,159 @@ def optimize_rerank_inference_settings(
     return _rerank_result_with_candidates(best, completed)
 
 
+def _build_raw_calibration_trifecta_frame(
+    ranked: pd.DataFrame,
+    weights: dict[str, float],
+    trifecta_v2_model: Any | None,
+    rerank_top_n: int | None,
+    source_df: pd.DataFrame,
+) -> pd.DataFrame:
+    trifecta = build_trifecta_prediction_frame(
+        ranked,
+        trifecta_calibrator=None,
+        use_v2=True,
+        trifecta_v2_v1_weight=float(weights.get("trifecta_v2_v1_weight", 0.9)),
+        trifecta_v2_model=trifecta_v2_model,
+        rerank_top_n=rerank_top_n,
+    )
+    if trifecta.empty or "race_date" in trifecta.columns:
+        return trifecta
+    race_dates = source_df[["race_id", "race_date"]].drop_duplicates().copy()
+    race_dates["race_id"] = race_dates["race_id"].astype(str)
+    trifecta["race_id"] = trifecta["race_id"].astype(str)
+    return trifecta.merge(race_dates, on="race_id", how="left")
+
+
+def _optimize_phase3_calibration_window_fast(
+    models: dict[str, Any],
+    weights: dict[str, float],
+    calibration_source: pd.DataFrame,
+    eval_df: pd.DataFrame,
+    feature_columns: list[str],
+    categorical_columns: list[str],
+    classifier_models: dict[str, lgb.Booster] | None = None,
+    flow_model: lgb.Booster | None = None,
+    flow_classes: list[str] | None = None,
+    staged_models: dict[str, lgb.Booster] | None = None,
+    trifecta_v2_model: Any | None = None,
+    rerank_top_n: int | None = None,
+    window_days_options: list[int] | None = None,
+    phase3_settings: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    if not models or calibration_source.empty or eval_df.empty:
+        return None
+    phase3_settings = phase3_settings or DEFAULT_PHASE3_SETTINGS
+    try:
+        calibration_ranked = build_fast_rerank_ranked_frame(
+            models,
+            weights,
+            calibration_source,
+            feature_columns,
+            categorical_columns,
+            classifier_models=classifier_models,
+            flow_model=flow_model,
+            flow_classes=flow_classes,
+            staged_models=staged_models,
+        )
+        eval_ranked = build_fast_rerank_ranked_frame(
+            models,
+            weights,
+            eval_df,
+            feature_columns,
+            categorical_columns,
+            classifier_models=classifier_models,
+            flow_model=flow_model,
+            flow_classes=flow_classes,
+            staged_models=staged_models,
+        )
+        if calibration_ranked is None or eval_ranked is None:
+            return None
+        calibration_trifecta = _build_raw_calibration_trifecta_frame(
+            calibration_ranked,
+            weights,
+            trifecta_v2_model,
+            rerank_top_n,
+            calibration_source,
+        )
+        eval_trifecta = _build_raw_calibration_trifecta_frame(
+            eval_ranked,
+            weights,
+            trifecta_v2_model,
+            rerank_top_n,
+            eval_df,
+        )
+    except Exception:
+        return None
+    required_columns = {"race_id", "race_date", "raw_probability_v1", "raw_probability_v2", "is_actual"}
+    if (
+        calibration_trifecta.empty
+        or eval_trifecta.empty
+        or not required_columns.issubset(calibration_trifecta.columns)
+        or not required_columns.issubset(eval_trifecta.columns)
+    ):
+        return None
+
+    baseline_calibrator = _fit_isotonic_from_raw(
+        calibration_trifecta["raw_probability_v1"].to_numpy(dtype=float),
+        calibration_trifecta["is_actual"].astype(int).to_numpy(dtype=float),
+    )
+    baseline_metrics = _fast_calibrated_metrics_from_frame(
+        eval_trifecta,
+        raw_col="raw_probability_v1",
+        calibrator=baseline_calibrator,
+    )
+    if not baseline_metrics:
+        return None
+
+    calibration_dates = pd.to_datetime(calibration_trifecta["race_date"], errors="coerce")
+    if calibration_dates.isna().all():
+        return None
+    last_date = calibration_dates.max()
+    best = {
+        "best_window_days": float(phase3_settings["calibration"]["default_window_days"]),
+        "objective": float("-inf"),
+    }
+    options = window_days_options or list(phase3_settings["calibration"]["window_days_options"])
+    for window_days in options:
+        window_start = last_date - pd.Timedelta(days=int(window_days) - 1)
+        window_mask = calibration_dates >= window_start
+        if not bool(window_mask.any()):
+            window_mask = pd.Series(True, index=calibration_trifecta.index)
+        train_frame = calibration_trifecta.loc[window_mask].copy()
+        calibrator = _fit_isotonic_from_raw(
+            train_frame["raw_probability_v2"].to_numpy(dtype=float),
+            train_frame["is_actual"].astype(int).to_numpy(dtype=float),
+        )
+        metrics = _fast_calibrated_metrics_from_frame(
+            eval_trifecta,
+            raw_col="raw_probability_v2",
+            calibrator=calibrator,
+            baseline_raw_col="raw_probability_v1",
+        )
+        objective, allowed_log_loss, log_loss_excess, within_guard = _phase3_tuning_objective(
+            metrics,
+            baseline_metrics,
+            phase3_settings["rerank"],
+        )
+        if objective > best["objective"]:
+            best = {
+                "best_window_days": float(window_days),
+                "objective": float(objective),
+                "v1_log_loss": float(baseline_metrics.get("log_loss", 0.0)),
+                "allowed_log_loss": float(allowed_log_loss),
+                "log_loss_excess": float(log_loss_excess),
+                "within_log_loss_guard": float(within_guard),
+                "top1_hit_rate": float(metrics.get("top1_hit_rate", 0.0)),
+                "top3_hit_rate": float(metrics.get("top3_hit_rate", 0.0)),
+                "top5_hit_rate": float(metrics.get("top5_hit_rate", 0.0)),
+                "top12_hit_rate": float(metrics.get("top12_hit_rate", 0.0)),
+                "log_loss": float(metrics.get("log_loss", 0.0)),
+                "rerank_mrr": _rerank_metric_value(metrics, "rerank_mrr"),
+                "evaluation_mode": "fast_numpy",
+            }
+    return best
+
+
 def optimize_phase3_calibration_window(
     models: dict[str, Any],
     weights: dict[str, float],
@@ -3407,6 +3693,24 @@ def optimize_phase3_calibration_window(
     if calibration_source.empty or eval_df.empty:
         default_window = int(phase3_settings["calibration"]["default_window_days"])
         return {"best_window_days": float(default_window), "objective": 0.0}
+    fast_result = _optimize_phase3_calibration_window_fast(
+        models,
+        weights,
+        calibration_source,
+        eval_df,
+        feature_columns,
+        categorical_columns,
+        classifier_models=classifier_models,
+        flow_model=flow_model,
+        flow_classes=flow_classes,
+        staged_models=staged_models,
+        trifecta_v2_model=trifecta_v2_model,
+        rerank_top_n=rerank_top_n,
+        window_days_options=window_days_options,
+        phase3_settings=phase3_settings,
+    )
+    if fast_result is not None:
+        return fast_result
     baseline_calibrator = fit_model_trifecta_calibrator(
         models,
         weights,
