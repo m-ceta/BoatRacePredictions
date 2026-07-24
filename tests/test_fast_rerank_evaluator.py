@@ -120,3 +120,36 @@ def test_fast_v1_calibrator_matches_dataframe_training_payload() -> None:
 
     assert fast_calibrator is not None
     assert np.allclose(fast_calibrator.predict(probe), dataframe_calibrator.predict(probe))
+
+
+def test_dynamic_rerank_candidate_diagnostic_records_deltas() -> None:
+    metrics = {
+        "race_count": 100.0,
+        "covered_races": 100.0,
+        "top1_hit_rate": 0.12,
+        "top3_hit_rate": 0.24,
+        "top5_hit_rate": 0.35,
+        "top10_hit_rate": 0.52,
+        "top12_hit_rate": 0.56,
+        "log_loss": 2.03,
+        "brier_score": 0.08,
+        "rerank_metrics": {"rerank_mrr": 0.41},
+    }
+
+    diagnostic = ranker._dynamic_rerank_candidate_diagnostic(
+        "attack_or_collapse",
+        0.8,
+        metrics,
+        baseline_top12=0.54,
+        baseline_log_loss=2.0,
+        log_loss_max_delta=0.03,
+        default_weight=0.9,
+    )
+
+    assert diagnostic["subset"] == "attack_or_collapse"
+    assert diagnostic["weight"] == 0.8
+    assert not diagnostic["is_default_weight"]
+    assert np.isclose(diagnostic["top12_delta"], 0.02)
+    assert np.isclose(diagnostic["log_loss_delta"], 0.03)
+    assert diagnostic["log_loss_within_guard"]
+    assert diagnostic["rerank_mrr"] == 0.41

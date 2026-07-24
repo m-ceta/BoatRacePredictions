@@ -1433,6 +1433,40 @@ def build_dynamic_rerank_subset_frame(
     return frame
 
 
+def _dynamic_rerank_candidate_diagnostic(
+    subset_name: str,
+    candidate_weight: float,
+    candidate_metrics: dict[str, Any],
+    baseline_top12: float,
+    baseline_log_loss: float,
+    log_loss_max_delta: float,
+    default_weight: float,
+) -> dict[str, Any]:
+    top12_hit_rate = float(candidate_metrics.get("top12_hit_rate", 0.0))
+    log_loss = float(candidate_metrics.get("log_loss", 0.0))
+    rerank_metrics = candidate_metrics.get("rerank_metrics", {})
+    rerank_mrr = float(rerank_metrics.get("rerank_mrr", 0.0)) if isinstance(rerank_metrics, dict) else 0.0
+    log_loss_delta = log_loss - baseline_log_loss
+    return {
+        "subset": str(subset_name),
+        "weight": float(candidate_weight),
+        "is_default_weight": bool(np.isclose(float(candidate_weight), float(default_weight))),
+        "race_count": float(candidate_metrics.get("race_count", 0.0)),
+        "covered_races": float(candidate_metrics.get("covered_races", 0.0)),
+        "top1_hit_rate": float(candidate_metrics.get("top1_hit_rate", 0.0)),
+        "top3_hit_rate": float(candidate_metrics.get("top3_hit_rate", 0.0)),
+        "top5_hit_rate": float(candidate_metrics.get("top5_hit_rate", 0.0)),
+        "top10_hit_rate": float(candidate_metrics.get("top10_hit_rate", 0.0)),
+        "top12_hit_rate": top12_hit_rate,
+        "top12_delta": top12_hit_rate - baseline_top12,
+        "log_loss": log_loss,
+        "log_loss_delta": log_loss_delta,
+        "log_loss_within_guard": bool(log_loss <= baseline_log_loss + log_loss_max_delta),
+        "brier_score": float(candidate_metrics.get("brier_score", 0.0)),
+        "rerank_mrr": rerank_mrr,
+    }
+
+
 def get_dynamic_rerank_weight_for_race(
     model: Any,
     race_df: pd.DataFrame,
@@ -4675,6 +4709,10 @@ def optimize_dynamic_rerank_weights(
     diagnostics: dict[str, Any] = {
         "subset_counts": {str(key): int(value) for key, value in subset_counts.items()},
         "thresholds": thresholds,
+        "candidate_weights": [float(value) for value in candidate_weights],
+        "min_subset_races": int(min_subset_races),
+        "top12_min_improvement": float(top12_min_improvement),
+        "log_loss_max_delta": float(log_loss_max_delta),
         "rules": {},
     }
     rules: list[dict[str, Any]] = []
@@ -4686,6 +4724,7 @@ def optimize_dynamic_rerank_weights(
             diagnostics["rules"][subset_name] = {
                 "race_count": int(subset_race_count),
                 "status": "skipped_small_subset",
+                "candidate_results": [],
             }
             continue
         subset_df = valid_df[valid_df["race_id"].astype(str).isin(race_ids)].copy()
@@ -4717,8 +4756,11 @@ def optimize_dynamic_rerank_weights(
         baseline_log_loss = float(baseline_metrics.get("log_loss", 0.0))
         best_weight = float(default_weight)
         best_metrics = dict(baseline_metrics)
+        candidate_results: list[dict[str, Any]] = []
         for candidate_weight in candidate_weights:
-            if subset_payloads:
+            if np.isclose(candidate_weight, default_weight):
+                candidate_metrics = dict(baseline_metrics)
+            elif subset_payloads:
                 candidate_metrics = _evaluate_fast_rerank_payloads(
                     subset_payloads,
                     conservative_weight=candidate_weight,
@@ -4745,6 +4787,17 @@ def optimize_dynamic_rerank_weights(
                     use_v2=True,
                     rerank_top_n=rerank_top_n,
                 )
+            candidate_results.append(
+                _dynamic_rerank_candidate_diagnostic(
+                    subset_name,
+                    candidate_weight,
+                    candidate_metrics,
+                    baseline_top12,
+                    baseline_log_loss,
+                    log_loss_max_delta,
+                    default_weight,
+                )
+            )
             if (
                 float(candidate_metrics.get("top12_hit_rate", 0.0)) > float(best_metrics.get("top12_hit_rate", 0.0))
                 and float(candidate_metrics.get("log_loss", 0.0)) <= baseline_log_loss + log_loss_max_delta
@@ -4757,6 +4810,7 @@ def optimize_dynamic_rerank_weights(
         )
         diagnostics["rules"][subset_name] = {
             "race_count": int(subset_race_count),
+            "status": "evaluated",
             "baseline_weight": float(default_weight),
             "best_weight": float(best_weight),
             "accepted": bool(accepted),
@@ -4765,6 +4819,8 @@ def optimize_dynamic_rerank_weights(
             "top12_improvement": top12_improvement,
             "baseline_log_loss": baseline_log_loss,
             "best_log_loss": float(best_metrics.get("log_loss", 0.0)),
+            "best_log_loss_delta": float(best_metrics.get("log_loss", 0.0)) - baseline_log_loss,
+            "candidate_results": candidate_results,
         }
         if accepted:
             rules.append(
