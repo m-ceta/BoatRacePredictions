@@ -29,15 +29,13 @@ def attach_expected_value_columns(
     )
     frame["market_rank"] = frame.groupby("race_id")[odds_col].rank(ascending=True, method="min")
     frame["is_value_bet"] = frame["expected_value"] >= float(expected_value_threshold)
-    frame["stake_fraction"] = frame.apply(
-        lambda row: _kelly_fraction(
-            probability=float(row[probability_col]),
-            odds=float(row[odds_col]),
-            cap=kelly_cap,
-        )
-        if pd.notna(row[probability_col]) and pd.notna(row[odds_col])
-        else 0.0,
-        axis=1,
+    probability = pd.to_numeric(frame[probability_col], errors="coerce")
+    odds = pd.to_numeric(frame[odds_col], errors="coerce")
+    b = odds - 1.0
+    raw = ((b * probability) - (1.0 - probability)) / b
+    frame["stake_fraction"] = raw.where((odds > 1.0) & probability.notna() & odds.notna(), 0.0).clip(
+        lower=0.0,
+        upper=float(kelly_cap),
     )
     return frame
 

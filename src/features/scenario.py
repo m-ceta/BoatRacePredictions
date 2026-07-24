@@ -84,6 +84,16 @@ def _row_numeric(row: pd.Series, *names: str, default: float = 0.0) -> float:
     return float(default)
 
 
+def _numeric_first_available(frame: pd.DataFrame, *names: str, default: float = 0.0) -> pd.Series:
+    values = pd.Series(np.nan, index=frame.index, dtype="float64")
+    for name in names:
+        if name not in frame.columns:
+            continue
+        candidate = pd.to_numeric(frame[name], errors="coerce")
+        values = values.where(values.notna(), candidate)
+    return values.fillna(float(default)).astype(float)
+
+
 def _race_scale(values: pd.Series, lower_is_better: bool = False) -> pd.Series:
     numeric = pd.to_numeric(values, errors="coerce")
     min_value = float(numeric.min()) if numeric.notna().any() else 0.0
@@ -106,36 +116,28 @@ def score_pre_race_scenarios(lane_frame: pd.DataFrame) -> dict[str, float]:
         return _empty_context()
 
     frame = lane_frame.copy()
-    frame["rank_prob_ctx"] = frame.apply(lambda row: _row_numeric(row, "win_probability_like"), axis=1)
-    frame["top2_prob_ctx"] = frame.apply(lambda row: _row_numeric(row, "top2_prob"), axis=1)
-    frame["top3_prob_ctx"] = frame.apply(lambda row: _row_numeric(row, "top3_prob"), axis=1)
-    frame["exact1_prob_ctx"] = frame.apply(lambda row: _row_numeric(row, "exact1_prob", "win_prob"), axis=1)
-    frame["nige_prob_ctx"] = frame.apply(lambda row: _row_numeric(row, "flow_prob_nige"), axis=1)
-    frame["sashi_prob_ctx"] = frame.apply(lambda row: _row_numeric(row, "flow_prob_sashi"), axis=1)
-    frame["makuri_prob_ctx"] = frame.apply(lambda row: _row_numeric(row, "flow_prob_makuri"), axis=1)
-    frame["makurizashi_prob_ctx"] = frame.apply(lambda row: _row_numeric(row, "flow_prob_makurizashi"), axis=1)
-    frame["venue_course_win_ctx"] = frame.apply(
-        lambda row: _row_numeric(row, "venue_course_prev_win_rate", "venue_lane_prev_win_rate"),
-        axis=1,
+    frame["rank_prob_ctx"] = _numeric_first_available(frame, "win_probability_like")
+    frame["top2_prob_ctx"] = _numeric_first_available(frame, "top2_prob")
+    frame["top3_prob_ctx"] = _numeric_first_available(frame, "top3_prob")
+    frame["exact1_prob_ctx"] = _numeric_first_available(frame, "exact1_prob", "win_prob")
+    frame["nige_prob_ctx"] = _numeric_first_available(frame, "flow_prob_nige")
+    frame["sashi_prob_ctx"] = _numeric_first_available(frame, "flow_prob_sashi")
+    frame["makuri_prob_ctx"] = _numeric_first_available(frame, "flow_prob_makuri")
+    frame["makurizashi_prob_ctx"] = _numeric_first_available(frame, "flow_prob_makurizashi")
+    frame["venue_course_win_ctx"] = _numeric_first_available(
+        frame, "venue_course_prev_win_rate", "venue_lane_prev_win_rate"
     )
-    frame["venue_course_top2_ctx"] = frame.apply(
-        lambda row: _row_numeric(row, "venue_course_prev_top2_rate", "venue_lane_prev_top2_rate"),
-        axis=1,
+    frame["venue_course_top2_ctx"] = _numeric_first_available(
+        frame, "venue_course_prev_top2_rate", "venue_lane_prev_top2_rate"
     )
-    frame["venue_course_top3_ctx"] = frame.apply(
-        lambda row: _row_numeric(row, "venue_course_prev_top3_rate", "venue_lane_prev_top3_rate"),
-        axis=1,
+    frame["venue_course_top3_ctx"] = _numeric_first_available(
+        frame, "venue_course_prev_top3_rate", "venue_lane_prev_top3_rate"
     )
-    frame["machine_ctx"] = frame.apply(
-        lambda row: _row_numeric(row, "motor_top2_rate_hist", "motor_prev_top3_rate", "motor_place_rate")
-        + _row_numeric(row, "boat_top2_rate_hist", "boat_prev_top3_rate", "boat_place_rate"),
-        axis=1,
-    )
-    frame["st_ctx"] = frame.apply(
-        lambda row: _row_numeric(row, "avg_st_last5", "racer_prev_avg_st_5", "racer_prev_avg_st"),
-        axis=1,
-    )
-    frame["exhibition_ctx"] = frame.apply(lambda row: _row_numeric(row, "exhibition_time"), axis=1)
+    frame["machine_ctx"] = _numeric_first_available(
+        frame, "motor_top2_rate_hist", "motor_prev_top3_rate", "motor_place_rate"
+    ) + _numeric_first_available(frame, "boat_top2_rate_hist", "boat_prev_top3_rate", "boat_place_rate")
+    frame["st_ctx"] = _numeric_first_available(frame, "avg_st_last5", "racer_prev_avg_st_5", "racer_prev_avg_st")
+    frame["exhibition_ctx"] = _numeric_first_available(frame, "exhibition_time")
     frame["st_adv_ctx"] = _race_scale(frame["st_ctx"], lower_is_better=True)
     frame["exhibition_adv_ctx"] = _race_scale(frame["exhibition_ctx"], lower_is_better=True)
     frame["machine_adv_ctx"] = _race_scale(frame["machine_ctx"])

@@ -1425,10 +1425,9 @@ def build_dynamic_rerank_subset_frame(
     if frame.empty:
         return frame
     thresholds = build_dynamic_rerank_thresholds(frame, settings)
-    frame["dynamic_rerank_subset"] = frame.apply(
-        lambda row: classify_dynamic_rerank_subset(row.to_dict(), thresholds),
-        axis=1,
-    )
+    frame["dynamic_rerank_subset"] = [
+        classify_dynamic_rerank_subset(row, thresholds) for row in frame.to_dict(orient="records")
+    ]
     frame.attrs["dynamic_rerank_thresholds"] = thresholds
     return frame
 
@@ -5936,7 +5935,72 @@ def apply_phase3_pattern_model_to_scenario(
     return updated
 
 
-def build_trifecta_feature_frame(
+def _lane_numeric_array(lane_frame: pd.DataFrame, column: str) -> np.ndarray:
+    lane_index = pd.Index(range(1, 7), name=lane_frame.index.name)
+    if column not in lane_frame.columns:
+        return np.zeros(6, dtype=float)
+    return (
+        pd.to_numeric(lane_frame[column], errors="coerce")
+        .reindex(lane_index)
+        .fillna(0.0)
+        .to_numpy(dtype=float)
+    )
+
+
+def _trifecta_probability_values(source: pd.DataFrame, trifectas: np.ndarray, probability_col: str) -> np.ndarray:
+    probability_by_trifecta = (
+        source[["trifecta", probability_col]]
+        .drop_duplicates("trifecta", keep="last")
+        .set_index("trifecta")[probability_col]
+    )
+    mapped = pd.Series(trifectas).map(probability_by_trifecta)
+    return pd.to_numeric(mapped, errors="coerce").fillna(0.0).to_numpy(dtype=float)
+
+
+def _phase3_line_feature_arrays(
+    scenario: dict[str, float],
+    first: np.ndarray,
+    second: np.ndarray,
+    third: np.ndarray,
+) -> dict[str, np.ndarray]:
+    attack_lane = int(scenario.get("attack_lane", 0))
+    attack_in_line = (first == attack_lane) | (second == attack_lane) | (third == attack_lane)
+    escape_strength = float(scenario.get("escape_strength", 0.0))
+    sashi_pressure = float(scenario.get("sashi_pressure_2", 0.0))
+    makuri_pressure = max(
+        float(scenario.get("s2_makuri_pressure", 0.0)),
+        float(scenario.get("s3_attack_pressure", 0.0)),
+        float(scenario.get("s4_course_attack_pressure", 0.0)),
+    )
+    makurizashi_pressure = float(scenario.get("makurizashi_pressure", 0.0))
+    outer_follow_pressure = max(
+        float(scenario.get("outer_sweep_risk", 0.0)),
+        float(scenario.get("s5_outside_attack_pressure", 0.0)),
+    )
+    attack_pressure = float(scenario.get("attack_pressure", 0.0))
+    inner_collapse_risk = float(scenario.get("inner_collapse_risk", 0.0))
+    inner_line = (first == 1) & np.isin(second, [2, 3])
+    scenario_mismatch_penalty = np.clip(
+        ((escape_strength > 0.45) & (first != 1)).astype(float) * escape_strength
+        + ((inner_collapse_risk > 0.45) & inner_line).astype(float) * inner_collapse_risk
+        + ((attack_pressure > 0.45) & (~attack_in_line)).astype(float) * attack_pressure,
+        0.0,
+        1.0,
+    )
+    return {
+        "escape_line_fit": (first == 1).astype(float) * escape_strength,
+        "sashi_line_fit": ((first == 2) & np.isin(second, [1, 3, 4])).astype(float) * sashi_pressure,
+        "makuri_line_fit": np.isin(first, [2, 3, 4]).astype(float) * makuri_pressure,
+        "makurizashi_line_fit": (np.isin(first, [3, 4, 5, 6]) & (second <= 4)).astype(float)
+        * makurizashi_pressure,
+        "outer_follow_fit": ((second >= 4) | (third >= 4)).astype(float) * outer_follow_pressure,
+        "attack_line_fit": ((first == attack_lane) | ((second == attack_lane) & np.isin(first, [1, 2]))).astype(float)
+        * attack_pressure,
+        "scenario_mismatch_penalty": scenario_mismatch_penalty,
+    }
+
+
+def _build_trifecta_feature_frame_legacy(
     race_df: pd.DataFrame,
     v1_df: pd.DataFrame,
     v2_df: pd.DataFrame,
@@ -6052,6 +6116,110 @@ def build_trifecta_feature_frame(
             }
         )
     frame = pd.DataFrame(rows)
+    for col in frame.columns:
+        frame[col] = pd.to_numeric(frame[col], errors="coerce").fillna(0.0).astype(float)
+    return frame
+
+
+def build_trifecta_feature_frame(
+    race_df: pd.DataFrame,
+    v1_df: pd.DataFrame,
+    v2_df: pd.DataFrame,
+    scenario_model_bundle: Any | None = None,
+) -> pd.DataFrame:
+    v1_col = "raw_probability_v1" if "raw_probability_v1" in v1_df.columns else "raw_probability"
+    v2_col = "raw_probability_v2" if "raw_probability_v2" in v2_df.columns else "raw_probability"
+    lane_frame = race_df.set_index("lane").copy()
+    scenario = apply_phase3_pattern_model_to_scenario(_phase3_scenario_context(lane_frame), race_df, scenario_model_bundle)
+    scenario_features = _phase3_scenario_feature_values(scenario)
+
+    trifectas = v1_df["trifecta"].astype(str).to_numpy()
+    lanes = v1_df["trifecta"].astype(str).str.split("-", expand=True).astype(int).to_numpy(dtype=np.int16)
+    first = lanes[:, 0].astype(np.int16)
+    second = lanes[:, 1].astype(np.int16)
+    third = lanes[:, 2].astype(np.int16)
+    first_idx = first - 1
+    second_idx = second - 1
+    third_idx = third - 1
+
+    win = _lane_numeric_array(lane_frame, "win_prob")
+    rank = _lane_numeric_array(lane_frame, "win_probability_like")
+    top2 = _lane_numeric_array(lane_frame, "top2_prob")
+    top3 = _lane_numeric_array(lane_frame, "top3_prob")
+    exact1 = _lane_numeric_array(lane_frame, "exact1_prob")
+    exact2 = _lane_numeric_array(lane_frame, "exact2_prob")
+    exact3 = _lane_numeric_array(lane_frame, "exact3_prob")
+    flow_nige = _lane_numeric_array(lane_frame, "flow_prob_nige")
+    flow_sashi = _lane_numeric_array(lane_frame, "flow_prob_sashi")
+    flow_makuri = _lane_numeric_array(lane_frame, "flow_prob_makuri")
+    flow_makurizashi = _lane_numeric_array(lane_frame, "flow_prob_makurizashi")
+    flow_nuki = _lane_numeric_array(lane_frame, "flow_prob_nuki")
+    venue_win = _lane_numeric_array(lane_frame, "venue_course_prev_win_rate")
+    venue_top2 = _lane_numeric_array(lane_frame, "venue_course_prev_top2_rate")
+    venue_top3 = _lane_numeric_array(lane_frame, "venue_course_prev_top3_rate")
+    exact_second = np.clip(top2 - win, 1e-9, None)
+    exact_third = np.clip(top3 - top2, 1e-9, None)
+
+    row_count = len(trifectas)
+    data: dict[str, Any] = {
+        "raw_probability_v1": _trifecta_probability_values(v1_df, trifectas, v1_col),
+        "raw_probability_v2": _trifecta_probability_values(v2_df, trifectas, v2_col),
+        "first_win_prob": win[first_idx],
+        "second_exact_prob": exact_second[second_idx],
+        "third_exact_prob": exact_third[third_idx],
+        "first_rank_prob": rank[first_idx],
+        "second_rank_prob": rank[second_idx],
+        "third_rank_prob": rank[third_idx],
+        "first_exact1_prob": exact1[first_idx],
+        "second_exact2_prob": exact2[second_idx],
+        "third_exact3_prob": exact3[third_idx],
+        "first_flow_nige": flow_nige[first_idx],
+        "second_flow_sashi": flow_sashi[second_idx],
+        "third_flow_makurizashi": flow_makurizashi[third_idx],
+        "first_venue_course_win_rate": venue_win[first_idx],
+        "first_venue_course_top2_rate": venue_top2[first_idx],
+        "first_venue_course_top3_rate": venue_top3[first_idx],
+        "second_venue_course_top2_rate": venue_top2[second_idx],
+        "second_venue_course_top3_rate": venue_top3[second_idx],
+        "third_venue_course_top3_rate": venue_top3[third_idx],
+        "first_flow_makuri": flow_makuri[first_idx],
+        "first_flow_nuki": flow_nuki[first_idx],
+        "first_lane": first.astype(float),
+        "second_lane": second.astype(float),
+        "third_lane": third.astype(float),
+        "lane_sum": (first + second + third).astype(float),
+        "inner_bias": ((first <= 2).astype(int) + (second <= 3).astype(int) + (third <= 4).astype(int)).astype(float),
+        "rank_gap_12": rank[first_idx] - rank[second_idx],
+        "rank_gap_23": rank[second_idx] - rank[third_idx],
+        "lane_gap_12": np.abs(first - second).astype(float),
+        "lane_gap_23": np.abs(second - third).astype(float),
+        "lane_gap_13": np.abs(first - third).astype(float),
+        "prob_sum_top3": rank[first_idx] + rank[second_idx] + rank[third_idx],
+        "top2_prob_sum": top2[first_idx] + top2[second_idx] + top2[third_idx],
+        "top3_prob_sum": top3[first_idx] + top3[second_idx] + top3[third_idx],
+        "exact_sum_top3": exact1[first_idx] + exact2[second_idx] + exact3[third_idx],
+        "nige_alignment": (first == 1).astype(float) * flow_nige[first_idx],
+        "sashi_alignment": (second > 1).astype(float) * flow_sashi[first_idx],
+        "makuri_alignment": (first >= 3).astype(float) * flow_makuri[first_idx],
+        "makurizashi_alignment": (first >= 3).astype(float) * flow_makurizashi[first_idx],
+        "outer_attack_bias": ((first >= 4).astype(int) + (second >= 4).astype(int)).astype(float),
+        "escape_strength": np.full(row_count, float(scenario["escape_strength"])),
+        "inner_collapse_risk": np.full(row_count, float(scenario["inner_collapse_risk"])),
+        "sashi_pressure_2": np.full(row_count, float(scenario["sashi_pressure_2"])),
+        "makuri_pressure_3_4": np.full(row_count, float(scenario["makuri_pressure_3_4"])),
+        "makurizashi_pressure": np.full(row_count, float(scenario["makurizashi_pressure"])),
+        "outer_sweep_risk": np.full(row_count, float(scenario["outer_sweep_risk"])),
+        "attack_lane": np.full(row_count, float(scenario["attack_lane"])),
+        "attack_pressure": np.full(row_count, float(scenario["attack_pressure"])),
+        "venue_escape_win_rate": np.full(row_count, float(scenario["venue_escape_win_rate"])),
+        "venue_escape_top2_rate": np.full(row_count, float(scenario["venue_escape_top2_rate"])),
+        "venue_outer_top3_rate": np.full(row_count, float(scenario["venue_outer_top3_rate"])),
+    }
+    for key, value in scenario_features.items():
+        data[key] = np.full(row_count, float(value))
+    data.update(_phase3_line_feature_arrays(scenario, first, second, third))
+
+    frame = pd.DataFrame(data)
     for col in frame.columns:
         frame[col] = pd.to_numeric(frame[col], errors="coerce").fillna(0.0).astype(float)
     return frame

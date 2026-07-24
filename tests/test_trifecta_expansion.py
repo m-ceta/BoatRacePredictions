@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 
 from src.models.ranker import (
+    _build_trifecta_feature_frame_legacy,
     apply_prediction_time_measurement_proxies,
     blend_conservative_rerank_scores,
     build_phase3_second_feature_frame,
@@ -313,6 +314,51 @@ def test_phase3_scenario_features_are_added_to_rerank_frames() -> None:
     assert expected.issubset(second_features.columns)
     assert expected.issubset(third_features.columns)
     assert trifecta_features.loc[0, "escape_line_fit"] > 0.0
+
+
+def test_vectorized_phase3_trifecta_features_match_legacy() -> None:
+    race_df = pd.DataFrame(
+        {
+            "race_id": ["R1"] * 6,
+            "lane": [1, 2, 3, 4, 5, 6],
+            "win_probability_like": [0.42, 0.20, 0.16, 0.10, 0.07, 0.05],
+            "win_prob": [0.46, 0.18, 0.14, 0.10, 0.07, 0.05],
+            "top2_prob": [0.72, 0.42, 0.35, 0.25, 0.17, 0.12],
+            "top3_prob": [0.88, 0.65, 0.55, 0.40, 0.29, 0.21],
+            "exact1_prob": [0.46, 0.18, 0.14, 0.10, 0.07, 0.05],
+            "exact2_prob": [0.26, 0.24, 0.21, 0.15, 0.10, 0.07],
+            "exact3_prob": [0.16, 0.23, 0.20, 0.15, 0.12, 0.09],
+            "flow_prob_nige": [0.70, 0.03, 0.03, 0.02, 0.01, 0.01],
+            "flow_prob_sashi": [0.05, 0.45, 0.12, 0.09, 0.05, 0.03],
+            "flow_prob_makuri": [0.02, 0.06, 0.38, 0.30, 0.12, 0.07],
+            "flow_prob_makurizashi": [0.02, 0.07, 0.24, 0.32, 0.20, 0.12],
+            "racer_prev_avg_st_5": [0.12, 0.14, 0.11, 0.13, 0.16, 0.17],
+            "exhibition_time": [6.70, 6.74, 6.68, 6.73, 6.78, 6.80],
+            "motor_prev_top3_rate": [0.48, 0.40, 0.46, 0.44, 0.37, 0.35],
+            "boat_prev_top3_rate": [0.45, 0.38, 0.43, 0.42, 0.35, 0.34],
+            "venue_course_prev_win_rate": [0.58, 0.15, 0.10, 0.08, 0.05, 0.04],
+            "venue_course_prev_top2_rate": [0.75, 0.34, 0.25, 0.20, 0.15, 0.10],
+            "venue_course_prev_top3_rate": [0.86, 0.52, 0.42, 0.32, 0.24, 0.16],
+        }
+    )
+    v1 = pd.DataFrame(
+        {
+            "trifecta": ["1-2-3", "3-1-4", "4-5-1", "6-4-2"],
+            "raw_probability": [0.5, 0.2, 0.15, 0.05],
+        }
+    )
+    v2 = pd.DataFrame(
+        {
+            "trifecta": ["1-2-3", "3-1-4", "4-5-1", "6-4-2"],
+            "raw_probability_v2": [0.45, 0.25, 0.12, 0.08],
+        }
+    )
+
+    legacy = _build_trifecta_feature_frame_legacy(race_df, v1, v2)
+    vectorized = build_trifecta_feature_frame(race_df, v1, v2)
+
+    pd.testing.assert_index_equal(vectorized.columns, legacy.columns)
+    pd.testing.assert_frame_equal(vectorized, legacy)
 
 
 def test_scenario_candidates_expand_v1_top_n_without_actual_result() -> None:
