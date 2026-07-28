@@ -448,7 +448,7 @@ def evaluate_recent_week_predictions(
 
     bundle = load_bundle(config_path)
     prediction_frame = build_recent_backtest_prediction_frame(bundle, evaluation_week, start_date)
-    trifecta_all = predict_trifecta(bundle, prediction_frame, top_n=None, use_v2=True)
+    trifecta_all = predict_trifecta(bundle, prediction_frame, top_n=None, use_v2=False)
     trifecta_all = trifecta_all[trifecta_all["race_id"].astype(str).isin(common_race_ids)].copy()
 
     top_predictions = (

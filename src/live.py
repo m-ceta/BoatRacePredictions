@@ -203,25 +203,15 @@ def predict_today_race(
         future_df=feature_frame,
         ensemble_weights=bundle.ensemble_weights,
     )
-    calibrator = bundle.trifecta_calibrator
-    phase_name = bundle.trifecta_v2_model.get("phase") if isinstance(bundle.trifecta_v2_model, dict) else None
-    if phase_name == "phase3_conditional" and getattr(bundle, "trifecta_v3_calibrator", None) is not None:
-        calibrator = bundle.trifecta_v3_calibrator
-    elif getattr(bundle, "trifecta_v2_calibrator", None) is not None:
-        calibrator = bundle.trifecta_v2_calibrator
-
     trifecta = predict_trifecta_probabilities(
         models=bundle.models,
         feature_columns=bundle.feature_columns,
         future_df=feature_frame,
         ensemble_weights=bundle.ensemble_weights,
-        trifecta_calibrator=calibrator,
+        trifecta_calibrator=bundle.trifecta_calibrator,
         classifier_models=bundle.classifier_models,
-        flow_model=bundle.flow_model,
-        flow_classes=bundle.flow_classes,
-        staged_models=bundle.staged_models,
-        trifecta_v2_model=bundle.trifecta_v2_model,
-        rerank_top_n=bundle.rerank_top_n,
+        use_v2=False,
+        rerank_top_n=None,
     )
     odds = fetch_boatrace_trifecta_odds(target_date, venue_code, int(race_no))
     odds_frame = None

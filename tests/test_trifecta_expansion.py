@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from src.features.builder import add_race_relative_features
 from src.models.ranker import (
     _build_trifecta_feature_frame_legacy,
     apply_prediction_time_measurement_proxies,
@@ -97,10 +98,6 @@ def test_predict_trifecta_without_odds_does_not_fail() -> None:
     assert "trifecta_darkhorse_score" in trifecta.columns
     assert "is_darkhorse_candidate" in trifecta.columns
     assert "ticket_hint" in trifecta.columns
-    assert "dynamic_rerank_subset" in trifecta.columns
-    assert "dynamic_rerank_weight" in trifecta.columns
-    assert "dynamic_rerank_enabled" in trifecta.columns
-    assert set(trifecta["dynamic_rerank_subset"]) == {"disabled"}
     assert "odds" not in trifecta.columns
 
 
@@ -187,6 +184,39 @@ def test_evaluation_measurement_proxies_replace_start_and_exhibition_but_keep_co
     assert proxied["start_timing"].tolist() == [0.14, 0.16]
     assert proxied["exhibition_time"].tolist() == [6.72, 6.77]
     assert proxied["course"].tolist() == [4, 5]
+
+
+def test_evaluation_measurement_proxies_rebuild_relative_features() -> None:
+    frame = pd.DataFrame(
+        {
+            "race_id": ["R1", "R1"],
+            "lane": [1, 2],
+            "start_timing": [0.01, 0.02],
+            "exhibition_time": [6.50, 6.51],
+            "course": [1, 2],
+            "racer_venue_prev_avg_st": [0.18, 0.12],
+            "racer_prev_avg_st": [0.17, 0.16],
+            "racer_venue_prev_avg_exhibition": [6.80, 6.70],
+            "racer_prev_avg_exhibition": [6.85, 6.75],
+            "national_win_rate": [7.0, 5.0],
+            "motor_place_rate": [40.0, 35.0],
+            "venue_course_prev_win_rate": [0.55, 0.20],
+            "venue_course_prev_top3_rate": [0.80, 0.55],
+        }
+    )
+    with_actual_relative = add_race_relative_features(frame)
+    assert with_actual_relative.loc[0, "exhibition_time_race_rank_low"] == 1
+
+    proxied = apply_prediction_time_measurement_proxies(with_actual_relative)
+
+    assert proxied["start_timing"].tolist() == [0.18, 0.12]
+    assert proxied["exhibition_time"].tolist() == [6.80, 6.70]
+    assert proxied.loc[0, "exhibition_time_race_rank_low"] == 2
+    assert proxied.loc[1, "exhibition_time_race_rank_low"] == 1
+    assert "race_escape_reliability_score" in proxied.columns
+    assert "race_attack_pressure" in proxied.columns
+    assert "race_inner_collapse_risk" in proxied.columns
+    assert "race_outer_link_risk" in proxied.columns
 
 
 def test_select_rerank_candidate_mask_from_v1_does_not_force_actual_inclusion() -> None:

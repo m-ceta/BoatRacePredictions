@@ -12,17 +12,11 @@ from src.models.ranker import (
     cleanup_processed_intermediate_dirs,
     collect_garbage,
     get_artifact_paths,
-    get_default_rerank_top_n,
-    get_rerank_top_n,
     load_config,
     load_classifier_artifacts,
     load_ensemble_weights,
     load_feature_columns,
-    load_flow_artifacts,
     load_models,
-    load_optional_trifecta_calibrator,
-    load_staged_model_artifacts,
-    load_trifecta_v2_model_artifact,
     load_trifecta_calibrator,
     predict_race_order,
     predict_trifecta_probabilities,
@@ -45,14 +39,7 @@ class BoatRaceModelBundle:
     feature_columns: list[str]
     ensemble_weights: dict[str, float]
     trifecta_calibrator: Any
-    trifecta_v2_calibrator: Any | None
-    trifecta_v3_calibrator: Any | None
     classifier_models: dict[str, Any]
-    flow_model: Any | None
-    flow_classes: list[str] | None
-    staged_models: dict[str, Any]
-    trifecta_v2_model: Any | None
-    rerank_top_n: int
 
 
 def build_dataset_from_rowdata(
@@ -126,10 +113,10 @@ def train_from_config(config_path: str | Path) -> dict[str, Any]:
         metrics,
         trifecta_calibrator,
         classifier_models,
-        flow_model,
-        flow_classes,
-        staged_models,
-        trifecta_v2_model,
+        _flow_model,
+        _flow_classes,
+        _staged_models,
+        _trifecta_v2_model,
     ) = train_ranker_from_splits(train_df, valid_df, test_df, config)
     del train_df, valid_df, test_df
     collect_garbage()
@@ -148,14 +135,6 @@ def train_from_config(config_path: str | Path) -> dict[str, Any]:
         metrics_path=artifacts["metrics_path"],
         classifier_models=classifier_models,
         classifier_output_dir=artifacts["classifier_dir"],
-        flow_model=flow_model,
-        flow_classes=flow_classes,
-        flow_model_path=artifacts["flow_model_path"],
-        flow_meta_path=artifacts["flow_meta_path"],
-        staged_models=staged_models,
-        staged_output_dir=artifacts["staged_dir"],
-        trifecta_v2_model=trifecta_v2_model,
-        trifecta_v2_model_path=artifacts["trifecta_v2_model_path"],
     )
     cleanup_processed_intermediate_dirs(config)
     return metrics
@@ -164,22 +143,13 @@ def train_from_config(config_path: str | Path) -> dict[str, Any]:
 def load_bundle(config_path: str | Path = Path("configs/train.yaml")) -> BoatRaceModelBundle:
     config = load_config(Path(config_path))
     artifacts = get_artifact_paths(config)
-    flow_model, flow_classes = load_flow_artifacts(config)
-    trifecta_v2_model = load_trifecta_v2_model_artifact(config)
     return BoatRaceModelBundle(
         config=config,
         models=load_models(config),
         feature_columns=load_feature_columns(artifacts["features_path"]),
         ensemble_weights=load_ensemble_weights(artifacts["ensemble_weights_path"]),
         trifecta_calibrator=load_trifecta_calibrator(artifacts["trifecta_calibrator_path"]),
-        trifecta_v2_calibrator=load_optional_trifecta_calibrator(artifacts["trifecta_v2_calibrator_path"]),
-        trifecta_v3_calibrator=load_optional_trifecta_calibrator(artifacts["trifecta_v3_calibrator_path"]),
         classifier_models=load_classifier_artifacts(config),
-        flow_model=flow_model,
-        flow_classes=flow_classes,
-        staged_models=load_staged_model_artifacts(config),
-        trifecta_v2_model=trifecta_v2_model,
-        rerank_top_n=get_rerank_top_n(trifecta_v2_model, get_default_rerank_top_n(config)),
     )
 
 
@@ -197,17 +167,10 @@ def predict_trifecta(
     future_df: pd.DataFrame,
     top_n: int | None = 20,
     odds_df: pd.DataFrame | None = None,
-    use_v2: bool = True,
+    use_v2: bool = False,
     rerank_top_n: int | None = None,
 ) -> pd.DataFrame:
     calibrator = bundle.trifecta_calibrator
-    if use_v2:
-        phase_name = bundle.trifecta_v2_model.get("phase") if isinstance(bundle.trifecta_v2_model, dict) else None
-        if phase_name == "phase3_conditional" and bundle.trifecta_v3_calibrator is not None:
-            calibrator = bundle.trifecta_v3_calibrator
-        elif bundle.trifecta_v2_calibrator is not None:
-            calibrator = bundle.trifecta_v2_calibrator
-    effective_rerank_top_n = bundle.rerank_top_n if rerank_top_n is None else rerank_top_n
     trifecta = predict_trifecta_probabilities(
         models=bundle.models,
         feature_columns=bundle.feature_columns,
@@ -215,13 +178,9 @@ def predict_trifecta(
         ensemble_weights=bundle.ensemble_weights,
         trifecta_calibrator=calibrator,
         classifier_models=bundle.classifier_models,
-        flow_model=bundle.flow_model,
-        flow_classes=bundle.flow_classes,
-        staged_models=bundle.staged_models,
-        trifecta_v2_model=bundle.trifecta_v2_model,
         odds_df=odds_df,
-        use_v2=use_v2,
-        rerank_top_n=effective_rerank_top_n if use_v2 else None,
+        use_v2=False,
+        rerank_top_n=None,
     )
     if top_n is None:
         return trifecta

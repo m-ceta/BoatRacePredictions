@@ -307,10 +307,10 @@ def train_main() -> None:
         metrics,
         trifecta_calibrator,
         classifier_models,
-        flow_model,
-        flow_classes,
-        staged_models,
-        trifecta_v2_model,
+        _flow_model,
+        _flow_classes,
+        _staged_models,
+        _trifecta_v2_model,
     ) = train_ranker_from_splits(
         train_df,
         valid_df,
@@ -338,14 +338,6 @@ def train_main() -> None:
         metrics_path=artifacts["metrics_path"],
         classifier_models=classifier_models,
         classifier_output_dir=artifacts["classifier_dir"],
-        flow_model=flow_model,
-        flow_classes=flow_classes,
-        flow_model_path=artifacts["flow_model_path"],
-        flow_meta_path=artifacts["flow_meta_path"],
-        staged_models=staged_models,
-        staged_output_dir=artifacts["staged_dir"],
-        trifecta_v2_model=trifecta_v2_model,
-        trifecta_v2_model_path=artifacts["trifecta_v2_model_path"],
     )
     progress("cleaning intermediate files")
     cleanup_processed_intermediate_dirs(config)
@@ -406,13 +398,9 @@ def predict_main() -> None:
             ensemble_weights=bundle.ensemble_weights,
             trifecta_calibrator=bundle.trifecta_calibrator,
             classifier_models=bundle.classifier_models,
-            flow_model=bundle.flow_model,
-            flow_classes=bundle.flow_classes,
-            staged_models=bundle.staged_models,
-            trifecta_v2_model=bundle.trifecta_v2_model,
             odds_df=odds_df,
-            use_v2=True,
-            rerank_top_n=bundle.rerank_top_n,
+            use_v2=False,
+            rerank_top_n=None,
         )
         trifecta.to_csv(args.trifecta_output, index=False, encoding="utf-8-sig")
 
@@ -471,6 +459,7 @@ def trifecta_train_checkpoint_signature(
 
 
 def train_trifecta_v2_main() -> None:
+    raise SystemExit("boatrace-train-trifecta-v2 was removed. Use boatrace-train instead.")
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--training-device", choices=["cpu", "gpu"], default=None)
@@ -1070,6 +1059,7 @@ def sample_races_for_evaluation(df: pd.DataFrame, max_races: int) -> pd.DataFram
 
 
 def evaluate_trifecta_full_valid_main() -> None:
+    raise SystemExit("boatrace-eval-trifecta-full was removed. Use boatrace-train metrics instead.")
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--chunk", type=str, default="month", choices=["month"])

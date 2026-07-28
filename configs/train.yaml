@@ -29,13 +29,13 @@ models:
     params:
       loss_function: YetiRank
       eval_metric: NDCG
-      depth: 7
-      learning_rate: 0.025
-      l2_leaf_reg: 8.0
-      random_strength: 2.0
+      depth: 8
+      learning_rate: 0.02
+      l2_leaf_reg: 5.0
+      random_strength: 8.0
       bootstrap_type: Bayesian
-      bagging_temperature: 1.0
-      one_hot_max_size: 8
+      bagging_temperature: 3.0
+      one_hot_max_size: 24
       od_type: Iter
       od_wait: 30
   ensemble:
@@ -53,9 +53,11 @@ models:
     variants:
       - name: lightgbm_top1
         params:
-          num_leaves: 15
-          min_data_in_leaf: 50
-          lambda_l2: 3.0
+          num_leaves: 31
+          min_data_in_leaf: 35
+          feature_fraction: 0.85
+          lambda_l1: 0.2
+          lambda_l2: 2.0
       - name: lightgbm_stable_top6
         params:
           num_leaves: 63
@@ -80,57 +82,6 @@ models:
           alpha: 1.0
           gamma: 0.5
 
-phase3:
-  label_weights:
-    exact_full: 1.0
-    exact_top2: 0.75
-    exact_first_with_two: 0.6
-    exact_first: 0.5
-    top2_overlap: 0.35
-    top3_overlap: 0.2
-  regularization:
-    num_leaves: 31
-    min_data_in_leaf: 30
-    feature_fraction: 0.75
-    bagging_fraction: 0.8
-    bagging_freq: 1
-    lambda_l1: 0.0
-    lambda_l2: 2.0
-    num_boost_round: 120
-  rerank:
-    default_conservative_weight: 0.9
-    weight_grid: [0.8, 0.9, 0.95]
-    top_n_grid: [12]
-    rank_penalty_strength_grid: [0.0, 0.01]
-    default_rank_penalty_strength: 0.02
-    rank_penalty_start: 5
-    scenario_candidate_top_n: 12
-    coarse_eval_max_races: 750
-    coarse_penalty_grid: [0.0]
-    fine_top_k: 8
-    log_loss_max_delta_vs_v1: 0.03
-    objective_top12_weight: 0.40
-    objective_top5_weight: 0.15
-    objective_top3_weight: 0.15
-    objective_top1_weight: 0.15
-    objective_mrr_weight: 0.15
-    objective_log_loss_weight: 0.10
-    objective_log_loss_excess_penalty: 1.0
-  calibration:
-    window_days_options: [30, 60, 90]
-    default_window_days: 60
-  evaluation:
-    scenario_min_races: 100
-  dynamic_rerank_weight:
-    enabled: true
-    optimize: true
-    min_subset_races: 500
-    top12_min_improvement: 0.0
-    log_loss_max_delta: 0.03
-    weight_grid: [0.7, 0.8, 0.9, 0.95]
-    quantile_high: 0.75
-    quantile_mid: 0.5
-
 artifacts:
   catboost_model_path: artifacts/catboost_ranker.cbm
   lightgbm_model_path: artifacts/lightgbm_ranker.txt
@@ -138,6 +89,4 @@ artifacts:
   features_path: artifacts/feature_columns.json
   ensemble_weights_path: artifacts/ensemble_weights.json
   trifecta_calibrator_path: artifacts/trifecta_isotonic.joblib
-  trifecta_v2_calibrator_path: artifacts/trifecta_v2_isotonic.joblib
-  trifecta_v3_calibrator_path: artifacts/trifecta_v3_isotonic.joblib
   metrics_path: artifacts/metrics.json

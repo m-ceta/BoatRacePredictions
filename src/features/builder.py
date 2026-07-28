@@ -7,6 +7,44 @@ import numpy as np
 import pandas as pd
 
 
+RACE_RELATIVE_GENERATED_EXACT_COLUMNS = {
+    "lane_is_inner",
+    "lane_is_outer",
+    "pre_race_attack_score",
+    "pre_race_attack_candidate_lane",
+    "pre_race_attack_candidate_score",
+    "pre_race_attack_score_gap_candidate",
+    "distance_from_attack_candidate",
+    "is_attack_candidate",
+    "is_inside_of_attack_candidate",
+    "is_outside_of_attack_candidate",
+    "attack_candidate_inner_count",
+    "attack_candidate_outer_count",
+    "race_escape_reliability_score",
+    "race_attack_pressure",
+    "race_inner_collapse_risk",
+    "race_outer_link_risk",
+    "lane_escape_support_score",
+    "lane_attack_pressure_gap",
+    "lane_outer_link_fit",
+}
+
+RACE_RELATIVE_GENERATED_SUFFIXES = (
+    "_race_rank",
+    "_race_rank_low",
+    "_race_diff_mean",
+    "_race_diff_mean_safe",
+    "_race_diff_best",
+    "_race_mean",
+    "_race_std",
+    "_race_zscore",
+    "_gap_inner",
+    "_gap_outer",
+    "_gap_inner_mean",
+    "_gap_outer_mean",
+)
+
+
 def build_training_table(entries: pd.DataFrame, results: pd.DataFrame) -> pd.DataFrame:
     merged = entries.merge(
         results[
@@ -211,17 +249,24 @@ def add_race_relative_features(df: pd.DataFrame) -> pd.DataFrame:
         "local_place_rate",
         "motor_place_rate",
         "boat_place_rate",
+        "start_timing",
+        "exhibition_time",
         "racer_prev_win_rate",
+        "racer_prev_win_rate_5",
         "racer_prev_top3_rate",
         "racer_prev_top3_rate_5",
+        "racer_prev_avg_finish",
         "racer_prev_avg_finish_5",
         "racer_prev_avg_finish_10",
         "racer_prev_avg_st",
         "racer_prev_avg_st_5",
         "racer_prev_avg_st_10",
         "racer_prev_avg_exhibition",
+        "racer_lane_prev_win_rate",
         "racer_lane_prev_top3_rate",
+        "racer_lane_prev_avg_st",
         "racer_venue_lane_prev_top3_rate",
+        "racer_venue_lane_prev_avg_st",
         "venue_course_prev_win_rate",
         "venue_course_prev_top2_rate",
         "venue_course_prev_top3_rate",
@@ -230,27 +275,51 @@ def add_race_relative_features(df: pd.DataFrame) -> pd.DataFrame:
         "venue_lane_prev_top2_rate",
         "venue_lane_prev_top3_rate",
         "venue_lane_prev_avg_finish",
+        "motor_prev_win_rate",
         "motor_prev_top3_rate",
+        "motor_prev_avg_st",
+        "boat_prev_win_rate",
         "boat_prev_top3_rate",
+        "boat_prev_avg_st",
         "st_momentum_diff",
         "finish_momentum_diff",
     ]
 
     for column in relative_columns:
-        df[f"{column}_race_rank"] = race_groups[column].rank(ascending=False, method="min")
-        df[f"{column}_race_diff_mean"] = df[column] - race_groups[column].transform("mean")
+        if column not in df.columns:
+            continue
+        values = pd.to_numeric(df[column], errors="coerce")
+        group_values = values.groupby(df["race_id"])
+        df[f"{column}_race_rank"] = group_values.rank(ascending=False, method="min")
+        df[f"{column}_race_diff_mean"] = values - group_values.transform("mean")
 
     df = add_measurement_relative_features(df, race_groups)
     df = add_neighbor_gap_features(df)
+    df = add_inside_outside_mean_gap_features(df)
     df = add_pre_race_attack_candidate_features(df)
+    df = add_pre_race_flow_features(df)
 
     df["lane_is_inner"] = (df["lane"] <= 3).astype(int)
     df["lane_is_outer"] = (df["lane"] >= 5).astype(int)
     return df
 
 
+def drop_race_relative_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Remove derived race-relative columns before rebuilding them from proxy values."""
+    drop_columns = [
+        column
+        for column in df.columns
+        if column in RACE_RELATIVE_GENERATED_EXACT_COLUMNS
+        or any(column.endswith(suffix) for suffix in RACE_RELATIVE_GENERATED_SUFFIXES)
+    ]
+    if not drop_columns:
+        return df
+    return df.drop(columns=drop_columns)
+
+
 def add_measurement_relative_features(df: pd.DataFrame, race_groups: pd.core.groupby.DataFrameGroupBy) -> pd.DataFrame:
     lower_is_better_columns = [
+        "start_timing",
         "exhibition_time",
         "racer_prev_avg_st",
         "racer_prev_avg_st_5",
@@ -261,11 +330,15 @@ def add_measurement_relative_features(df: pd.DataFrame, race_groups: pd.core.gro
     higher_is_better_columns = [
         "national_win_rate",
         "national_place_rate",
+        "local_win_rate",
+        "local_place_rate",
+        "racer_prev_win_rate_5",
         "racer_prev_win_rate",
         "racer_prev_top3_rate",
         "racer_prev_top3_rate_5",
         "motor_place_rate",
         "boat_place_rate",
+        "motor_prev_win_rate",
         "venue_course_prev_win_rate",
         "venue_course_prev_top2_rate",
         "venue_course_prev_top3_rate",
@@ -315,13 +388,21 @@ def add_neighbor_gap_features(df: pd.DataFrame) -> pd.DataFrame:
         "racer_lane_prev_avg_st",
         "racer_venue_lane_prev_avg_st",
         "exhibition_time",
+        "start_timing",
         "national_win_rate",
         "national_place_rate",
+        "local_win_rate",
+        "local_place_rate",
         "racer_prev_win_rate",
+        "racer_prev_win_rate_5",
         "racer_prev_top3_rate",
+        "racer_lane_prev_win_rate",
         "motor_place_rate",
+        "motor_prev_win_rate",
         "boat_place_rate",
+        "boat_prev_win_rate",
         "venue_course_prev_win_rate",
+        "venue_course_prev_top2_rate",
         "venue_course_prev_top3_rate",
     ]
     ordered = df.sort_values(["race_id", "lane"]).copy()
@@ -334,6 +415,48 @@ def add_neighbor_gap_features(df: pd.DataFrame) -> pd.DataFrame:
         outer_values = values.groupby(ordered["race_id"]).shift(-1)
         feature_frames[f"{column}_gap_inner"] = values - inner_values
         feature_frames[f"{column}_gap_outer"] = values - outer_values
+    if feature_frames:
+        ordered = pd.concat([ordered, pd.DataFrame(feature_frames, index=ordered.index)], axis=1)
+    return ordered.sort_index()
+
+
+def add_inside_outside_mean_gap_features(df: pd.DataFrame) -> pd.DataFrame:
+    gap_columns = [
+        "national_win_rate",
+        "national_place_rate",
+        "local_win_rate",
+        "local_place_rate",
+        "racer_prev_win_rate",
+        "racer_prev_win_rate_5",
+        "racer_prev_top3_rate",
+        "racer_lane_prev_win_rate",
+        "motor_place_rate",
+        "motor_prev_win_rate",
+        "boat_place_rate",
+        "boat_prev_win_rate",
+        "exhibition_time",
+        "start_timing",
+        "venue_course_prev_win_rate",
+        "venue_course_prev_top2_rate",
+        "venue_course_prev_top3_rate",
+    ]
+    ordered = df.sort_values(["race_id", "lane"]).copy()
+    feature_frames: dict[str, pd.Series] = {}
+    for column in gap_columns:
+        if column not in ordered.columns:
+            continue
+        values = pd.to_numeric(ordered[column], errors="coerce")
+        race_keys = ordered["race_id"]
+        total = values.groupby(race_keys).transform("sum")
+        count = values.notna().astype("int64").groupby(race_keys).transform("sum")
+        inner_sum = values.groupby(race_keys).cumsum() - values
+        inner_count = values.notna().astype("int64").groupby(race_keys).cumsum() - values.notna().astype("int64")
+        outer_sum = total - values.groupby(race_keys).cumsum()
+        outer_count = count - values.notna().astype("int64").groupby(race_keys).cumsum()
+        inner_mean = inner_sum / inner_count.replace(0, np.nan)
+        outer_mean = outer_sum / outer_count.replace(0, np.nan)
+        feature_frames[f"{column}_gap_inner_mean"] = values - inner_mean
+        feature_frames[f"{column}_gap_outer_mean"] = values - outer_mean
     if feature_frames:
         ordered = pd.concat([ordered, pd.DataFrame(feature_frames, index=ordered.index)], axis=1)
     return ordered.sort_index()
@@ -393,9 +516,94 @@ def add_pre_race_attack_candidate_features(df: pd.DataFrame) -> pd.DataFrame:
     return frame
 
 
+def add_pre_race_flow_features(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or "race_id" not in df.columns or "lane" not in df.columns:
+        return df
+    frame = df.copy()
+    lane = pd.to_numeric(frame["lane"], errors="coerce")
+
+    win_score = _race_scale_feature(frame, "national_win_rate", lower_is_better=False).fillna(
+        _race_scale_feature(frame, "racer_prev_win_rate", lower_is_better=False)
+    )
+    local_score = _race_scale_feature(frame, "local_win_rate", lower_is_better=False).fillna(win_score)
+    top3_score = _race_scale_feature(frame, "racer_prev_top3_rate", lower_is_better=False)
+    st_score = _race_scale_feature(frame, "start_timing", lower_is_better=True).fillna(
+        _race_scale_feature(frame, "racer_prev_avg_st_5", lower_is_better=True)
+    )
+    exhibition_score = _race_scale_feature(frame, "exhibition_time", lower_is_better=True)
+    motor_score = _race_scale_feature(frame, "motor_place_rate", lower_is_better=False).fillna(
+        _race_scale_feature(frame, "motor_prev_win_rate", lower_is_better=False)
+    )
+    venue_win_score = _race_scale_feature(frame, "venue_course_prev_win_rate", lower_is_better=False).fillna(
+        _race_scale_feature(frame, "venue_lane_prev_win_rate", lower_is_better=False)
+    )
+    venue_top3_score = _race_scale_feature(frame, "venue_course_prev_top3_rate", lower_is_better=False).fillna(
+        _race_scale_feature(frame, "venue_lane_prev_top3_rate", lower_is_better=False)
+    )
+
+    lane1_mask = lane == 1
+    lane1_base = (
+        0.25 * win_score.fillna(0.0)
+        + 0.12 * local_score.fillna(0.0)
+        + 0.18 * top3_score.fillna(0.0)
+        + 0.16 * st_score.fillna(0.0)
+        + 0.10 * exhibition_score.fillna(0.0)
+        + 0.10 * motor_score.fillna(0.0)
+        + 0.09 * venue_win_score.fillna(0.0)
+    ).where(lane1_mask, np.nan)
+
+    lane1_strength = lane1_base.groupby(frame["race_id"]).transform("max").fillna(0.0)
+    attack_pressure = pd.to_numeric(
+        frame.get("pre_race_attack_candidate_score", pd.Series(0.0, index=frame.index)),
+        errors="coerce",
+    ).fillna(0.0)
+    attack_lane = pd.to_numeric(
+        frame.get("pre_race_attack_candidate_lane", pd.Series(0.0, index=frame.index)),
+        errors="coerce",
+    ).fillna(0.0)
+    race_attack_pressure = attack_pressure.groupby(frame["race_id"]).transform("max").fillna(0.0)
+
+    outer_lane_bias = lane.map({4: 0.08, 5: 0.12, 6: 0.14}).fillna(0.0)
+    pre_race_attack_score = pd.to_numeric(
+        frame.get("pre_race_attack_score", pd.Series(0.0, index=frame.index)),
+        errors="coerce",
+    ).fillna(0.0)
+    outer_score = (
+        0.32 * pre_race_attack_score
+        + 0.22 * venue_top3_score.fillna(0.0)
+        + 0.18 * motor_score.fillna(0.0)
+        + 0.16 * st_score.fillna(0.0)
+        + 0.12 * exhibition_score.fillna(0.0)
+        + outer_lane_bias
+    ).where(lane >= 4, 0.0)
+    race_outer_link_risk = outer_score.groupby(frame["race_id"]).transform("max").fillna(0.0).clip(0.0, 1.0)
+    race_escape_reliability = (lane1_strength * (1.0 - 0.35 * race_attack_pressure)).clip(0.0, 1.0)
+    race_inner_collapse_risk = (
+        (1.0 - race_escape_reliability) * (0.45 + 0.35 * race_attack_pressure)
+        + 0.20 * race_outer_link_risk
+    ).clip(0.0, 1.0)
+
+    frame["race_escape_reliability_score"] = race_escape_reliability.astype("float32")
+    frame["race_attack_pressure"] = race_attack_pressure.astype("float32")
+    frame["race_inner_collapse_risk"] = race_inner_collapse_risk.astype("float32")
+    frame["race_outer_link_risk"] = race_outer_link_risk.astype("float32")
+    frame["lane_escape_support_score"] = (
+        race_escape_reliability * lane.map({1: 1.0, 2: 0.65, 3: 0.45, 4: 0.20, 5: 0.10, 6: 0.05}).fillna(0.0)
+    ).astype("float32")
+    frame["lane_attack_pressure_gap"] = (
+        pre_race_attack_score - race_attack_pressure
+    ).astype("float32")
+    frame["lane_outer_link_fit"] = (
+        race_outer_link_risk
+        * lane.map({1: 0.05, 2: 0.12, 3: 0.24, 4: 0.55, 5: 0.75, 6: 0.65}).fillna(0.0)
+        * (1.0 + 0.15 * (lane == attack_lane).astype("float32"))
+    ).clip(0.0, 1.0).astype("float32")
+    return frame
+
+
 def _race_scale_feature(df: pd.DataFrame, column: str, *, lower_is_better: bool) -> pd.Series:
     if column not in df.columns:
-        return pd.Series(pd.NA, index=df.index, dtype="float32")
+        return pd.Series(np.nan, index=df.index, dtype="float32")
     values = pd.to_numeric(df[column], errors="coerce")
     group_values = values.groupby(df["race_id"])
     race_min = group_values.transform("min")

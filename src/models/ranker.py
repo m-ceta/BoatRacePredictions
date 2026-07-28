@@ -26,6 +26,7 @@ except ImportError:  # pragma: no cover - exercised only when optional dependenc
     xgb = None
 
 from src.evaluation.metrics import compute_trifecta_metrics, compute_trifecta_rerank_metrics
+from src.features.builder import add_race_relative_features, drop_race_relative_features
 from src.features.scenario import (
     SCENARIO_NAMES,
     SCENARIO_SHORT_TO_LABEL,
@@ -84,18 +85,8 @@ DEFAULT_ARTIFACT_PATHS = {
     "features_path": "artifacts/feature_columns.json",
     "ensemble_weights_path": "artifacts/ensemble_weights.json",
     "trifecta_calibrator_path": "artifacts/trifecta_isotonic.joblib",
-    "trifecta_v2_calibrator_path": "artifacts/trifecta_v2_isotonic.joblib",
-    "trifecta_v3_calibrator_path": "artifacts/trifecta_v3_isotonic.joblib",
     "metrics_path": "artifacts/metrics.json",
     "classifier_dir": "artifacts/classifiers",
-    "flow_model_path": "artifacts/flow_lightgbm.txt",
-    "flow_meta_path": "artifacts/flow_classes.json",
-    "trifecta_train_checkpoint_path": "artifacts/trifecta_train_checkpoint.json",
-    "trifecta_v2_phase2_model_path": "artifacts/trifecta_v2_phase2_model.joblib",
-    "trifecta_v3_base_model_path": "artifacts/trifecta_v3_base_model.joblib",
-    "trifecta_v2_model_path": "artifacts/trifecta_v2_model.joblib",
-    "staged_dir": "artifacts/staged",
-    "rerank_optimization_checkpoint_path": "artifacts/rerank_optimization_checkpoint.json",
     "train_checkpoint_path": "artifacts/train_checkpoint.json",
 }
 
@@ -777,7 +768,7 @@ def _evaluate_fast_rerank_payloads(
     payloads: list[FastRerankRacePayload],
     conservative_weight: float | None = None,
     rank_penalty_strength: float = 0.0,
-    use_v2: bool = True,
+    use_v2: bool = False,
 ) -> dict[str, Any]:
     race_count = len(payloads)
     top_hits = {1: 0, 3: 0, 5: 0, 10: 0, 12: 0}
@@ -2108,6 +2099,8 @@ def apply_prediction_time_measurement_proxies(df: pd.DataFrame) -> pd.DataFrame:
             "racer_prev_avg_exhibition",
         ],
     )
+    if "race_id" in frame.columns and "lane" in frame.columns:
+        frame = add_race_relative_features(drop_race_relative_features(frame))
     return frame
 
 
@@ -2743,7 +2736,7 @@ def predict_trifecta_probabilities(
     staged_models: dict[str, lgb.Booster] | None = None,
     trifecta_v2_model: Any | None = None,
     odds_df: pd.DataFrame | None = None,
-    use_v2: bool = True,
+    use_v2: bool = False,
     rerank_top_n: int | None = None,
 ) -> pd.DataFrame:
     categorical_columns = infer_categorical_columns(future_df, feature_columns)
@@ -2773,7 +2766,7 @@ def predict_trifecta_probabilities(
 def build_trifecta_prediction_frame(
     ranked: pd.DataFrame,
     trifecta_calibrator: IsotonicRegression | None = None,
-    use_v2: bool = True,
+    use_v2: bool = False,
     odds_df: pd.DataFrame | None = None,
     trifecta_v2_v1_weight: float = 0.9,
     trifecta_v2_model: Any | None = None,
@@ -2785,6 +2778,16 @@ def build_trifecta_prediction_frame(
         prob_v1 = normalize_trifecta_probabilities(v1["raw_probability"].to_numpy(dtype=float), trifecta_calibrator)
         v1 = v1.rename(columns={"raw_probability": "raw_probability_v1"})
         v1["probability_v1"] = prob_v1
+        if not use_v2:
+            merged = v1[["race_id", "trifecta", "raw_probability_v1", "probability_v1"]].copy()
+            merged["raw_probability_v2"] = merged["raw_probability_v1"]
+            merged["probability_v2"] = merged["probability_v1"]
+            if "is_actual" in v1.columns:
+                merged["is_actual"] = v1["is_actual"].to_numpy()
+            merged["probability"] = merged["probability_v1"]
+            merged = attach_race_upset_and_darkhorse_scores(merged, race_df, scenario_model_bundle=None)
+            rows.append(merged)
+            continue
 
         v2 = enumerate_trifecta_probabilities_v2(race_df)
         v2 = v2.rename(columns={"raw_probability": "raw_probability_v2"})
@@ -3598,7 +3601,7 @@ def fit_model_trifecta_calibrator(
     flow_classes: list[str] | None = None,
     staged_models: dict[str, lgb.Booster] | None = None,
     trifecta_v2_model: Any | None = None,
-    use_v2: bool = True,
+    use_v2: bool = False,
     rerank_top_n: int | None = None,
     calibration_window_days: int | None = None,
 ) -> IsotonicRegression:

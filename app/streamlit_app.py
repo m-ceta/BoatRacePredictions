@@ -100,9 +100,6 @@ def _select_and_rename_columns(frame: pd.DataFrame, columns: list[tuple[str, str
         "is_darkhorse_candidate": "穴候補",
         "ticket_priority_score": "買い目優先度",
         "ticket_hint": "買い目目安",
-        "dynamic_rerank_subset": "可変weight区分",
-        "dynamic_rerank_weight": "適用weight",
-        "dynamic_rerank_enabled": "可変weight有効",
     }
     selected_sources = {source for source, _ in available}
     available.extend(
@@ -520,7 +517,7 @@ def render_dataset_tab() -> None:
 
 def render_train_tab() -> None:
     st.subheader("モデル再学習")
-    st.caption("ranker / classifier / flow / staged / Phase3 基本モデルを再学習します。")
+    st.caption("ranker / classifier / 三連単v1 calibrator を再学習します。")
 
     with st.form("train_form"):
         config_path = st.text_input("設定ファイル", value="configs/train.yaml", key="train_config")
@@ -547,55 +544,6 @@ def render_train_tab() -> None:
         ],
     )
     _render_command_result("モデル再学習", return_code, output_text)
-
-
-def render_trifecta_train_tab() -> None:
-    st.subheader("三連単最適化学習")
-    st.caption("三連単 Phase3 rerank の追加学習と評価を実行します。")
-
-    with st.form("trifecta_train_form"):
-        config_path = st.text_input("設定ファイル", value="configs/train.yaml", key="trifecta_train_config")
-        training_device = st.selectbox(
-            "学習デバイス",
-            options=["cpu", "gpu"],
-            index=0,
-            key="trifecta_training_device",
-            help="WebUI から実行する学習ジョブのデバイスを選択します。既定値は CPU です。",
-        )
-        max_races = st.number_input("max-races", min_value=100, max_value=10000, value=1000, step=100)
-        eval_max_races = st.number_input("eval-max-races", min_value=100, max_value=10000, value=1000, step=100)
-        optimize_rerank = st.checkbox("optimize-rerank を有効化", value=True)
-        optimize_rerank_workers = st.number_input(
-            "optimize-rerank-workers",
-            min_value=0,
-            max_value=64,
-            value=1,
-            step=1,
-            help="rerank 最適化の並列数です。1 は逐次、0 は CPUコア数 - 1 を自動使用します。",
-        )
-        submitted = st.form_submit_button("三連単最適化学習を実行")
-
-    if not submitted:
-        return
-
-    args = [
-        "-c",
-        "from src.cli import train_trifecta_v2_main; train_trifecta_v2_main()",
-        "--config",
-        config_path,
-        "--training-device",
-        training_device,
-        "--max-races",
-        str(int(max_races)),
-        "--eval-max-races",
-        str(int(eval_max_races)),
-    ]
-    if optimize_rerank:
-        args.append("--optimize-rerank")
-        args.extend(["--optimize-rerank-workers", str(int(optimize_rerank_workers))])
-
-    return_code, output_text = _run_python_cli("三連単最適化学習", args)
-    _render_command_result("三連単最適化学習", return_code, output_text)
 
 
 def render_recent_backtest_tab() -> None:
@@ -658,7 +606,6 @@ def main() -> None:
             "rowdata更新",
             "学習データ更新",
             "モデル再学習",
-            "三連単最適化学習",
             "過去1週間分予測",
         ]
     )
@@ -673,8 +620,6 @@ def main() -> None:
     with tabs[4]:
         render_train_tab()
     with tabs[5]:
-        render_trifecta_train_tab()
-    with tabs[6]:
         render_recent_backtest_tab()
 
 
