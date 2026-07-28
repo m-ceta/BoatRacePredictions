@@ -180,14 +180,6 @@ DEFAULT_LIGHTGBM_VARIANT_SETTINGS = {
     "num_threads_per_variant": 2,
     "variants": [
         {
-            "name": "lightgbm_top1",
-            "params": {
-                "num_leaves": 15,
-                "min_data_in_leaf": 50,
-                "lambda_l2": 3.0,
-            },
-        },
-        {
             "name": "lightgbm_stable_top6",
             "params": {
                 "num_leaves": 63,
@@ -233,6 +225,9 @@ DEFAULT_ENSEMBLE_SETTINGS = {
     "objective_top5_weight": 0.30,
     "objective_log_loss_weight": 0.10,
 }
+
+
+ENSEMBLE_OBJECTIVES = {"trifecta_fast", "rank_legacy"}
 
 
 def load_config(path: Path) -> dict:
@@ -285,6 +280,9 @@ def get_ensemble_settings(config: dict | None) -> dict[str, Any]:
     settings["grid_step"] = float(settings.get("grid_step", 0.10))
     if settings["grid_step"] <= 0 or settings["grid_step"] > 1:
         raise ValueError("models.ensemble.grid_step must be in the range (0, 1].")
+    settings["objective"] = str(settings.get("objective", "trifecta_fast")).strip()
+    if settings["objective"] not in ENSEMBLE_OBJECTIVES:
+        raise ValueError(f"models.ensemble.objective must be one of {sorted(ENSEMBLE_OBJECTIVES)}.")
     return settings
 
 
@@ -1669,60 +1667,21 @@ def train_ranker(
             categorical_columns,
         ),
     }
-    trifecta_v1_metrics = {
-        "valid_raw": evaluate_trifecta(
-            models,
-            ensemble_weights,
-            None,
-            valid_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
-            use_v2=False,
-        ),
-        "valid_calibrated": evaluate_trifecta(
-            models,
-            ensemble_weights,
-            trifecta_calibrator,
-            valid_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
-            use_v2=False,
-        ),
-        "test_raw": evaluate_trifecta(
-            models,
-            ensemble_weights,
-            None,
-            test_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
-            use_v2=False,
-        ),
-        "test_calibrated": evaluate_trifecta(
-            models,
-            ensemble_weights,
-            trifecta_calibrator,
-            test_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
-            use_v2=False,
-        ),
-    }
+    trifecta_v1_model_metrics = evaluate_trifecta_v1_model_metrics(
+        models,
+        ensemble_weights,
+        trifecta_calibrator,
+        valid_df,
+        test_df,
+        feature_columns,
+        categorical_columns,
+        classifier_models=classifier_models,
+        flow_model=flow_model,
+        flow_classes=flow_classes,
+        staged_models=staged_models,
+        config=config,
+    )
+    trifecta_v1_metrics = trifecta_v1_model_metrics["ensemble"]
     train_eval_df = apply_prediction_time_measurement_proxies(train_df)
     valid_eval_df = apply_prediction_time_measurement_proxies(valid_df)
     test_eval_df = apply_prediction_time_measurement_proxies(test_df)
@@ -1758,6 +1717,7 @@ def train_ranker(
         "trifecta": trifecta_v1_metrics,
         "ranker_metrics": ranker_metrics,
         "trifecta_v1_metrics": trifecta_v1_metrics,
+        "trifecta_v1_model_metrics": trifecta_v1_model_metrics,
         "classifier_metrics": classifier_metrics,
         "flow_model_metrics": flow_metrics,
         "staged_model_metrics": staged_metrics,
@@ -2035,65 +1995,38 @@ def train_ranker_from_splits(
         mark_train_stage_completed(checkpoint_path, checkpoint, "trifecta_v1_calibrator", {"status": "completed"})
     collect_garbage()
 
-    if resume and train_stage_completed(checkpoint, "trifecta_v1_metrics") and "trifecta_v1_metrics" in checkpoint_metrics:
-        progress("skipping trifecta v1 metrics: train checkpoint completed")
-        trifecta_v1_metrics = checkpoint_metrics.get("trifecta_v1_metrics", {})
+    if (
+        resume
+        and train_stage_completed(checkpoint, "trifecta_v1_model_metrics")
+        and "trifecta_v1_model_metrics" in checkpoint_metrics
+    ):
+        progress("skipping trifecta v1 model metrics: train checkpoint completed")
+        trifecta_v1_model_metrics = checkpoint_metrics.get("trifecta_v1_model_metrics", {})
+        trifecta_v1_metrics = trifecta_v1_model_metrics.get("ensemble", {})
     else:
-        progress("evaluating trifecta v1 metrics")
-        trifecta_v1_metrics = {
-            "valid_raw": evaluate_trifecta(
-                models,
-                ensemble_weights,
-                None,
-                valid_df,
-                feature_columns,
-                categorical_columns,
-                classifier_models=classifier_models,
-                flow_model=flow_model,
-                flow_classes=flow_classes,
-                staged_models=staged_models,
-                use_v2=False,
-            ),
-            "valid_calibrated": evaluate_trifecta(
-                models,
-                ensemble_weights,
-                trifecta_calibrator,
-                valid_df,
-                feature_columns,
-                categorical_columns,
-                classifier_models=classifier_models,
-                flow_model=flow_model,
-                flow_classes=flow_classes,
-                staged_models=staged_models,
-                use_v2=False,
-            ),
-            "test_raw": evaluate_trifecta(
-                models,
-                ensemble_weights,
-                None,
-                test_df,
-                feature_columns,
-                categorical_columns,
-                classifier_models=classifier_models,
-                flow_model=flow_model,
-                flow_classes=flow_classes,
-                staged_models=staged_models,
-                use_v2=False,
-            ),
-            "test_calibrated": evaluate_trifecta(
-                models,
-                ensemble_weights,
-                trifecta_calibrator,
-                test_df,
-                feature_columns,
-                categorical_columns,
-                classifier_models=classifier_models,
-                flow_model=flow_model,
-                flow_classes=flow_classes,
-                staged_models=staged_models,
-                use_v2=False,
-            ),
-        }
+        progress("evaluating trifecta v1 metrics by model")
+        trifecta_v1_model_metrics = evaluate_trifecta_v1_model_metrics(
+            models,
+            ensemble_weights,
+            trifecta_calibrator,
+            valid_df,
+            test_df,
+            feature_columns,
+            categorical_columns,
+            classifier_models=classifier_models,
+            flow_model=flow_model,
+            flow_classes=flow_classes,
+            staged_models=staged_models,
+            config=config,
+            progress_callback=progress,
+        )
+        trifecta_v1_metrics = trifecta_v1_model_metrics["ensemble"]
+        mark_train_stage_completed(
+            checkpoint_path,
+            checkpoint,
+            "trifecta_v1_model_metrics",
+            trifecta_v1_model_metrics,
+        )
         mark_train_stage_completed(checkpoint_path, checkpoint, "trifecta_v1_metrics", trifecta_v1_metrics)
     collect_garbage()
 
@@ -2110,6 +2043,7 @@ def train_ranker_from_splits(
         "trifecta": trifecta_v1_metrics,
         "ranker_metrics": ranker_metrics,
         "trifecta_v1_metrics": trifecta_v1_metrics,
+        "trifecta_v1_model_metrics": trifecta_v1_model_metrics,
         "classifier_metrics": classifier_metrics,
         "flow_model_metrics": flow_metrics,
         "staged_model_metrics": staged_metrics,
@@ -3540,6 +3474,7 @@ def optimize_ensemble_weights(
     valid_df = apply_prediction_time_measurement_proxies(valid_df)
     model_names = list(models.keys())
     eval_races = int(valid_df["race_id"].nunique()) if "race_id" in valid_df.columns else len(valid_df)
+    objective_name = str(settings.get("objective", "trifecta_fast"))
     grid_step = float(settings.get("grid_step", 0.10))
     grid_steps = max(int(round(1.0 / grid_step)), 1)
     candidate_vectors = simplex_weight_vectors(len(model_names), steps=grid_steps)
@@ -3548,7 +3483,7 @@ def optimize_ensemble_weights(
         progress_callback,
         "ensemble weight search: "
         f"models={len(model_names)}, races={eval_races}, candidates={len(candidate_vectors)}, "
-        f"workers={workers}, objective={settings.get('objective', 'trifecta_fast')}, grid_step={grid_step:.4g}",
+        f"workers={workers}, objective={objective_name}, grid_step={grid_step:.4g}",
     )
     score_by_model = {
         model_name: score_frame(model, model_name, valid_df, feature_columns, categorical_columns)
@@ -3565,7 +3500,7 @@ def optimize_ensemble_weights(
     base = score_by_model[model_names[0]][["race_id", "lane", "finish_position"]].copy()
     fast_context = build_fast_trifecta_eval_context(base)
     use_fast_trifecta = (
-        str(settings.get("objective", "trifecta_fast")) == "trifecta_fast"
+        objective_name == "trifecta_fast"
         and int(fast_context.get("race_count", 0)) > 0
     )
 
@@ -3624,7 +3559,7 @@ def optimize_ensemble_weights(
         "validation_candidate_count": float(len(candidate_vectors)),
         "validation_parallel_workers": float(workers),
         "validation_grid_step": float(grid_step),
-        "validation_objective_name": str(settings.get("objective", "trifecta_fast")),
+        "validation_objective_name": objective_name,
         "validation_fast_trifecta_races": float(fast_context.get("race_count", 0)),
     }
 
@@ -3714,6 +3649,142 @@ def fit_model_trifecta_calibrator(
         trifecta["is_actual"].astype(int).to_numpy(dtype=float),
     )
     return calibrator
+
+
+def single_model_ensemble_weights(model_name: str, config: dict | None = None) -> dict[str, float]:
+    weights = {model_name: 1.0}
+    weights["scenario_metric_min_races"] = float(
+        get_phase3_settings(config)["evaluation"].get("scenario_min_races", 100)
+    )
+    return weights
+
+
+def evaluate_trifecta_v1_metrics(
+    models: dict[str, Any],
+    weights: dict[str, float],
+    calibrator: IsotonicRegression | None,
+    valid_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    feature_columns: list[str],
+    categorical_columns: list[str],
+    *,
+    classifier_models: dict[str, lgb.Booster] | None = None,
+    flow_model: lgb.Booster | None = None,
+    flow_classes: list[str] | None = None,
+    staged_models: dict[str, lgb.Booster] | None = None,
+) -> dict[str, Any]:
+    return {
+        "valid_raw": evaluate_trifecta(
+            models,
+            weights,
+            None,
+            valid_df,
+            feature_columns,
+            categorical_columns,
+            classifier_models=classifier_models,
+            flow_model=flow_model,
+            flow_classes=flow_classes,
+            staged_models=staged_models,
+            use_v2=False,
+        ),
+        "valid_calibrated": evaluate_trifecta(
+            models,
+            weights,
+            calibrator,
+            valid_df,
+            feature_columns,
+            categorical_columns,
+            classifier_models=classifier_models,
+            flow_model=flow_model,
+            flow_classes=flow_classes,
+            staged_models=staged_models,
+            use_v2=False,
+        ),
+        "test_raw": evaluate_trifecta(
+            models,
+            weights,
+            None,
+            test_df,
+            feature_columns,
+            categorical_columns,
+            classifier_models=classifier_models,
+            flow_model=flow_model,
+            flow_classes=flow_classes,
+            staged_models=staged_models,
+            use_v2=False,
+        ),
+        "test_calibrated": evaluate_trifecta(
+            models,
+            weights,
+            calibrator,
+            test_df,
+            feature_columns,
+            categorical_columns,
+            classifier_models=classifier_models,
+            flow_model=flow_model,
+            flow_classes=flow_classes,
+            staged_models=staged_models,
+            use_v2=False,
+        ),
+    }
+
+
+def evaluate_trifecta_v1_model_metrics(
+    models: dict[str, Any],
+    ensemble_weights: dict[str, float],
+    ensemble_calibrator: IsotonicRegression | None,
+    valid_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    feature_columns: list[str],
+    categorical_columns: list[str],
+    *,
+    classifier_models: dict[str, lgb.Booster] | None = None,
+    flow_model: lgb.Booster | None = None,
+    flow_classes: list[str] | None = None,
+    staged_models: dict[str, lgb.Booster] | None = None,
+    config: dict | None = None,
+    progress_callback: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    metrics: dict[str, Any] = {
+        "ensemble": evaluate_trifecta_v1_metrics(
+            models,
+            ensemble_weights,
+            ensemble_calibrator,
+            valid_df,
+            test_df,
+            feature_columns,
+            categorical_columns,
+            classifier_models=classifier_models,
+            flow_model=flow_model,
+            flow_classes=flow_classes,
+            staged_models=staged_models,
+        )
+    }
+    for model_name, model in models.items():
+        _emit_progress(progress_callback, f"evaluating trifecta v1 metrics for model: {model_name}")
+        single_models = {model_name: model}
+        single_weights = single_model_ensemble_weights(model_name, config)
+        single_calibrator = fit_trifecta_calibrator(
+            single_models,
+            single_weights,
+            valid_df,
+            feature_columns,
+            categorical_columns,
+        )
+        metrics[model_name] = evaluate_trifecta_v1_metrics(
+            single_models,
+            single_weights,
+            single_calibrator,
+            valid_df,
+            test_df,
+            feature_columns,
+            categorical_columns,
+            classifier_models=classifier_models,
+            flow_model=flow_model,
+            flow_classes=flow_classes,
+            staged_models=staged_models,
+        )
+    return metrics
 
 
 def _metric_value(metrics: dict[str, Any], key: str) -> float:

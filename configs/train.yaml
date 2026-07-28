@@ -51,13 +51,11 @@ models:
     parallel_workers: 2
     num_threads_per_variant: 2
     variants:
-      - name: lightgbm_top1
+      - name: lightgbm_legacy_top1_top3
         params:
-          num_leaves: 31
-          min_data_in_leaf: 35
-          feature_fraction: 0.85
-          lambda_l1: 0.2
-          lambda_l2: 2.0
+          num_leaves: 15
+          min_data_in_leaf: 50
+          lambda_l2: 3.0
       - name: lightgbm_stable_top6
         params:
           num_leaves: 63
