@@ -65,6 +65,24 @@ models:
           min_data_in_leaf: 80
           feature_fraction: 0.65
           lambda_l2: 5.0
+  lightgbm_regression_variants:
+    enabled: true
+    parallel_workers: 1
+    num_threads_per_variant: 2
+    variants:
+      - name: lightgbm_reg_finish_position
+        target: finish_position
+        score_transform: negative
+        params:
+          objective: regression
+          metric: rmse
+          num_leaves: 31
+          min_data_in_leaf: 100
+          learning_rate: 0.03
+          feature_fraction: 0.70
+          bagging_fraction: 0.80
+          bagging_freq: 1
+          lambda_l2: 8.0
   xgboost_variants:
     enabled: true
     parallel_workers: 1

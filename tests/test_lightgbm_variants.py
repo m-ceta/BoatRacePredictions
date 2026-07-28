@@ -10,6 +10,10 @@ def test_lightgbm_variants_are_disabled_by_default() -> None:
     assert ranker.get_enabled_lightgbm_variants({}) == []
 
 
+def test_lightgbm_regression_variants_are_disabled_by_default() -> None:
+    assert ranker.get_enabled_lightgbm_regression_variants({}) == []
+
+
 def test_lightgbm_variant_config_validates_names() -> None:
     config = {
         "models": {
@@ -27,6 +31,35 @@ def test_lightgbm_variant_config_validates_names() -> None:
     assert variants == [{"name": "lightgbm_top1", "params": {"num_leaves": 15}}]
 
 
+def test_lightgbm_regression_variant_config_validates_finish_position_target() -> None:
+    config = {
+        "models": {
+            "lightgbm_regression_variants": {
+                "enabled": True,
+                "variants": [
+                    {
+                        "name": "lightgbm_reg_finish_position",
+                        "target": "finish_position",
+                        "score_transform": "negative",
+                        "params": {"num_leaves": 31},
+                    },
+                ],
+            }
+        }
+    }
+
+    variants = ranker.get_enabled_lightgbm_regression_variants(config)
+
+    assert variants == [
+        {
+            "name": "lightgbm_reg_finish_position",
+            "target": "finish_position",
+            "score_transform": "negative",
+            "params": {"num_leaves": 31},
+        }
+    ]
+
+
 def test_lightgbm_variant_config_rejects_reserved_name() -> None:
     config = {
         "models": {
@@ -41,6 +74,50 @@ def test_lightgbm_variant_config_rejects_reserved_name() -> None:
 
     with pytest.raises(ValueError, match="reserved"):
         ranker.get_enabled_lightgbm_variants(config)
+
+
+def test_lightgbm_regression_variant_config_rejects_non_regression_name() -> None:
+    config = {
+        "models": {
+            "lightgbm_regression_variants": {
+                "enabled": True,
+                "variants": [
+                    {"name": "lightgbm_top1", "target": "finish_position", "params": {}},
+                ],
+            }
+        }
+    }
+
+    with pytest.raises(ValueError, match="Invalid"):
+        ranker.get_enabled_lightgbm_regression_variants(config)
+
+
+def test_lightgbm_regression_score_uses_lower_predicted_finish_as_better() -> None:
+    class DummyRegressor:
+        def predict(self, frame):
+            return [3.0, 1.0]
+
+    df = pd.DataFrame(
+        {
+            "race_id": ["R1", "R1"],
+            "lane": [1, 2],
+            "finish_position": [2, 1],
+        }
+    )
+
+    scored = ranker.score_frame(
+        DummyRegressor(),
+        "lightgbm_reg_finish_position",
+        df,
+        feature_columns=[],
+        categorical_columns=[],
+    )
+
+    assert scored.loc[scored["lane"] == 2, "pred_rank"].iloc[0] == 1
+    assert scored.loc[scored["lane"] == 2, "score_probability_like"].iloc[0] > scored.loc[
+        scored["lane"] == 1,
+        "score_probability_like",
+    ].iloc[0]
 
 
 def test_ensemble_weight_optimization_includes_lightgbm_variants(monkeypatch) -> None:
