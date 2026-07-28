@@ -220,14 +220,22 @@ DEFAULT_ENSEMBLE_SETTINGS = {
     "parallel_workers": 1,
     "max_eval_races": 0,
     "grid_step": 0.10,
-    "objective": "trifecta_fast",
-    "objective_top12_weight": 0.60,
-    "objective_top5_weight": 0.30,
-    "objective_log_loss_weight": 0.10,
+    "objective": "trifecta_top12_balanced",
+    "objective_top12_weight": 0.35,
+    "objective_top5_weight": 0.25,
+    "objective_top3_weight": 0.15,
+    "objective_top1_weight": 0.10,
+    "objective_top3_overlap_weight": 0.10,
+    "objective_log_loss_weight": 0.05,
 }
 
 
-ENSEMBLE_OBJECTIVES = {"trifecta_fast", "rank_legacy"}
+ENSEMBLE_OBJECTIVES = {
+    "rank_legacy",
+    "trifecta_fast",
+    "trifecta_top12_balanced",
+    "trifecta_top12_simple",
+}
 
 
 def load_config(path: Path) -> dict:
@@ -1563,17 +1571,31 @@ def train_ranker(
     config = with_latest_available_dates(config, infer_latest_available_race_date(training_table))
     training_table = prepare_training_table(training_table, config)
 
-    train_end = pd.Timestamp(config["split"]["train_end_date"])
-    valid_end = pd.Timestamp(config["split"]["valid_end_date"])
+    if _is_random_by_race_split(config):
+        train_df, valid_df, test_df = split_training_frame_random_by_race(training_table, config)
+    else:
+        train_end = pd.Timestamp(config["split"]["train_end_date"])
+        valid_end = pd.Timestamp(config["split"]["valid_end_date"])
 
-    train_df = training_table[training_table["race_date"] <= train_end].copy()
-    valid_df = training_table[
-        (training_table["race_date"] > train_end) & (training_table["race_date"] <= valid_end)
-    ].copy()
-    test_df = training_table[training_table["race_date"] > valid_end].copy()
+        train_df = training_table[training_table["race_date"] <= train_end].copy()
+        valid_df = training_table[
+            (training_table["race_date"] > train_end) & (training_table["race_date"] <= valid_end)
+        ].copy()
+        test_df = training_table[training_table["race_date"] > valid_end].copy()
 
-    feature_columns = infer_feature_columns(training_table)
-    categorical_columns = infer_categorical_columns(training_table, feature_columns)
+    train_df = apply_prediction_time_measurement_proxies(train_df)
+    valid_df = apply_prediction_time_measurement_proxies(valid_df) if not valid_df.empty else valid_df
+    test_df = apply_prediction_time_measurement_proxies(test_df) if not test_df.empty else test_df
+
+    schema_frames = [train_df.head(200)]
+    if not valid_df.empty:
+        schema_frames.append(valid_df.head(200))
+    if not test_df.empty:
+        schema_frames.append(test_df.head(200))
+    schema_df = pd.concat(schema_frames, ignore_index=True)
+    feature_columns = infer_feature_columns(schema_df)
+    categorical_columns = infer_categorical_columns(schema_df, feature_columns)
+    del schema_df, schema_frames
 
     catboost_model = train_catboost(train_df, valid_df, feature_columns, categorical_columns, config)
     collect_garbage()
@@ -1682,9 +1704,9 @@ def train_ranker(
         config=config,
     )
     trifecta_v1_metrics = trifecta_v1_model_metrics["ensemble"]
-    train_eval_df = apply_prediction_time_measurement_proxies(train_df)
-    valid_eval_df = apply_prediction_time_measurement_proxies(valid_df)
-    test_eval_df = apply_prediction_time_measurement_proxies(test_df)
+    train_eval_df = train_df
+    valid_eval_df = valid_df
+    test_eval_df = test_df
     classifier_metrics = evaluate_classifier_models(
         classifier_models,
         train_eval_df,
@@ -1757,6 +1779,11 @@ def train_ranker_from_splits(
     def progress(message: str) -> None:
         if progress_callback is not None:
             progress_callback(message)
+
+    progress("applying prediction-time measurement proxies")
+    train_df = apply_prediction_time_measurement_proxies(train_df)
+    valid_df = apply_prediction_time_measurement_proxies(valid_df) if not valid_df.empty else valid_df
+    test_df = apply_prediction_time_measurement_proxies(test_df) if not test_df.empty else test_df
 
     progress("inferring feature columns")
     schema_frames = [train_df.head(200)]
@@ -1948,9 +1975,9 @@ def train_ranker_from_splits(
         mark_train_stage_completed(checkpoint_path, checkpoint, "ensemble", ensemble_metrics)
     collect_garbage()
 
-    train_eval_df = apply_prediction_time_measurement_proxies(train_df)
-    valid_eval_df = apply_prediction_time_measurement_proxies(valid_df)
-    test_eval_df = apply_prediction_time_measurement_proxies(test_df)
+    train_eval_df = train_df
+    valid_eval_df = valid_df
+    test_eval_df = test_df
     if resume and train_stage_completed(checkpoint, "classifiers", [artifacts["classifier_dir"]]) and "classifiers" in checkpoint_metrics:
         progress("skipping classifier models: train checkpoint completed")
         classifier_models = load_classifier_models(artifacts["classifier_dir"])
@@ -2079,11 +2106,11 @@ def prepare_training_table(training_table: pd.DataFrame, config: dict) -> pd.Dat
 
 
 def apply_prediction_time_measurement_proxies(df: pd.DataFrame) -> pd.DataFrame:
-    """Replace result-time measurements with prediction-time proxies for evaluation.
+    """Replace result-time measurements with prediction-time proxies.
 
-    Training keeps actual measurements. Evaluation, calibration, and optimization
-    should use the same kind of pre-race proxy values that live prediction has.
-    The actual course is intentionally kept unchanged by request.
+    Training, evaluation, calibration, and optimization all use the same kind of
+    pre-race proxy values that live prediction has. The actual course is
+    intentionally kept unchanged by request.
     """
     frame = df.copy()
     frame["start_timing"] = _first_available_numeric_series(
@@ -3427,22 +3454,51 @@ def evaluate_fast_trifecta_ensemble_candidate(
     trifecta_probs = p1 * (p2_base / denom2) * (p3_base / denom3)
     actual_probs = np.clip(trifecta_probs[np.arange(len(actual_indices)), actual_indices], 1e-12, 1.0)
 
-    top12_idx = np.argpartition(-trifecta_probs, kth=11, axis=1)[:, :12]
-    top5_idx = np.argpartition(-trifecta_probs, kth=4, axis=1)[:, :5]
-    top12_hit = np.any(top12_idx == actual_indices[:, None], axis=1)
-    top5_hit = np.any(top5_idx == actual_indices[:, None], axis=1)
+    ranked_indices = np.argsort(-trifecta_probs, axis=1)
+    actual_ranks = np.empty_like(ranked_indices)
+    actual_ranks[np.arange(len(actual_indices))[:, None], ranked_indices] = np.arange(ranked_indices.shape[1])
+    actual_rank = actual_ranks[np.arange(len(actual_indices)), actual_indices]
+    best_permutations = TRIFECTA_FAST_PERMUTATIONS[ranked_indices[:, 0]]
+    actual_permutations = TRIFECTA_FAST_PERMUTATIONS[actual_indices]
+    predicted_top3_members = np.zeros((len(actual_indices), 6), dtype=bool)
+    actual_top3_members = np.zeros((len(actual_indices), 6), dtype=bool)
+    race_positions = np.arange(len(actual_indices))[:, None]
+    predicted_top3_members[race_positions, best_permutations] = True
+    actual_top3_members[race_positions, actual_permutations] = True
+    top3_overlap = np.logical_and(predicted_top3_members, actual_top3_members).sum(axis=1) / 3.0
+    top1_hit = actual_rank == 0
+    top3_hit = actual_rank < 3
+    top5_hit = actual_rank < 5
+    top12_hit = actual_rank < 12
     log_loss = -float(np.mean(np.log(actual_probs)))
+    top1_hit_rate = float(np.mean(top1_hit))
+    top3_hit_rate = float(np.mean(top3_hit))
     top12_hit_rate = float(np.mean(top12_hit))
     top5_hit_rate = float(np.mean(top5_hit))
+    avg_top3_overlap = float(np.mean(top3_overlap))
     normalized_log_loss = log_loss / float(np.log(120.0))
-    objective = (
-        float(settings.get("objective_top12_weight", 0.60)) * top12_hit_rate
-        + float(settings.get("objective_top5_weight", 0.30)) * top5_hit_rate
-        - float(settings.get("objective_log_loss_weight", 0.10)) * normalized_log_loss
-    )
+    objective_name = str(settings.get("objective", "trifecta_top12_balanced"))
+    if objective_name in {"trifecta_fast", "trifecta_top12_simple"}:
+        objective = (
+            float(settings.get("objective_top12_weight", 0.60)) * top12_hit_rate
+            + float(settings.get("objective_top5_weight", 0.30)) * top5_hit_rate
+            - float(settings.get("objective_log_loss_weight", 0.10)) * normalized_log_loss
+        )
+    else:
+        objective = (
+            float(settings.get("objective_top12_weight", 0.35)) * top12_hit_rate
+            + float(settings.get("objective_top5_weight", 0.25)) * top5_hit_rate
+            + float(settings.get("objective_top3_weight", 0.15)) * top3_hit_rate
+            + float(settings.get("objective_top1_weight", 0.10)) * top1_hit_rate
+            + float(settings.get("objective_top3_overlap_weight", 0.10)) * avg_top3_overlap
+            - float(settings.get("objective_log_loss_weight", 0.05)) * normalized_log_loss
+        )
     metrics = {
+        "top1_hit_rate": top1_hit_rate,
+        "top3_hit_rate": top3_hit_rate,
         "top12_hit_rate": top12_hit_rate,
         "top5_hit_rate": top5_hit_rate,
+        "avg_top3_overlap": avg_top3_overlap,
         "log_loss": log_loss,
         "normalized_log_loss": normalized_log_loss,
         "race_count": float(len(actual_indices)),
@@ -3500,7 +3556,7 @@ def optimize_ensemble_weights(
     base = score_by_model[model_names[0]][["race_id", "lane", "finish_position"]].copy()
     fast_context = build_fast_trifecta_eval_context(base)
     use_fast_trifecta = (
-        objective_name == "trifecta_fast"
+        objective_name in {"trifecta_fast", "trifecta_top12_balanced", "trifecta_top12_simple"}
         and int(fast_context.get("race_count", 0)) > 0
     )
 
@@ -3549,8 +3605,10 @@ def optimize_ensemble_weights(
     return {
         **best_weights,
         "validation_objective": best_objective,
-        "validation_top1_accuracy": float(best_metrics.get("top1_accuracy", 0.0)),
+        "validation_top1_accuracy": float(best_metrics.get("top1_accuracy", best_metrics.get("top1_hit_rate", 0.0))),
         "validation_avg_top3_overlap": float(best_metrics.get("avg_top3_overlap", 0.0)),
+        "validation_top1_hit_rate": float(best_metrics.get("top1_hit_rate", 0.0)),
+        "validation_top3_hit_rate": float(best_metrics.get("top3_hit_rate", 0.0)),
         "validation_top5_hit_rate": float(best_metrics.get("top5_hit_rate", 0.0)),
         "validation_top12_hit_rate": float(best_metrics.get("top12_hit_rate", 0.0)),
         "validation_log_loss": float(best_metrics.get("log_loss", 0.0)),
