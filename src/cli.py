@@ -1310,42 +1310,8 @@ def evaluate_trifecta_in_chunks(
 
 
 def load_training_splits(training_table_path: Path, config: dict) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    latest_race_dates = pd.read_parquet(training_table_path, columns=["race_date"])
-    config = with_latest_available_dates(config, infer_latest_available_race_date(latest_race_dates))
-    data_config = config.get("data", {})
-    min_date = pd.Timestamp(data_config.get("min_date")) if data_config.get("min_date") else None
-    max_date = pd.Timestamp(data_config.get("max_date")) if data_config.get("max_date") else None
-    train_end = pd.Timestamp(config["split"]["train_end_date"])
-    valid_end = pd.Timestamp(config["split"]["valid_end_date"])
-
-    train_start = min_date if min_date is not None else pd.Timestamp("1900-01-01")
-    train_stop = min(train_end, max_date) if max_date is not None else train_end
-    valid_start = max(train_end + pd.Timedelta(days=1), min_date) if min_date is not None else train_end + pd.Timedelta(days=1)
-    valid_stop = min(valid_end, max_date) if max_date is not None else valid_end
-    test_start = max(valid_end + pd.Timedelta(days=1), min_date) if min_date is not None else valid_end + pd.Timedelta(days=1)
-    test_stop = max_date
-
-    train_df = pd.read_parquet(
-        training_table_path,
-        filters=[("race_date", ">=", train_start), ("race_date", "<=", train_stop)],
-    )
-    valid_df = pd.read_parquet(
-        training_table_path,
-        filters=[("race_date", ">=", valid_start), ("race_date", "<=", valid_stop)],
-    ) if valid_start <= valid_stop else pd.DataFrame()
-    if test_stop is not None and test_start <= test_stop:
-        test_df = pd.read_parquet(
-            training_table_path,
-            filters=[("race_date", ">=", test_start), ("race_date", "<=", test_stop)],
-        )
-    else:
-        test_df = pd.DataFrame()
-
-    return (
-        prepare_training_table(train_df, config),
-        prepare_training_table(valid_df, config) if not valid_df.empty else valid_df,
-        prepare_training_table(test_df, config) if not test_df.empty else test_df,
-    )
+    train_df, valid_df, test_df, _synced_config = load_training_splits_from_parquet(training_table_path, config)
+    return train_df, valid_df, test_df
 
 
 def predict_today_main() -> None:

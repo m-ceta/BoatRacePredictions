@@ -275,8 +275,9 @@ def choose_default_today_race_no(
 def load_live_history_frame(config: dict[str, Any], target_date: date) -> pd.DataFrame:
     processed_dir = Path(config["data"].get("processed_dir", "data/processed"))
     race_results_path = processed_dir / "race_results.parquet"
-    rolling_years = int(config.get("data", {}).get("rolling_years", 3) or 3)
-    min_history_date = (pd.Timestamp(target_date) - pd.DateOffset(years=rolling_years)).date()
+    rolling_years = float(config.get("data", {}).get("rolling_years", 3) or 3)
+    rolling_months = max(1, int(round(rolling_years * 12)))
+    min_history_date = (pd.Timestamp(target_date) - pd.DateOffset(months=rolling_months)).date()
 
     if race_results_path.exists():
         history_columns = [

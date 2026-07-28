@@ -416,8 +416,66 @@ def _parse_positive_window_int(value: Any) -> int | None:
     return parsed if parsed > 0 else None
 
 
+def _parse_positive_window_float(value: Any) -> float | None:
+    if value in (None, "", 0, "0"):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _years_to_date_offset(years: float) -> pd.DateOffset:
+    # Use months so fractional year windows such as 3.5 years are deterministic.
+    return pd.DateOffset(months=max(1, int(round(years * 12))))
+
+
 def collect_garbage() -> None:
     gc.collect()
+
+
+def _is_random_by_race_split(config: dict) -> bool:
+    method = str(config.get("split", {}).get("method", "")).strip().lower()
+    return method in {"random_by_race", "race_random", "random"}
+
+
+def split_training_frame_random_by_race(
+    frame: pd.DataFrame,
+    config: dict,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    if frame.empty:
+        return frame.copy(), frame.copy(), frame.copy()
+    if "race_id" not in frame.columns:
+        raise ValueError("random_by_race split requires race_id column.")
+
+    split_config = config.get("split", {})
+    train_ratio = float(split_config.get("train_ratio", 6) or 6)
+    valid_ratio = float(split_config.get("valid_ratio", 1) or 1)
+    if train_ratio <= 0 or valid_ratio <= 0:
+        raise ValueError("split.train_ratio and split.valid_ratio must be positive.")
+
+    random_seed = int(split_config.get("random_seed", config.get("model", {}).get("random_seed", 42)) or 42)
+    race_ids = pd.Series(frame["race_id"].dropna().astype(str).unique())
+    if race_ids.empty:
+        return frame.copy(), frame.iloc[0:0].copy(), frame.iloc[0:0].copy()
+
+    shuffled = race_ids.to_numpy(copy=True)
+    np.random.default_rng(random_seed).shuffle(shuffled)
+    valid_fraction = valid_ratio / (train_ratio + valid_ratio)
+    valid_count = int(round(len(shuffled) * valid_fraction))
+    if len(shuffled) > 1:
+        valid_count = min(max(valid_count, 1), len(shuffled) - 1)
+    else:
+        valid_count = 0
+
+    valid_ids = set(shuffled[:valid_count].tolist())
+    race_id_text = frame["race_id"].astype(str)
+    valid_mask = race_id_text.isin(valid_ids)
+    train_df = frame.loc[~valid_mask].copy()
+    valid_df = frame.loc[valid_mask].copy()
+    test_df = frame.iloc[0:0].copy()
+    return train_df, valid_df, test_df
 
 
 def load_training_splits_from_parquet(
@@ -432,6 +490,19 @@ def load_training_splits_from_parquet(
     data_config = synced_config.get("data", {})
     min_date = pd.Timestamp(data_config.get("min_date")) if data_config.get("min_date") else None
     max_date = pd.Timestamp(data_config.get("max_date")) if data_config.get("max_date") else None
+    if _is_random_by_race_split(synced_config):
+        filters = []
+        if min_date is not None:
+            filters.append(("race_date", ">=", min_date))
+        if max_date is not None:
+            filters.append(("race_date", "<=", max_date))
+        frame = pd.read_parquet(training_table_path, filters=filters or None)
+        frame = prepare_training_table(frame, synced_config)
+        train_df, valid_df, test_df = split_training_frame_random_by_race(frame, synced_config)
+        del frame
+        collect_garbage()
+        return train_df, valid_df, test_df, synced_config
+
     train_end = pd.Timestamp(synced_config["split"]["train_end_date"])
     valid_end = pd.Timestamp(synced_config["split"]["valid_end_date"])
 
@@ -480,9 +551,9 @@ def with_latest_available_dates(config: dict, latest_race_date: pd.Timestamp | s
     synced.setdefault("data", {})
     synced["data"]["max_date"] = latest_str
 
-    rolling_years = _parse_positive_window_int(synced["data"].get("rolling_years"))
+    rolling_years = _parse_positive_window_float(synced["data"].get("rolling_years"))
     if rolling_years is not None:
-        min_ts = (latest_ts - pd.DateOffset(years=rolling_years) + pd.Timedelta(days=1)).normalize()
+        min_ts = (latest_ts - _years_to_date_offset(rolling_years) + pd.Timedelta(days=1)).normalize()
         synced["data"]["min_date"] = min_ts.strftime("%Y-%m-%d")
 
     synced.setdefault("split", {})
