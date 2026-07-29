@@ -26,6 +26,7 @@ model:
 
 models:
   catboost:
+    enabled: false
     params:
       loss_function: YetiRank
       eval_metric: NDCG
@@ -54,11 +55,11 @@ models:
     parallel_workers: 2
     num_threads_per_variant: 2
     variants:
-      - name: lightgbm_legacy_top1_top3
+      - name: lightgbm_legacy_features
+        feature_set: legacy_20260712
         params:
-          num_leaves: 15
+          num_leaves: 63
           min_data_in_leaf: 50
-          lambda_l2: 3.0
       - name: lightgbm_stable_top6
         params:
           num_leaves: 63
@@ -100,11 +101,47 @@ models:
           lambda: 8.0
           alpha: 1.0
           gamma: 0.5
+  xgboost_regression_variants:
+    enabled: true
+    parallel_workers: 1
+    num_threads_per_variant: 2
+    variants:
+      - name: xgboost_reg_finish_position
+        target: finish_position
+        score_transform: negative
+        params:
+          objective: reg:squarederror
+          eval_metric: rmse
+          max_depth: 3
+          eta: 0.025
+          min_child_weight: 10.0
+          subsample: 0.75
+          colsample_bytree: 0.70
+          lambda: 8.0
+          alpha: 1.0
+          gamma: 0.5
+  random_forest_regression_variants:
+    enabled: true
+    parallel_workers: 1
+    num_threads_per_variant: 2
+    variants:
+      - name: random_forest_reg_finish_position
+        target: finish_position
+        score_transform: negative
+        params:
+          n_estimators: 80
+          max_depth: 10
+          min_samples_leaf: 50
+          max_features: 0.65
+          bootstrap: true
+          max_samples: 0.35
+          random_state: 42
 
 artifacts:
   catboost_model_path: artifacts/catboost_ranker.cbm
   lightgbm_model_path: artifacts/lightgbm_ranker.txt
   xgboost_model_path: artifacts/xgboost_ranker.json
+  random_forest_model_path: artifacts/random_forest_regressor.joblib
   features_path: artifacts/feature_columns.json
   ensemble_weights_path: artifacts/ensemble_weights.json
   trifecta_calibrator_path: artifacts/trifecta_isotonic.joblib

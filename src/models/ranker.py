@@ -19,6 +19,7 @@ import pandas as pd
 import yaml
 from catboost import CatBoostError, CatBoostRanker, Pool
 from sklearn.isotonic import IsotonicRegression
+from sklearn.ensemble import RandomForestRegressor
 
 try:
     import xgboost as xgb
@@ -82,6 +83,7 @@ DEFAULT_ARTIFACT_PATHS = {
     "catboost_model_path": "artifacts/catboost_ranker.cbm",
     "lightgbm_model_path": "artifacts/lightgbm_ranker.txt",
     "xgboost_model_path": "artifacts/xgboost_ranker.json",
+    "random_forest_model_path": "artifacts/random_forest_regressor.joblib",
     "features_path": "artifacts/feature_columns.json",
     "ensemble_weights_path": "artifacts/ensemble_weights.json",
     "trifecta_calibrator_path": "artifacts/trifecta_isotonic.joblib",
@@ -94,9 +96,11 @@ DEFAULT_ARTIFACT_PATHS = {
 RESERVED_MODEL_NAMES = {"catboost", "lightgbm", "xgboost"}
 LIGHTGBM_VARIANT_NAME_RE = re.compile(r"^lightgbm_[A-Za-z0-9_]+$")
 XGBOOST_VARIANT_NAME_RE = re.compile(r"^xgboost_[A-Za-z0-9_]+$")
+RANDOM_FOREST_VARIANT_NAME_RE = re.compile(r"^random_forest_[A-Za-z0-9_]+$")
 TRIFECTA_V2_FEATURE_VERSION = 2
 
 DEFAULT_CATBOOST_SETTINGS = {
+    "enabled": True,
     "params": {},
 }
 
@@ -241,6 +245,55 @@ DEFAULT_XGBOOST_VARIANT_SETTINGS = {
 }
 
 
+DEFAULT_XGBOOST_REGRESSION_VARIANT_SETTINGS = {
+    "enabled": False,
+    "parallel_workers": 1,
+    "num_threads_per_variant": 2,
+    "variants": [
+        {
+            "name": "xgboost_reg_finish_position",
+            "target": "finish_position",
+            "score_transform": "negative",
+            "params": {
+                "objective": "reg:squarederror",
+                "eval_metric": "rmse",
+                "max_depth": 3,
+                "eta": 0.025,
+                "min_child_weight": 10.0,
+                "subsample": 0.75,
+                "colsample_bytree": 0.70,
+                "lambda": 8.0,
+                "alpha": 1.0,
+                "gamma": 0.5,
+            },
+        },
+    ],
+}
+
+
+DEFAULT_RANDOM_FOREST_REGRESSION_VARIANT_SETTINGS = {
+    "enabled": False,
+    "parallel_workers": 1,
+    "num_threads_per_variant": 2,
+    "variants": [
+        {
+            "name": "random_forest_reg_finish_position",
+            "target": "finish_position",
+            "score_transform": "negative",
+            "params": {
+                "n_estimators": 80,
+                "max_depth": 10,
+                "min_samples_leaf": 50,
+                "max_features": 0.65,
+                "bootstrap": True,
+                "max_samples": 0.35,
+                "random_state": 42,
+            },
+        },
+    ],
+}
+
+
 DEFAULT_ENSEMBLE_SETTINGS = {
     "parallel_workers": 1,
     "max_eval_races": 0,
@@ -301,7 +354,12 @@ def get_catboost_settings(config: dict | None) -> dict[str, Any]:
         **(configured or {}),
     }
     settings["params"] = dict((configured or {}).get("params", DEFAULT_CATBOOST_SETTINGS["params"]))
+    settings["enabled"] = bool(settings.get("enabled", True))
     return settings
+
+
+def is_catboost_enabled(config: dict | None) -> bool:
+    return bool(get_catboost_settings(config).get("enabled", True))
 
 
 def get_xgboost_variant_settings(config: dict | None) -> dict[str, Any]:
@@ -311,6 +369,34 @@ def get_xgboost_variant_settings(config: dict | None) -> dict[str, Any]:
         **(configured or {}),
     }
     settings["variants"] = list((configured or {}).get("variants", DEFAULT_XGBOOST_VARIANT_SETTINGS["variants"]))
+    settings["parallel_workers"] = max(int(settings.get("parallel_workers", 1)), 1)
+    settings["num_threads_per_variant"] = max(int(settings.get("num_threads_per_variant", 2)), 1)
+    return settings
+
+
+def get_xgboost_regression_variant_settings(config: dict | None) -> dict[str, Any]:
+    configured = ((config or {}).get("models", {}) or {}).get("xgboost_regression_variants", {})
+    settings = {
+        **DEFAULT_XGBOOST_REGRESSION_VARIANT_SETTINGS,
+        **(configured or {}),
+    }
+    settings["variants"] = list(
+        (configured or {}).get("variants", DEFAULT_XGBOOST_REGRESSION_VARIANT_SETTINGS["variants"])
+    )
+    settings["parallel_workers"] = max(int(settings.get("parallel_workers", 1)), 1)
+    settings["num_threads_per_variant"] = max(int(settings.get("num_threads_per_variant", 2)), 1)
+    return settings
+
+
+def get_random_forest_regression_variant_settings(config: dict | None) -> dict[str, Any]:
+    configured = ((config or {}).get("models", {}) or {}).get("random_forest_regression_variants", {})
+    settings = {
+        **DEFAULT_RANDOM_FOREST_REGRESSION_VARIANT_SETTINGS,
+        **(configured or {}),
+    }
+    settings["variants"] = list(
+        (configured or {}).get("variants", DEFAULT_RANDOM_FOREST_REGRESSION_VARIANT_SETTINGS["variants"])
+    )
     settings["parallel_workers"] = max(int(settings.get("parallel_workers", 1)), 1)
     settings["num_threads_per_variant"] = max(int(settings.get("num_threads_per_variant", 2)), 1)
     return settings
@@ -351,6 +437,7 @@ def get_enabled_lightgbm_variants(config: dict | None) -> list[dict[str, Any]]:
             raise ValueError(f"Duplicate LightGBM variant name: {name}")
         seen.add(name)
         variant["name"] = name
+        variant["feature_set"] = str(variant.get("feature_set", "full")).strip() or "full"
         variant["params"] = dict(variant.get("params", {}) or {})
     return variants
 
@@ -407,6 +494,66 @@ def get_enabled_xgboost_variants(config: dict | None) -> list[dict[str, Any]]:
     return variants
 
 
+def get_enabled_xgboost_regression_variants(config: dict | None) -> list[dict[str, Any]]:
+    settings = get_xgboost_regression_variant_settings(config)
+    if not bool(settings.get("enabled", False)):
+        return []
+    variants = [dict(variant) for variant in settings.get("variants", [])]
+    seen: set[str] = set()
+    for variant in variants:
+        name = str(variant.get("name", "")).strip()
+        if not name:
+            raise ValueError("XGBoost regression variant name must not be empty.")
+        if name in RESERVED_MODEL_NAMES:
+            raise ValueError(f"XGBoost regression variant name conflicts with reserved model name: {name}")
+        if not XGBOOST_VARIANT_NAME_RE.match(name) or not name.startswith("xgboost_reg_"):
+            raise ValueError(f"Invalid XGBoost regression variant name: {name}")
+        if name in seen:
+            raise ValueError(f"Duplicate XGBoost regression variant name: {name}")
+        target = str(variant.get("target", "finish_position")).strip()
+        if target not in {"finish_position"}:
+            raise ValueError(f"Unsupported XGBoost regression variant target: {target}")
+        score_transform = str(variant.get("score_transform", "negative")).strip()
+        if score_transform not in {"negative"}:
+            raise ValueError(f"Unsupported XGBoost regression score_transform: {score_transform}")
+        seen.add(name)
+        variant["name"] = name
+        variant["target"] = target
+        variant["score_transform"] = score_transform
+        variant["params"] = dict(variant.get("params", {}) or {})
+    return variants
+
+
+def get_enabled_random_forest_regression_variants(config: dict | None) -> list[dict[str, Any]]:
+    settings = get_random_forest_regression_variant_settings(config)
+    if not bool(settings.get("enabled", False)):
+        return []
+    variants = [dict(variant) for variant in settings.get("variants", [])]
+    seen: set[str] = set()
+    for variant in variants:
+        name = str(variant.get("name", "")).strip()
+        if not name:
+            raise ValueError("Random forest regression variant name must not be empty.")
+        if name in RESERVED_MODEL_NAMES:
+            raise ValueError(f"Random forest regression variant name conflicts with reserved model name: {name}")
+        if not RANDOM_FOREST_VARIANT_NAME_RE.match(name) or not name.startswith("random_forest_reg_"):
+            raise ValueError(f"Invalid random forest regression variant name: {name}")
+        if name in seen:
+            raise ValueError(f"Duplicate random forest regression variant name: {name}")
+        target = str(variant.get("target", "finish_position")).strip()
+        if target not in {"finish_position"}:
+            raise ValueError(f"Unsupported random forest regression variant target: {target}")
+        score_transform = str(variant.get("score_transform", "negative")).strip()
+        if score_transform not in {"negative"}:
+            raise ValueError(f"Unsupported random forest regression score_transform: {score_transform}")
+        seen.add(name)
+        variant["name"] = name
+        variant["target"] = target
+        variant["score_transform"] = score_transform
+        variant["params"] = dict(variant.get("params", {}) or {})
+    return variants
+
+
 def is_lightgbm_model_name(model_name: str) -> bool:
     return model_name == "lightgbm" or model_name.startswith("lightgbm_")
 
@@ -417,6 +564,18 @@ def is_lightgbm_regression_model_name(model_name: str) -> bool:
 
 def is_xgboost_model_name(model_name: str) -> bool:
     return model_name == "xgboost" or model_name.startswith("xgboost_")
+
+
+def is_xgboost_regression_model_name(model_name: str) -> bool:
+    return model_name.startswith("xgboost_reg_")
+
+
+def is_random_forest_model_name(model_name: str) -> bool:
+    return model_name.startswith("random_forest_")
+
+
+def is_random_forest_regression_model_name(model_name: str) -> bool:
+    return model_name.startswith("random_forest_reg_")
 
 
 def lightgbm_variant_model_path(base_path: Path, variant_name: str) -> Path:
@@ -430,6 +589,11 @@ def xgboost_variant_model_path(base_path: Path, variant_name: str) -> Path:
     if variant_name == "xgboost":
         return base_path
     suffix = variant_name.removeprefix("xgboost_")
+    return base_path.with_name(f"{base_path.stem}_{suffix}{base_path.suffix}")
+
+
+def random_forest_variant_model_path(base_path: Path, variant_name: str) -> Path:
+    suffix = variant_name.removeprefix("random_forest_")
     return base_path.with_name(f"{base_path.stem}_{suffix}{base_path.suffix}")
 
 
@@ -1670,8 +1834,10 @@ def train_ranker(
     categorical_columns = infer_categorical_columns(schema_df, feature_columns)
     del schema_df, schema_frames
 
-    catboost_model = train_catboost(train_df, valid_df, feature_columns, categorical_columns, config)
-    collect_garbage()
+    catboost_model = None
+    if is_catboost_enabled(config):
+        catboost_model = train_catboost(train_df, valid_df, feature_columns, categorical_columns, config)
+        collect_garbage()
     lightgbm_model = train_lightgbm(train_df, valid_df, feature_columns, categorical_columns, config)
     collect_garbage()
     lightgbm_variant_models = train_lightgbm_variants(train_df, valid_df, feature_columns, categorical_columns, config)
@@ -1686,6 +1852,22 @@ def train_ranker(
     collect_garbage()
     xgboost_variant_models = train_xgboost_variants(train_df, valid_df, feature_columns, categorical_columns, config)
     collect_garbage()
+    xgboost_regression_variant_models = train_xgboost_regression_variants(
+        train_df,
+        valid_df,
+        feature_columns,
+        categorical_columns,
+        config,
+    )
+    collect_garbage()
+    random_forest_regression_variant_models = train_random_forest_regression_variants(
+        train_df,
+        valid_df,
+        feature_columns,
+        categorical_columns,
+        config,
+    )
+    collect_garbage()
     classifier_models = train_classifiers(train_df, valid_df, feature_columns, categorical_columns, config)
     collect_garbage()
     flow_model = None
@@ -1693,11 +1875,13 @@ def train_ranker(
     staged_models: dict[str, lgb.Booster] = {}
 
     models = {
-        "catboost": catboost_model,
+        **({"catboost": catboost_model} if catboost_model is not None else {}),
         "lightgbm": lightgbm_model,
         **lightgbm_variant_models,
         **lightgbm_regression_variant_models,
         **xgboost_variant_models,
+        **xgboost_regression_variant_models,
+        **random_forest_regression_variant_models,
     }
     ensemble_weights = optimize_ensemble_weights(
         models,
@@ -1719,14 +1903,20 @@ def train_ranker(
     collect_garbage()
 
     ranker_metrics = {
-        "catboost": evaluate_model_bundle(
-            catboost_model,
-            "catboost",
-            train_df,
-            valid_df,
-            test_df,
-            feature_columns,
-            categorical_columns,
+        **(
+            {
+                "catboost": evaluate_model_bundle(
+                    catboost_model,
+                    "catboost",
+                    train_df,
+                    valid_df,
+                    test_df,
+                    feature_columns,
+                    categorical_columns,
+                )
+            }
+            if catboost_model is not None
+            else {}
         ),
         "lightgbm": evaluate_model_bundle(
             lightgbm_model,
@@ -1772,6 +1962,30 @@ def train_ranker(
                 categorical_columns,
             )
             for name, model in xgboost_variant_models.items()
+        },
+        **{
+            name: evaluate_model_bundle(
+                model,
+                name,
+                train_df,
+                valid_df,
+                test_df,
+                feature_columns,
+                categorical_columns,
+            )
+            for name, model in xgboost_regression_variant_models.items()
+        },
+        **{
+            name: evaluate_model_bundle(
+                model,
+                name,
+                train_df,
+                valid_df,
+                test_df,
+                feature_columns,
+                categorical_columns,
+            )
+            for name, model in random_forest_regression_variant_models.items()
         },
         "ensemble": evaluate_ensemble(
             models,
@@ -1908,7 +2122,11 @@ def train_ranker_from_splits(
     artifacts["features_path"].write_text(json.dumps(feature_columns, ensure_ascii=False, indent=2), encoding="utf-8")
     checkpoint_metrics = checkpoint.setdefault("metrics", {})
 
-    if resume and train_stage_completed(checkpoint, "catboost", [artifacts["catboost_model_path"]]) and "catboost" in checkpoint_metrics:
+    catboost_model = None
+    catboost_metrics: dict[str, Any] = {}
+    if not is_catboost_enabled(config):
+        progress("skipping catboost ranker: disabled")
+    elif resume and train_stage_completed(checkpoint, "catboost", [artifacts["catboost_model_path"]]) and "catboost" in checkpoint_metrics:
         progress("skipping catboost ranker: train checkpoint completed")
         catboost_model = CatBoostRanker()
         catboost_model.load_model(str(artifacts["catboost_model_path"]))
@@ -2072,12 +2290,110 @@ def train_ranker_from_splits(
         mark_train_stage_completed(checkpoint_path, checkpoint, "xgboost_variants", xgboost_variant_metrics)
     collect_garbage()
 
+    xgboost_regression_variant_paths = enabled_xgboost_regression_variant_paths(config, artifacts["xgboost_model_path"])
+    if (
+        resume
+        and train_stage_completed(checkpoint, "xgboost_regression_variants", xgboost_regression_variant_paths)
+        and "xgboost_regression_variants" in checkpoint_metrics
+    ):
+        progress("skipping xgboost regression variants: train checkpoint completed")
+        xgb_module = require_xgboost()
+        xgboost_regression_variant_models = {}
+        for variant in get_enabled_xgboost_regression_variants(config):
+            name = str(variant["name"])
+            model = xgb_module.Booster()
+            model.load_model(str(xgboost_variant_model_path(artifacts["xgboost_model_path"], name)))
+            xgboost_regression_variant_models[name] = model
+        xgboost_regression_variant_metrics = checkpoint_metrics.get("xgboost_regression_variants", {})
+    else:
+        xgboost_regression_variant_models = train_xgboost_regression_variants(
+            train_df,
+            valid_df,
+            feature_columns,
+            categorical_columns,
+            config,
+            progress_callback=progress,
+        )
+        save_xgboost_variants(xgboost_regression_variant_models, artifacts["xgboost_model_path"])
+        xgboost_regression_variant_metrics = {
+            name: evaluate_model_bundle(
+                model,
+                name,
+                train_df,
+                valid_df,
+                test_df,
+                feature_columns,
+                categorical_columns,
+            )
+            for name, model in xgboost_regression_variant_models.items()
+        }
+        mark_train_stage_completed(
+            checkpoint_path,
+            checkpoint,
+            "xgboost_regression_variants",
+            xgboost_regression_variant_metrics,
+        )
+    collect_garbage()
+
+    random_forest_regression_variant_paths = enabled_random_forest_regression_variant_paths(
+        config,
+        artifacts["random_forest_model_path"],
+    )
+    if (
+        resume
+        and train_stage_completed(
+            checkpoint,
+            "random_forest_regression_variants",
+            random_forest_regression_variant_paths,
+        )
+        and "random_forest_regression_variants" in checkpoint_metrics
+    ):
+        progress("skipping random forest regression variants: train checkpoint completed")
+        random_forest_regression_variant_models = {
+            str(variant["name"]): joblib.load(
+                random_forest_variant_model_path(artifacts["random_forest_model_path"], str(variant["name"]))
+            )
+            for variant in get_enabled_random_forest_regression_variants(config)
+        }
+        random_forest_regression_variant_metrics = checkpoint_metrics.get("random_forest_regression_variants", {})
+    else:
+        random_forest_regression_variant_models = train_random_forest_regression_variants(
+            train_df,
+            valid_df,
+            feature_columns,
+            categorical_columns,
+            config,
+            progress_callback=progress,
+        )
+        save_random_forest_variants(random_forest_regression_variant_models, artifacts["random_forest_model_path"])
+        random_forest_regression_variant_metrics = {
+            name: evaluate_model_bundle(
+                model,
+                name,
+                train_df,
+                valid_df,
+                test_df,
+                feature_columns,
+                categorical_columns,
+            )
+            for name, model in random_forest_regression_variant_models.items()
+        }
+        mark_train_stage_completed(
+            checkpoint_path,
+            checkpoint,
+            "random_forest_regression_variants",
+            random_forest_regression_variant_metrics,
+        )
+    collect_garbage()
+
     models = {
-        "catboost": catboost_model,
+        **({"catboost": catboost_model} if catboost_model is not None else {}),
         "lightgbm": lightgbm_model,
         **lightgbm_variant_models,
         **lightgbm_regression_variant_models,
         **xgboost_variant_models,
+        **xgboost_regression_variant_models,
+        **random_forest_regression_variant_models,
     }
     if resume and train_stage_completed(checkpoint, "ensemble", [artifacts["ensemble_weights_path"]]) and "ensemble" in checkpoint_metrics:
         progress("skipping ensemble optimization: train checkpoint completed")
@@ -2197,11 +2513,13 @@ def train_ranker_from_splits(
     collect_garbage()
 
     ranker_metrics = {
-        "catboost": catboost_metrics,
+        **({"catboost": catboost_metrics} if catboost_model is not None else {}),
         "lightgbm": lightgbm_metrics,
         **lightgbm_variant_metrics,
         **lightgbm_regression_variant_metrics,
         **xgboost_variant_metrics,
+        **xgboost_regression_variant_metrics,
+        **random_forest_regression_variant_metrics,
         "ensemble": ensemble_metrics,
     }
     metrics = {
@@ -2319,6 +2637,66 @@ def infer_categorical_columns(df: pd.DataFrame, feature_columns: list[str]) -> l
         categorical_columns.append(column)
 
     return categorical_columns
+
+
+LEGACY_20260712_EXCLUDE_PREFIXES = (
+    "pre_race_attack_",
+    "race_attack_",
+    "race_escape_",
+    "race_inner_",
+    "race_outer_",
+    "lane_attack_",
+    "lane_escape_",
+    "lane_outer_",
+    "attack_candidate_",
+    "distance_from_attack_candidate",
+    "is_attack_candidate",
+    "is_inside_of_attack_candidate",
+    "is_outside_of_attack_candidate",
+    "venue_course_prev_",
+    "venue_lane_prev_",
+    "racer_course_prev_",
+)
+
+
+LEGACY_20260712_EXCLUDE_SUFFIXES = (
+    "_race_rank_low",
+    "_race_diff_best",
+    "_race_diff_mean_safe",
+    "_race_mean",
+    "_race_std",
+    "_race_zscore",
+    "_gap_inner",
+    "_gap_outer",
+    "_gap_inner_mean",
+    "_gap_outer_mean",
+)
+
+
+def select_feature_columns_for_set(feature_columns: list[str], feature_set: str | None) -> list[str]:
+    name = str(feature_set or "full").strip()
+    if name in {"", "full"}:
+        return list(feature_columns)
+    if name != "legacy_20260712":
+        raise ValueError(f"Unsupported feature_set: {name}")
+    selected = [
+        column
+        for column in feature_columns
+        if not column.startswith(LEGACY_20260712_EXCLUDE_PREFIXES)
+        and not column.endswith(LEGACY_20260712_EXCLUDE_SUFFIXES)
+    ]
+    if not selected:
+        raise ValueError("legacy_20260712 feature_set selected no features.")
+    return selected
+
+
+def lightgbm_prediction_feature_columns(model: lgb.Booster, default_feature_columns: list[str]) -> list[str]:
+    if not hasattr(model, "feature_name"):
+        return default_feature_columns
+    names = [str(name) for name in model.feature_name()]
+    if names and names != ["Column_0"] and all(name in default_feature_columns for name in names):
+        return names
+    return default_feature_columns
 
 
 def train_catboost(
@@ -2478,12 +2856,21 @@ def train_lightgbm_variants(
 
     def train_one(variant: dict[str, Any]) -> tuple[str, lgb.Booster]:
         name = str(variant["name"])
-        _emit_progress(progress_callback, f"training lightgbm variant: {name}")
+        variant_feature_columns = select_feature_columns_for_set(
+            feature_columns,
+            str(variant.get("feature_set", "full")),
+        )
+        variant_categorical_columns = [column for column in categorical_columns if column in variant_feature_columns]
+        _emit_progress(
+            progress_callback,
+            f"training lightgbm variant: {name}, feature_set={variant.get('feature_set', 'full')}, "
+            f"features={len(variant_feature_columns)}",
+        )
         model = train_lightgbm(
             train_df,
             valid_df,
-            feature_columns,
-            categorical_columns,
+            variant_feature_columns,
+            variant_categorical_columns,
             config,
             param_overrides=dict(variant.get("params", {}) or {}),
             num_threads=num_threads,
@@ -2694,6 +3081,64 @@ def train_xgboost_ranker(
         collect_garbage()
 
 
+def train_xgboost_regression(
+    train_df: pd.DataFrame,
+    valid_df: pd.DataFrame,
+    feature_columns: list[str],
+    categorical_columns: list[str],
+    config: dict,
+    *,
+    target: str = "finish_position",
+    param_overrides: dict[str, Any] | None = None,
+    num_threads: int | None = None,
+) -> Any:
+    if target not in train_df.columns or target not in valid_df.columns:
+        raise ValueError(f"XGBoost regression target column is missing: {target}")
+    xgb_module = require_xgboost()
+    train_sorted = sort_for_grouping(train_df)
+    valid_sorted = sort_for_grouping(valid_df)
+    train_xgb = build_xgboost_frame(train_sorted, feature_columns, categorical_columns)
+    valid_xgb = build_xgboost_frame(valid_sorted, feature_columns, categorical_columns)
+    train_dataset = xgb_module.DMatrix(
+        train_xgb,
+        label=pd.to_numeric(train_sorted[target], errors="coerce").astype(float),
+    )
+    valid_dataset = xgb_module.DMatrix(
+        valid_xgb,
+        label=pd.to_numeric(valid_sorted[target], errors="coerce").astype(float),
+    )
+    params = {
+        "objective": "reg:squarederror",
+        "eval_metric": "rmse",
+        "eta": config["model"]["learning_rate"],
+        "max_depth": 3,
+        "min_child_weight": 10.0,
+        "subsample": 0.75,
+        "colsample_bytree": 0.70,
+        "lambda": 8.0,
+        "alpha": 1.0,
+        "gamma": 0.5,
+        "seed": config["model"]["random_seed"],
+        "verbosity": 1,
+        "tree_method": "hist",
+    }
+    if param_overrides:
+        params.update(param_overrides)
+    if num_threads is not None and int(num_threads) > 0:
+        params["nthread"] = int(num_threads)
+    try:
+        return xgb_module.train(
+            params,
+            train_dataset,
+            num_boost_round=int(config["model"]["iterations"]),
+            evals=[(valid_dataset, "valid")],
+            verbose_eval=100,
+        )
+    finally:
+        del train_sorted, valid_sorted, train_xgb, valid_xgb, train_dataset, valid_dataset
+        collect_garbage()
+
+
 def train_xgboost_variants(
     train_df: pd.DataFrame,
     valid_df: pd.DataFrame,
@@ -2732,6 +3177,139 @@ def train_xgboost_variants(
         return dict(train_one(variant) for variant in variants)
 
     trained: dict[str, Any] = {}
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_name = {executor.submit(train_one, variant): str(variant["name"]) for variant in variants}
+        for future in as_completed(future_to_name):
+            name, model = future.result()
+            trained[name] = model
+    return trained
+
+
+def train_xgboost_regression_variants(
+    train_df: pd.DataFrame,
+    valid_df: pd.DataFrame,
+    feature_columns: list[str],
+    categorical_columns: list[str],
+    config: dict,
+    progress_callback: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    variants = get_enabled_xgboost_regression_variants(config)
+    if not variants:
+        return {}
+    settings = get_xgboost_regression_variant_settings(config)
+    workers = min(int(settings.get("parallel_workers", 1)), len(variants))
+    num_threads = int(settings.get("num_threads_per_variant", 2))
+    _emit_progress(
+        progress_callback,
+        f"training xgboost regression variants: workers={workers}, variants={len(variants)}",
+    )
+
+    def train_one(variant: dict[str, Any]) -> tuple[str, Any]:
+        name = str(variant["name"])
+        _emit_progress(progress_callback, f"training xgboost regression variant: {name}")
+        model = train_xgboost_regression(
+            train_df,
+            valid_df,
+            feature_columns,
+            categorical_columns,
+            config,
+            target=str(variant.get("target", "finish_position")),
+            param_overrides=dict(variant.get("params", {}) or {}),
+            num_threads=num_threads,
+        )
+        _emit_progress(progress_callback, f"completed xgboost regression variant: {name}")
+        return name, model
+
+    if workers <= 1 or len(variants) <= 1:
+        return dict(train_one(variant) for variant in variants)
+
+    trained: dict[str, Any] = {}
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_name = {executor.submit(train_one, variant): str(variant["name"]) for variant in variants}
+        for future in as_completed(future_to_name):
+            name, model = future.result()
+            trained[name] = model
+    return trained
+
+
+def train_random_forest_regression(
+    train_df: pd.DataFrame,
+    valid_df: pd.DataFrame,
+    feature_columns: list[str],
+    categorical_columns: list[str],
+    config: dict,
+    *,
+    target: str = "finish_position",
+    param_overrides: dict[str, Any] | None = None,
+    num_threads: int | None = None,
+) -> RandomForestRegressor:
+    if target not in train_df.columns:
+        raise ValueError(f"Random forest regression target column is missing: {target}")
+    train_sorted = sort_for_grouping(train_df)
+    train_frame = build_xgboost_frame(train_sorted, feature_columns, categorical_columns)
+    params: dict[str, Any] = {
+        "n_estimators": 80,
+        "max_depth": 10,
+        "min_samples_leaf": 50,
+        "max_features": 0.65,
+        "bootstrap": True,
+        "max_samples": 0.35,
+        "random_state": config["model"]["random_seed"],
+        "n_jobs": int(num_threads) if num_threads is not None and int(num_threads) > 0 else 1,
+    }
+    if param_overrides:
+        params.update(param_overrides)
+    model = RandomForestRegressor(**params)
+    try:
+        model.fit(
+            train_frame,
+            pd.to_numeric(train_sorted[target], errors="coerce").astype(float),
+        )
+        return model
+    finally:
+        del train_sorted, train_frame
+        collect_garbage()
+
+
+def train_random_forest_regression_variants(
+    train_df: pd.DataFrame,
+    valid_df: pd.DataFrame,
+    feature_columns: list[str],
+    categorical_columns: list[str],
+    config: dict,
+    progress_callback: Callable[[str], None] | None = None,
+) -> dict[str, RandomForestRegressor]:
+    variants = get_enabled_random_forest_regression_variants(config)
+    if not variants:
+        return {}
+    settings = get_random_forest_regression_variant_settings(config)
+    workers = min(int(settings.get("parallel_workers", 1)), len(variants))
+    num_threads = int(settings.get("num_threads_per_variant", 2))
+    _emit_progress(
+        progress_callback,
+        f"training random forest regression variants: workers={workers}, variants={len(variants)}",
+    )
+
+    def train_one(variant: dict[str, Any]) -> tuple[str, RandomForestRegressor]:
+        name = str(variant["name"])
+        _emit_progress(progress_callback, f"training random forest regression variant: {name}")
+        model = train_random_forest_regression(
+            train_df,
+            valid_df,
+            feature_columns,
+            categorical_columns,
+            config,
+            target=str(variant.get("target", "finish_position")),
+            param_overrides=dict(variant.get("params", {}) or {}),
+            num_threads=num_threads,
+        )
+        _emit_progress(progress_callback, f"completed random forest regression variant: {name}")
+        return name, model
+
+    if workers <= 1 or len(variants) <= 1:
+        return dict(train_one(variant) for variant in variants)
+
+    trained: dict[str, RandomForestRegressor] = {}
     with ThreadPoolExecutor(max_workers=workers) as executor:
         future_to_name = {executor.submit(train_one, variant): str(variant["name"]) for variant in variants}
         for future in as_completed(future_to_name):
@@ -2836,7 +3414,9 @@ def score_frame(
         pool = build_catboost_pool(df, feature_columns, categorical_columns)
         raw_scores = model.predict(pool)
     elif is_lightgbm_model_name(model_type):
-        frame = build_lightgbm_frame(df, feature_columns, categorical_columns)
+        model_feature_columns = lightgbm_prediction_feature_columns(model, feature_columns)
+        model_categorical_columns = [column for column in categorical_columns if column in model_feature_columns]
+        frame = build_lightgbm_frame(df, model_feature_columns, model_categorical_columns)
         raw_scores = model.predict(frame)
         if is_lightgbm_regression_model_name(model_type):
             raw_scores = -np.asarray(raw_scores, dtype=float)
@@ -2844,6 +3424,13 @@ def score_frame(
         xgb_module = require_xgboost()
         frame = build_xgboost_frame(df, feature_columns, categorical_columns)
         raw_scores = model.predict(xgb_module.DMatrix(frame))
+        if is_xgboost_regression_model_name(model_type):
+            raw_scores = -np.asarray(raw_scores, dtype=float)
+    elif is_random_forest_model_name(model_type):
+        frame = build_xgboost_frame(df, feature_columns, categorical_columns)
+        raw_scores = model.predict(frame)
+        if is_random_forest_regression_model_name(model_type):
+            raw_scores = -np.asarray(raw_scores, dtype=float)
     else:
         raise ValueError(f"Unknown model_type: {model_type}")
 
@@ -2914,6 +3501,7 @@ def save_artifacts(
     trifecta_v3_calibrator: IsotonicRegression | None = None,
     trifecta_v3_calibrator_path: Path | None = None,
     xgboost_model_path: Path | None = None,
+    random_forest_model_path: Path | None = None,
 ) -> None:
     catboost_model_path.parent.mkdir(parents=True, exist_ok=True)
     lightgbm_model_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2922,7 +3510,8 @@ def save_artifacts(
     trifecta_calibrator_path.parent.mkdir(parents=True, exist_ok=True)
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
 
-    models["catboost"].save_model(catboost_model_path)
+    if "catboost" in models:
+        models["catboost"].save_model(catboost_model_path)
     models["lightgbm"].save_model(str(lightgbm_model_path))
     for model_name, model in models.items():
         if model_name in RESERVED_MODEL_NAMES or not is_lightgbm_model_name(model_name):
@@ -2937,6 +3526,11 @@ def save_artifacts(
             path = xgboost_variant_model_path(xgboost_model_path, model_name)
             path.parent.mkdir(parents=True, exist_ok=True)
             model.save_model(str(path))
+    if random_forest_model_path is not None:
+        save_random_forest_variants(
+            {name: model for name, model in models.items() if is_random_forest_model_name(name)},
+            random_forest_model_path,
+        )
     features_path.write_text(json.dumps(feature_columns, ensure_ascii=False, indent=2), encoding="utf-8")
     ensemble_weights_path.write_text(
         json.dumps(metrics["ensemble_weights"], ensure_ascii=False, indent=2),
@@ -2987,7 +3581,9 @@ def predict_race_order(
             pool = build_catboost_pool_for_inference(base, feature_columns, categorical_columns)
             raw_scores = model.predict(pool)
         elif is_lightgbm_model_name(model_type):
-            frame = build_lightgbm_frame(base, feature_columns, categorical_columns)
+            model_feature_columns = lightgbm_prediction_feature_columns(model, feature_columns)
+            model_categorical_columns = [column for column in categorical_columns if column in model_feature_columns]
+            frame = build_lightgbm_frame(base, model_feature_columns, model_categorical_columns)
             raw_scores = model.predict(frame)
             if is_lightgbm_regression_model_name(model_type):
                 raw_scores = -np.asarray(raw_scores, dtype=float)
@@ -2995,6 +3591,13 @@ def predict_race_order(
             xgb_module = require_xgboost()
             frame = build_xgboost_frame(base, feature_columns, categorical_columns)
             raw_scores = model.predict(xgb_module.DMatrix(frame))
+            if is_xgboost_regression_model_name(model_type):
+                raw_scores = -np.asarray(raw_scores, dtype=float)
+        elif is_random_forest_model_name(model_type):
+            frame = build_xgboost_frame(base, feature_columns, categorical_columns)
+            raw_scores = model.predict(frame)
+            if is_random_forest_regression_model_name(model_type):
+                raw_scores = -np.asarray(raw_scores, dtype=float)
         else:
             continue
 
@@ -3438,13 +4041,14 @@ def build_catboost_pool_for_inference(
 
 def load_models(config: dict) -> dict[str, Any]:
     artifacts = get_artifact_paths(config)
-    catboost_model = CatBoostRanker()
-    catboost_model.load_model(str(artifacts["catboost_model_path"]))
     lightgbm_model = lgb.Booster(model_file=str(artifacts["lightgbm_model_path"]))
     models: dict[str, Any] = {
-        "catboost": catboost_model,
         "lightgbm": lightgbm_model,
     }
+    if is_catboost_enabled(config):
+        catboost_model = CatBoostRanker()
+        catboost_model.load_model(str(artifacts["catboost_model_path"]))
+        models["catboost"] = catboost_model
     for variant in get_enabled_lightgbm_variants(config):
         name = str(variant["name"])
         path = lightgbm_variant_model_path(artifacts["lightgbm_model_path"], name)
@@ -3467,6 +4071,22 @@ def load_models(config: dict) -> dict[str, Any]:
             model = xgb_module.Booster()
             model.load_model(str(path))
             models[name] = model
+    if get_enabled_xgboost_regression_variants(config):
+        xgb_module = require_xgboost()
+        for variant in get_enabled_xgboost_regression_variants(config):
+            name = str(variant["name"])
+            path = xgboost_variant_model_path(artifacts["xgboost_model_path"], name)
+            if not path.exists():
+                raise FileNotFoundError(f"Configured XGBoost regression variant artifact not found: {path}")
+            model = xgb_module.Booster()
+            model.load_model(str(path))
+            models[name] = model
+    for variant in get_enabled_random_forest_regression_variants(config):
+        name = str(variant["name"])
+        path = random_forest_variant_model_path(artifacts["random_forest_model_path"], name)
+        if not path.exists():
+            raise FileNotFoundError(f"Configured random forest regression variant artifact not found: {path}")
+        models[name] = joblib.load(path)
     return models
 
 
@@ -3603,6 +4223,13 @@ def save_xgboost_variants(models: dict[str, Any], xgboost_model_path: Path) -> N
         model.save_model(str(path))
 
 
+def save_random_forest_variants(models: dict[str, Any], random_forest_model_path: Path) -> None:
+    for model_name, model in models.items():
+        path = random_forest_variant_model_path(random_forest_model_path, model_name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        joblib.dump(model, path)
+
+
 def enabled_lightgbm_variant_paths(config: dict, lightgbm_model_path: Path) -> list[Path]:
     return [
         lightgbm_variant_model_path(lightgbm_model_path, str(variant["name"]))
@@ -3621,6 +4248,20 @@ def enabled_xgboost_variant_paths(config: dict, xgboost_model_path: Path) -> lis
     return [
         xgboost_variant_model_path(xgboost_model_path, str(variant["name"]))
         for variant in get_enabled_xgboost_variants(config)
+    ]
+
+
+def enabled_xgboost_regression_variant_paths(config: dict, xgboost_model_path: Path) -> list[Path]:
+    return [
+        xgboost_variant_model_path(xgboost_model_path, str(variant["name"]))
+        for variant in get_enabled_xgboost_regression_variants(config)
+    ]
+
+
+def enabled_random_forest_regression_variant_paths(config: dict, random_forest_model_path: Path) -> list[Path]:
+    return [
+        random_forest_variant_model_path(random_forest_model_path, str(variant["name"]))
+        for variant in get_enabled_random_forest_regression_variants(config)
     ]
 
 

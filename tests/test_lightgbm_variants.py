@@ -10,8 +10,18 @@ def test_lightgbm_variants_are_disabled_by_default() -> None:
     assert ranker.get_enabled_lightgbm_variants({}) == []
 
 
+def test_catboost_is_enabled_by_default_and_can_be_disabled() -> None:
+    assert ranker.is_catboost_enabled({}) is True
+    assert ranker.is_catboost_enabled({"models": {"catboost": {"enabled": False}}}) is False
+
+
 def test_lightgbm_regression_variants_are_disabled_by_default() -> None:
     assert ranker.get_enabled_lightgbm_regression_variants({}) == []
+
+
+def test_xgboost_and_random_forest_regression_variants_are_disabled_by_default() -> None:
+    assert ranker.get_enabled_xgboost_regression_variants({}) == []
+    assert ranker.get_enabled_random_forest_regression_variants({}) == []
 
 
 def test_lightgbm_variant_config_validates_names() -> None:
@@ -28,7 +38,30 @@ def test_lightgbm_variant_config_validates_names() -> None:
 
     variants = ranker.get_enabled_lightgbm_variants(config)
 
-    assert variants == [{"name": "lightgbm_top1", "params": {"num_leaves": 15}}]
+    assert variants == [{"name": "lightgbm_top1", "feature_set": "full", "params": {"num_leaves": 15}}]
+
+
+def test_legacy_feature_set_excludes_late_added_features() -> None:
+    columns = [
+        "lane",
+        "racer_prev_win_rate",
+        "racer_prev_win_rate_race_rank",
+        "venue_course_prev_win_rate",
+        "venue_course_prev_win_rate_race_rank",
+        "national_win_rate_race_mean",
+        "racer_prev_win_rate_gap_inner",
+        "race_attack_pressure",
+        "lane_outer_link_fit",
+        "pre_race_attack_score",
+    ]
+
+    selected = ranker.select_feature_columns_for_set(columns, "legacy_20260712")
+
+    assert selected == [
+        "lane",
+        "racer_prev_win_rate",
+        "racer_prev_win_rate_race_rank",
+    ]
 
 
 def test_lightgbm_regression_variant_config_validates_finish_position_target() -> None:
@@ -56,6 +89,64 @@ def test_lightgbm_regression_variant_config_validates_finish_position_target() -
             "target": "finish_position",
             "score_transform": "negative",
             "params": {"num_leaves": 31},
+        }
+    ]
+
+
+def test_xgboost_regression_variant_config_validates_finish_position_target() -> None:
+    config = {
+        "models": {
+            "xgboost_regression_variants": {
+                "enabled": True,
+                "variants": [
+                    {
+                        "name": "xgboost_reg_finish_position",
+                        "target": "finish_position",
+                        "score_transform": "negative",
+                        "params": {"max_depth": 3},
+                    },
+                ],
+            }
+        }
+    }
+
+    variants = ranker.get_enabled_xgboost_regression_variants(config)
+
+    assert variants == [
+        {
+            "name": "xgboost_reg_finish_position",
+            "target": "finish_position",
+            "score_transform": "negative",
+            "params": {"max_depth": 3},
+        }
+    ]
+
+
+def test_random_forest_regression_variant_config_validates_finish_position_target() -> None:
+    config = {
+        "models": {
+            "random_forest_regression_variants": {
+                "enabled": True,
+                "variants": [
+                    {
+                        "name": "random_forest_reg_finish_position",
+                        "target": "finish_position",
+                        "score_transform": "negative",
+                        "params": {"max_depth": 10},
+                    },
+                ],
+            }
+        }
+    }
+
+    variants = ranker.get_enabled_random_forest_regression_variants(config)
+
+    assert variants == [
+        {
+            "name": "random_forest_reg_finish_position",
+            "target": "finish_position",
+            "score_transform": "negative",
+            "params": {"max_depth": 10},
         }
     ]
 
@@ -118,6 +209,30 @@ def test_lightgbm_regression_score_uses_lower_predicted_finish_as_better() -> No
         scored["lane"] == 1,
         "score_probability_like",
     ].iloc[0]
+
+
+def test_random_forest_regression_score_uses_lower_predicted_finish_as_better() -> None:
+    class DummyRegressor:
+        def predict(self, frame):
+            return [3.0, 1.0]
+
+    df = pd.DataFrame(
+        {
+            "race_id": ["R1", "R1"],
+            "lane": [1, 2],
+            "finish_position": [2, 1],
+        }
+    )
+
+    scored = ranker.score_frame(
+        DummyRegressor(),
+        "random_forest_reg_finish_position",
+        df,
+        feature_columns=[],
+        categorical_columns=[],
+    )
+
+    assert scored.loc[scored["lane"] == 2, "pred_rank"].iloc[0] == 1
 
 
 def test_ensemble_weight_optimization_includes_lightgbm_variants(monkeypatch) -> None:
