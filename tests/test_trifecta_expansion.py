@@ -166,6 +166,29 @@ def test_future_information_columns_do_not_enter_features() -> None:
     assert "winning_style" not in feature_columns
 
 
+def test_high_correlation_drop_columns_do_not_enter_features() -> None:
+    df = pd.DataFrame(
+        {
+            "race_id": ["R1"],
+            "race_date": [pd.Timestamp("2026-01-01")],
+            "lane": [1],
+            "base_feature": [0.5],
+            "racer_prev_avg_st": [0.15],
+            "start_timing": [0.15],
+            "race_attack_pressure": [0.2],
+            "pre_race_attack_candidate_score": [0.2],
+        }
+    )
+
+    feature_columns = infer_feature_columns(df)
+
+    assert "base_feature" in feature_columns
+    assert "start_timing" in feature_columns
+    assert "pre_race_attack_candidate_score" in feature_columns
+    assert "racer_prev_avg_st" not in feature_columns
+    assert "race_attack_pressure" not in feature_columns
+
+
 def test_evaluation_measurement_proxies_replace_start_and_exhibition_but_keep_course() -> None:
     frame = pd.DataFrame(
         {

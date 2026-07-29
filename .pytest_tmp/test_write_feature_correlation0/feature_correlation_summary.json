@@ -1,0 +1,25 @@
+{
+  "split": "valid",
+  "sample_races": 0,
+  "race_count": 2,
+  "row_count": 12,
+  "feature_set": "full",
+  "feature_count": 4,
+  "numeric_feature_count": 2,
+  "dropped_non_numeric_count": 1,
+  "dropped_constant_count": 1,
+  "target_columns": [
+    "finish_position",
+    "target_rank",
+    "is_win"
+  ],
+  "pair_threshold": 0.99,
+  "high_correlation_pair_count": 1,
+  "reported_high_correlation_pair_count": 1,
+  "target_correlation_rows": 6,
+  "outputs": {
+    "targets": "D:\\Source\\Python\\BoatRacePredictions\\.pytest_tmp\\test_write_feature_correlation0\\feature_correlation_targets.csv",
+    "pairs": "D:\\Source\\Python\\BoatRacePredictions\\.pytest_tmp\\test_write_feature_correlation0\\feature_correlation_pairs.csv",
+    "summary": "D:\\Source\\Python\\BoatRacePredictions\\.pytest_tmp\\test_write_feature_correlation0\\feature_correlation_summary.json"
+  }
+}

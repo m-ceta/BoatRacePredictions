@@ -2751,8 +2751,42 @@ def _first_available_numeric_series(df: pd.DataFrame, columns: list[str]) -> pd.
     return values
 
 
+HIGH_CORRELATION_DROP_COLUMNS = frozenset(
+    {
+        "racer_prev_avg_exhibition_race_rank",
+        "racer_prev_avg_st_race_diff_mean_safe",
+        "exhibition_time_race_diff_mean_safe",
+        "pre_race_attack_candidate_lane",
+        "attack_candidate_outer_count",
+        "current_meet_win_count",
+        "pre_race_attack_score_gap_candidate",
+        "race_attack_pressure",
+        "racer_lane_prev_avg_st_race_diff_mean_safe",
+        "racer_prev_avg_exhibition",
+        "racer_prev_avg_exhibition_race_diff_mean",
+        "racer_prev_avg_st",
+        "racer_prev_avg_st_10_race_diff_mean_safe",
+        "racer_prev_avg_st_5_race_diff_mean_safe",
+        "racer_prev_avg_st_gap_inner",
+        "racer_prev_avg_st_gap_outer",
+        "racer_prev_avg_st_race_diff_best",
+        "racer_venue_lane_prev_avg_st_race_diff_mean_safe",
+        "start_timing_race_diff_mean_safe",
+        "racer_prev_avg_st_race_rank_low",
+        "racer_prev_avg_st_race_zscore",
+        "racer_prev_avg_st_race_rank",
+        "racer_prev_avg_st_race_diff_mean",
+        "start_timing_race_mean",
+    }
+)
+
+
 def infer_feature_columns(df: pd.DataFrame) -> list[str]:
-    return [column for column in df.columns if column not in DEFAULT_DROP_COLUMNS]
+    return [
+        column
+        for column in df.columns
+        if column not in DEFAULT_DROP_COLUMNS and column not in HIGH_CORRELATION_DROP_COLUMNS
+    ]
 
 
 def infer_categorical_columns(df: pd.DataFrame, feature_columns: list[str]) -> list[str]:

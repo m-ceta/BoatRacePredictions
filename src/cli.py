@@ -70,10 +70,12 @@ from src.models.ranker import (
     with_phase3_optimization_metadata,
     with_rank_penalty_settings,
     with_rerank_top_n,
+    apply_prediction_time_measurement_proxies,
     infer_feature_columns,
     infer_categorical_columns,
     infer_latest_available_race_date,
     load_training_splits_from_parquet,
+    select_feature_columns_for_set,
     train_ranker_from_splits,
     train_checkpoint_signature,
     train_stage_completed,
@@ -1060,6 +1062,202 @@ def sample_races_for_evaluation(df: pd.DataFrame, max_races: int) -> pd.DataFram
     indices = np.linspace(0, len(races) - 1, num=max_races, dtype=int)
     selected_ids = races.iloc[np.unique(indices)]["race_id"].tolist()
     return df[df["race_id"].isin(selected_ids)].copy()
+
+
+def _numeric_feature_frame(
+    df: pd.DataFrame,
+    feature_columns: list[str],
+) -> tuple[pd.DataFrame, dict[str, dict[str, float]], list[str], list[str]]:
+    numeric_parts: dict[str, pd.Series] = {}
+    feature_stats: dict[str, dict[str, float]] = {}
+    dropped_non_numeric: list[str] = []
+    dropped_constant: list[str] = []
+
+    row_count = len(df)
+    for column in feature_columns:
+        if column not in df.columns:
+            dropped_non_numeric.append(column)
+            continue
+        values = pd.to_numeric(df[column], errors="coerce")
+        non_null = int(values.notna().sum())
+        if non_null == 0:
+            dropped_non_numeric.append(column)
+            continue
+        std = float(values.std(skipna=True))
+        if not np.isfinite(std) or std <= 0.0:
+            dropped_constant.append(column)
+            continue
+        numeric_parts[column] = values.astype("float32")
+        feature_stats[column] = {
+            "mean": float(values.mean(skipna=True)),
+            "std": std,
+            "missing_rate": float(1.0 - (non_null / row_count)) if row_count else 0.0,
+            "non_null_count": float(non_null),
+        }
+
+    return pd.DataFrame(numeric_parts, index=df.index), feature_stats, dropped_non_numeric, dropped_constant
+
+
+def write_feature_correlation_outputs(
+    df: pd.DataFrame,
+    feature_columns: list[str],
+    output_dir: Path,
+    *,
+    split: str,
+    feature_set: str,
+    sample_races: int,
+    pair_threshold: float,
+    max_pairs: int,
+) -> dict:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    target_columns = [
+        column
+        for column in ("finish_position", "target_rank", "is_win", "is_top2", "is_top3")
+        if column in df.columns
+    ]
+    numeric_features, feature_stats, dropped_non_numeric, dropped_constant = _numeric_feature_frame(df, feature_columns)
+    target_rows: list[dict[str, float | str]] = []
+    if not numeric_features.empty:
+        for target in target_columns:
+            target_values = pd.to_numeric(df[target], errors="coerce")
+            if int(target_values.notna().sum()) == 0:
+                continue
+            pearson = numeric_features.corrwith(target_values, method="pearson")
+            spearman = numeric_features.corrwith(target_values, method="spearman")
+            for feature in numeric_features.columns:
+                stats = feature_stats[feature]
+                pearson_value = pearson.get(feature, np.nan)
+                spearman_value = spearman.get(feature, np.nan)
+                target_rows.append(
+                    {
+                        "feature": feature,
+                        "target": target,
+                        "pearson": float(pearson_value) if pd.notna(pearson_value) else np.nan,
+                        "spearman": float(spearman_value) if pd.notna(spearman_value) else np.nan,
+                        "abs_pearson": float(abs(pearson_value)) if pd.notna(pearson_value) else np.nan,
+                        "abs_spearman": float(abs(spearman_value)) if pd.notna(spearman_value) else np.nan,
+                        "feature_mean": stats["mean"],
+                        "feature_std": stats["std"],
+                        "feature_missing_rate": stats["missing_rate"],
+                        "feature_non_null_count": stats["non_null_count"],
+                    }
+                )
+
+    target_df = pd.DataFrame(target_rows)
+    if not target_df.empty:
+        target_df = target_df.sort_values(
+            ["target", "abs_spearman", "abs_pearson", "feature"],
+            ascending=[True, False, False, True],
+            na_position="last",
+        )
+    target_path = output_dir / "feature_correlation_targets.csv"
+    target_df.to_csv(target_path, index=False)
+
+    pair_rows: list[dict[str, float | str]] = []
+    high_pair_count = 0
+    if numeric_features.shape[1] >= 2:
+        corr = numeric_features.corr(method="pearson")
+        columns = corr.columns.to_numpy()
+        values = corr.to_numpy()
+        upper_i, upper_j = np.triu_indices(len(columns), k=1)
+        selected = np.where(np.abs(values[upper_i, upper_j]) >= pair_threshold)[0]
+        high_pair_count = int(len(selected))
+        if len(selected) > 0:
+            order = np.argsort(np.abs(values[upper_i[selected], upper_j[selected]]))[::-1]
+            for index in selected[order[:max_pairs]]:
+                left = columns[upper_i[index]]
+                right = columns[upper_j[index]]
+                pearson_value = float(values[upper_i[index], upper_j[index]])
+                pair_rows.append(
+                    {
+                        "feature_left": str(left),
+                        "feature_right": str(right),
+                        "pearson": pearson_value,
+                        "abs_pearson": abs(pearson_value),
+                    }
+                )
+    pair_path = output_dir / "feature_correlation_pairs.csv"
+    pd.DataFrame(pair_rows).to_csv(pair_path, index=False)
+
+    summary = {
+        "split": split,
+        "sample_races": int(sample_races),
+        "race_count": race_count(df),
+        "row_count": int(len(df)),
+        "feature_set": feature_set,
+        "feature_count": int(len(feature_columns)),
+        "numeric_feature_count": int(numeric_features.shape[1]),
+        "dropped_non_numeric_count": int(len(dropped_non_numeric)),
+        "dropped_constant_count": int(len(dropped_constant)),
+        "target_columns": target_columns,
+        "pair_threshold": float(pair_threshold),
+        "high_correlation_pair_count": high_pair_count,
+        "reported_high_correlation_pair_count": int(len(pair_rows)),
+        "target_correlation_rows": int(len(target_df)),
+        "outputs": {
+            "targets": str(target_path),
+            "pairs": str(pair_path),
+            "summary": str(output_dir / "feature_correlation_summary.json"),
+        },
+    }
+    summary_path = output_dir / "feature_correlation_summary.json"
+    summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    return summary
+
+
+def analyze_feature_correlation_main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=Path, default=Path("configs/train.yaml"))
+    parser.add_argument("--split", choices=["train", "valid", "all"], default="valid")
+    parser.add_argument("--sample-races", type=int, default=10000, help="0 means all selected races")
+    parser.add_argument("--feature-set", type=str, default="full", help="full or legacy_20260712")
+    parser.add_argument("--pair-threshold", type=float, default=0.95)
+    parser.add_argument("--max-pairs", type=int, default=500)
+    parser.add_argument("--output-dir", type=Path, default=None)
+    args = parser.parse_args()
+
+    command_name = "boatrace-analyze-feature-correlation"
+    print_progress(command_name, "loading config and training splits")
+    config = load_config(args.config)
+    train_df, valid_df, test_df, config = load_training_splits_from_parquet(
+        Path(config["data"]["training_table"]),
+        config,
+    )
+    if args.split == "train":
+        df = train_df
+    elif args.split == "valid":
+        df = valid_df
+    else:
+        frames = [frame for frame in (train_df, valid_df, test_df) if not frame.empty]
+        df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    del train_df, valid_df, test_df
+    collect_garbage()
+
+    print_progress(command_name, f"selected split={args.split}, races={race_count(df)}")
+    if args.sample_races > 0:
+        df = sample_races_for_evaluation(df, args.sample_races)
+        print_progress(command_name, f"sampled races={race_count(df)}")
+    print_progress(command_name, "applying prediction-time measurement proxies")
+    df = apply_prediction_time_measurement_proxies(df)
+
+    feature_columns = infer_feature_columns(df)
+    categorical_columns = set(infer_categorical_columns(df, feature_columns))
+    feature_columns = [column for column in feature_columns if column not in categorical_columns]
+    feature_columns = select_feature_columns_for_set(feature_columns, args.feature_set)
+    output_dir = args.output_dir or get_artifact_paths(config)["metrics_path"].parent
+    print_progress(command_name, f"analyzing numeric features={len(feature_columns)}")
+    summary = write_feature_correlation_outputs(
+        df,
+        feature_columns,
+        output_dir,
+        split=args.split,
+        feature_set=args.feature_set,
+        sample_races=args.sample_races,
+        pair_threshold=args.pair_threshold,
+        max_pairs=args.max_pairs,
+    )
+    print_progress(command_name, "completed")
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 
 def evaluate_trifecta_full_valid_main() -> None:
