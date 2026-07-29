@@ -2781,11 +2781,37 @@ HIGH_CORRELATION_DROP_COLUMNS = frozenset(
 )
 
 
+MEDIUM_CORRELATION_DROP_COLUMNS = frozenset(
+    {
+        "exhibition_time_race_rank",
+        "start_timing_race_std",
+        "start_timing_race_rank",
+        "racer_prev_avg_st_5_race_rank",
+        "venue_course_prev_win_rate",
+        "racer_prev_avg_st_10_race_rank",
+        "venue_lane_prev_win_rate",
+        "racer_lane_prev_avg_st_race_rank",
+        "venue_course_prev_top2_rate_race_zscore",
+        "venue_lane_prev_top2_rate_race_zscore",
+        "racer_venue_lane_prev_avg_st_race_rank",
+        "venue_course_prev_top2_rate",
+        "venue_lane_prev_top2_rate",
+        "venue_lane_prev_top3_rate_race_diff_mean",
+        "venue_course_prev_top3_rate_race_diff_mean",
+        "venue_lane_prev_top3_rate",
+        "venue_course_prev_top3_rate",
+    }
+)
+
+
+REDUNDANT_CORRELATION_DROP_COLUMNS = HIGH_CORRELATION_DROP_COLUMNS | MEDIUM_CORRELATION_DROP_COLUMNS
+
+
 def infer_feature_columns(df: pd.DataFrame) -> list[str]:
     return [
         column
         for column in df.columns
-        if column not in DEFAULT_DROP_COLUMNS and column not in HIGH_CORRELATION_DROP_COLUMNS
+        if column not in DEFAULT_DROP_COLUMNS and column not in REDUNDANT_CORRELATION_DROP_COLUMNS
     ]
 
 

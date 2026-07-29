@@ -189,6 +189,31 @@ def test_high_correlation_drop_columns_do_not_enter_features() -> None:
     assert "race_attack_pressure" not in feature_columns
 
 
+def test_medium_correlation_drop_columns_do_not_enter_features() -> None:
+    df = pd.DataFrame(
+        {
+            "race_id": ["R1"],
+            "race_date": [pd.Timestamp("2026-01-01")],
+            "lane": [1],
+            "venue_course_prev_win_rate": [0.5],
+            "venue_course_prev_win_rate_race_diff_mean": [0.1],
+            "venue_course_prev_top2_rate": [0.7],
+            "venue_course_prev_top2_rate_race_diff_mean": [0.2],
+            "start_timing_race_rank": [1],
+            "start_timing_race_rank_low": [6],
+        }
+    )
+
+    feature_columns = infer_feature_columns(df)
+
+    assert "venue_course_prev_win_rate" not in feature_columns
+    assert "venue_course_prev_top2_rate" not in feature_columns
+    assert "start_timing_race_rank" not in feature_columns
+    assert "venue_course_prev_win_rate_race_diff_mean" in feature_columns
+    assert "venue_course_prev_top2_rate_race_diff_mean" in feature_columns
+    assert "start_timing_race_rank_low" in feature_columns
+
+
 def test_evaluation_measurement_proxies_replace_start_and_exhibition_but_keep_course() -> None:
     frame = pd.DataFrame(
         {
