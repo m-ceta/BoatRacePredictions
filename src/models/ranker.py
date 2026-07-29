@@ -89,6 +89,7 @@ DEFAULT_ARTIFACT_PATHS = {
     "xgboost_model_path": "artifacts/xgboost_ranker.json",
     "random_forest_model_path": "artifacts/random_forest_regressor.joblib",
     "ridge_model_path": "artifacts/ridge_regressor.joblib",
+    "neural_model_path": "artifacts/neural_regressor.joblib",
     "features_path": "artifacts/feature_columns.json",
     "ensemble_weights_path": "artifacts/ensemble_weights.json",
     "trifecta_calibrator_path": "artifacts/trifecta_isotonic.joblib",
@@ -98,11 +99,13 @@ DEFAULT_ARTIFACT_PATHS = {
 }
 
 
-RESERVED_MODEL_NAMES = {"catboost", "lightgbm", "xgboost"}
+RESERVED_MODEL_NAMES = {"catboost", "lightgbm", "xgboost", "lightgbm_seed_ensemble"}
+LIGHTGBM_SEED_ENSEMBLE_MODEL_NAME = "lightgbm_seed_ensemble"
 LIGHTGBM_VARIANT_NAME_RE = re.compile(r"^lightgbm_[A-Za-z0-9_]+$")
 XGBOOST_VARIANT_NAME_RE = re.compile(r"^xgboost_[A-Za-z0-9_]+$")
 RANDOM_FOREST_VARIANT_NAME_RE = re.compile(r"^random_forest_[A-Za-z0-9_]+$")
 RIDGE_VARIANT_NAME_RE = re.compile(r"^ridge_[A-Za-z0-9_]+$")
+NEURAL_VARIANT_NAME_RE = re.compile(r"^(mlp|tabnet)_[A-Za-z0-9_]+$")
 TRIFECTA_V2_FEATURE_VERSION = 2
 
 DEFAULT_CATBOOST_SETTINGS = {
@@ -199,6 +202,15 @@ DEFAULT_LIGHTGBM_VARIANT_SETTINGS = {
             },
         },
     ],
+}
+
+
+DEFAULT_LIGHTGBM_SEED_ENSEMBLE_SETTINGS = {
+    "enabled": False,
+    "seeds": [42, 202, 777],
+    "parallel_workers": 2,
+    "num_threads_per_seed": 2,
+    "params": {},
 }
 
 
@@ -317,6 +329,49 @@ DEFAULT_RIDGE_REGRESSION_VARIANT_SETTINGS = {
 }
 
 
+DEFAULT_NEURAL_REGRESSION_VARIANT_SETTINGS = {
+    "enabled": False,
+    "parallel_workers": 1,
+    "variants": [
+        {
+            "name": "mlp_reg_finish_position",
+            "model_type": "mlp",
+            "target": "finish_position",
+            "score_transform": "negative",
+            "params": {
+                "hidden_units": [256, 128, 64, 32],
+                "embedding_dim": 8,
+                "dropout": 0.10,
+                "learning_rate": 0.001,
+                "weight_decay": 0.0001,
+                "epochs": 20,
+                "batch_size": 4096,
+                "patience": 5,
+                "torch_num_threads": 2,
+            },
+        },
+        {
+            "name": "tabnet_reg_finish_position",
+            "model_type": "tabnet",
+            "target": "finish_position",
+            "score_transform": "negative",
+            "params": {
+                "n_d": 16,
+                "n_a": 16,
+                "n_steps": 4,
+                "gamma": 1.5,
+                "lambda_sparse": 0.0001,
+                "learning_rate": 0.001,
+                "max_epochs": 30,
+                "batch_size": 4096,
+                "virtual_batch_size": 512,
+                "patience": 5,
+            },
+        },
+    ],
+}
+
+
 DEFAULT_ENSEMBLE_SETTINGS = {
     "parallel_workers": 1,
     "max_eval_races": 0,
@@ -354,6 +409,30 @@ def get_lightgbm_variant_settings(config: dict | None) -> dict[str, Any]:
     settings["parallel_workers"] = max(int(settings.get("parallel_workers", 1)), 1)
     settings["num_threads_per_variant"] = max(int(settings.get("num_threads_per_variant", 2)), 1)
     return settings
+
+
+def get_lightgbm_seed_ensemble_settings(config: dict | None) -> dict[str, Any]:
+    configured = ((config or {}).get("models", {}) or {}).get("lightgbm_seed_ensemble", {})
+    settings = {
+        **DEFAULT_LIGHTGBM_SEED_ENSEMBLE_SETTINGS,
+        **(configured or {}),
+    }
+    seeds: list[int] = []
+    for seed in settings.get("seeds", DEFAULT_LIGHTGBM_SEED_ENSEMBLE_SETTINGS["seeds"]):
+        seed_value = int(seed)
+        if seed_value not in seeds:
+            seeds.append(seed_value)
+    if len(seeds) < 2:
+        settings["enabled"] = False
+    settings["seeds"] = seeds
+    settings["parallel_workers"] = max(int(settings.get("parallel_workers", 1)), 1)
+    settings["num_threads_per_seed"] = max(int(settings.get("num_threads_per_seed", 2)), 1)
+    settings["params"] = dict((configured or {}).get("params", DEFAULT_LIGHTGBM_SEED_ENSEMBLE_SETTINGS["params"]))
+    return settings
+
+
+def is_lightgbm_seed_ensemble_enabled(config: dict | None) -> bool:
+    return bool(get_lightgbm_seed_ensemble_settings(config).get("enabled", False))
 
 
 def get_lightgbm_regression_variant_settings(config: dict | None) -> dict[str, Any]:
@@ -434,6 +513,19 @@ def get_ridge_regression_variant_settings(config: dict | None) -> dict[str, Any]
     settings["variants"] = list((configured or {}).get("variants", DEFAULT_RIDGE_REGRESSION_VARIANT_SETTINGS["variants"]))
     settings["parallel_workers"] = max(int(settings.get("parallel_workers", 1)), 1)
     settings["num_threads_per_variant"] = max(int(settings.get("num_threads_per_variant", 1)), 1)
+    return settings
+
+
+def get_neural_regression_variant_settings(config: dict | None) -> dict[str, Any]:
+    configured = ((config or {}).get("models", {}) or {}).get("neural_regression_variants", {})
+    settings = {
+        **DEFAULT_NEURAL_REGRESSION_VARIANT_SETTINGS,
+        **(configured or {}),
+    }
+    settings["variants"] = list(
+        (configured or {}).get("variants", DEFAULT_NEURAL_REGRESSION_VARIANT_SETTINGS["variants"])
+    )
+    settings["parallel_workers"] = max(int(settings.get("parallel_workers", 1)), 1)
     return settings
 
 
@@ -619,8 +711,46 @@ def get_enabled_ridge_regression_variants(config: dict | None) -> list[dict[str,
     return variants
 
 
+def get_enabled_neural_regression_variants(config: dict | None) -> list[dict[str, Any]]:
+    settings = get_neural_regression_variant_settings(config)
+    if not bool(settings.get("enabled", False)):
+        return []
+    variants = [dict(variant) for variant in settings.get("variants", [])]
+    seen: set[str] = set()
+    for variant in variants:
+        name = str(variant.get("name", "")).strip()
+        if not name:
+            raise ValueError("Neural regression variant name must not be empty.")
+        if name in RESERVED_MODEL_NAMES:
+            raise ValueError(f"Neural regression variant name conflicts with reserved model name: {name}")
+        if not NEURAL_VARIANT_NAME_RE.match(name):
+            raise ValueError(f"Invalid neural regression variant name: {name}")
+        if name in seen:
+            raise ValueError(f"Duplicate neural regression variant name: {name}")
+        model_type = str(variant.get("model_type", "mlp")).strip()
+        if model_type not in {"mlp", "tabnet"}:
+            raise ValueError(f"Unsupported neural regression model_type: {model_type}")
+        target = str(variant.get("target", "finish_position")).strip()
+        if target not in {"finish_position"}:
+            raise ValueError(f"Unsupported neural regression variant target: {target}")
+        score_transform = str(variant.get("score_transform", "negative")).strip()
+        if score_transform not in {"negative"}:
+            raise ValueError(f"Unsupported neural regression score_transform: {score_transform}")
+        seen.add(name)
+        variant["name"] = name
+        variant["model_type"] = model_type
+        variant["target"] = target
+        variant["score_transform"] = score_transform
+        variant["params"] = dict(variant.get("params", {}) or {})
+    return variants
+
+
 def is_lightgbm_model_name(model_name: str) -> bool:
     return model_name == "lightgbm" or model_name.startswith("lightgbm_")
+
+
+def is_lightgbm_seed_ensemble_model_name(model_name: str) -> bool:
+    return model_name == LIGHTGBM_SEED_ENSEMBLE_MODEL_NAME
 
 
 def is_lightgbm_regression_model_name(model_name: str) -> bool:
@@ -651,11 +781,23 @@ def is_ridge_regression_model_name(model_name: str) -> bool:
     return model_name.startswith("ridge_reg_")
 
 
+def is_neural_model_name(model_name: str) -> bool:
+    return model_name.startswith("mlp_") or model_name.startswith("tabnet_")
+
+
+def is_neural_regression_model_name(model_name: str) -> bool:
+    return model_name.startswith("mlp_reg_") or model_name.startswith("tabnet_reg_")
+
+
 def lightgbm_variant_model_path(base_path: Path, variant_name: str) -> Path:
     if variant_name == "lightgbm":
         return base_path
     suffix = variant_name.removeprefix("lightgbm_")
     return base_path.with_name(f"{base_path.stem}_{suffix}{base_path.suffix}")
+
+
+def lightgbm_seed_model_path(base_path: Path, seed: int) -> Path:
+    return base_path.with_name(f"{base_path.stem}_seed_{int(seed)}{base_path.suffix}")
 
 
 def xgboost_variant_model_path(base_path: Path, variant_name: str) -> Path:
@@ -673,6 +815,10 @@ def random_forest_variant_model_path(base_path: Path, variant_name: str) -> Path
 def ridge_variant_model_path(base_path: Path, variant_name: str) -> Path:
     suffix = variant_name.removeprefix("ridge_")
     return base_path.with_name(f"{base_path.stem}_{suffix}{base_path.suffix}")
+
+
+def neural_variant_model_path(base_path: Path, variant_name: str) -> Path:
+    return base_path.with_name(f"{base_path.stem}_{variant_name}{base_path.suffix}")
 
 
 def get_artifact_paths(config: dict) -> dict[str, Path]:
@@ -1918,6 +2064,15 @@ def train_ranker(
         collect_garbage()
     lightgbm_model = train_lightgbm(train_df, valid_df, feature_columns, categorical_columns, config)
     collect_garbage()
+    lightgbm_seed_ensemble_models = train_lightgbm_seed_ensemble(
+        train_df,
+        valid_df,
+        feature_columns,
+        categorical_columns,
+        config,
+        lightgbm_model,
+    )
+    collect_garbage()
     lightgbm_variant_models = train_lightgbm_variants(train_df, valid_df, feature_columns, categorical_columns, config)
     collect_garbage()
     lightgbm_regression_variant_models = train_lightgbm_regression_variants(
@@ -1954,6 +2109,14 @@ def train_ranker(
         config,
     )
     collect_garbage()
+    neural_regression_variant_models = train_neural_regression_variants(
+        train_df,
+        valid_df,
+        feature_columns,
+        categorical_columns,
+        config,
+    )
+    collect_garbage()
     classifier_models = train_classifiers(train_df, valid_df, feature_columns, categorical_columns, config)
     collect_garbage()
     flow_model = None
@@ -1963,12 +2126,14 @@ def train_ranker(
     models = {
         **({"catboost": catboost_model} if catboost_model is not None else {}),
         "lightgbm": lightgbm_model,
+        **lightgbm_seed_ensemble_models,
         **lightgbm_variant_models,
         **lightgbm_regression_variant_models,
         **xgboost_variant_models,
         **xgboost_regression_variant_models,
         **random_forest_regression_variant_models,
         **ridge_regression_variant_models,
+        **neural_regression_variant_models,
     }
     ensemble_weights = optimize_ensemble_weights(
         models,
@@ -2014,6 +2179,18 @@ def train_ranker(
             feature_columns,
             categorical_columns,
         ),
+        **{
+            name: evaluate_model_bundle(
+                model,
+                name,
+                train_df,
+                valid_df,
+                test_df,
+                feature_columns,
+                categorical_columns,
+            )
+            for name, model in lightgbm_seed_ensemble_models.items()
+        },
         **{
             name: evaluate_model_bundle(
                 model,
@@ -2085,6 +2262,18 @@ def train_ranker(
                 categorical_columns,
             )
             for name, model in ridge_regression_variant_models.items()
+        },
+        **{
+            name: evaluate_model_bundle(
+                model,
+                name,
+                train_df,
+                valid_df,
+                test_df,
+                feature_columns,
+                categorical_columns,
+            )
+            for name, model in neural_regression_variant_models.items()
         },
         "ensemble": evaluate_ensemble(
             models,
@@ -2268,6 +2457,58 @@ def train_ranker_from_splits(
             categorical_columns,
         )
         mark_train_stage_completed(checkpoint_path, checkpoint, "lightgbm", lightgbm_metrics)
+    collect_garbage()
+
+    seed_ensemble_paths = enabled_lightgbm_seed_ensemble_paths(config, artifacts["lightgbm_model_path"])
+    if (
+        resume
+        and train_stage_completed(checkpoint, "lightgbm_seed_ensemble", seed_ensemble_paths)
+        and "lightgbm_seed_ensemble" in checkpoint_metrics
+    ):
+        progress("skipping lightgbm seed ensemble: train checkpoint completed")
+        lightgbm_seed_ensemble_models = {
+            LIGHTGBM_SEED_ENSEMBLE_MODEL_NAME: load_lightgbm_seed_ensemble(
+                config,
+                artifacts["lightgbm_model_path"],
+                lightgbm_model,
+            )
+        }
+        lightgbm_seed_ensemble_metrics = checkpoint_metrics.get("lightgbm_seed_ensemble", {})
+    else:
+        lightgbm_seed_ensemble_models = train_lightgbm_seed_ensemble(
+            train_df,
+            valid_df,
+            feature_columns,
+            categorical_columns,
+            config,
+            lightgbm_model,
+            progress_callback=progress,
+        )
+        if lightgbm_seed_ensemble_models:
+            save_lightgbm_seed_ensemble(
+                lightgbm_seed_ensemble_models[LIGHTGBM_SEED_ENSEMBLE_MODEL_NAME],
+                artifacts["lightgbm_model_path"],
+            )
+            lightgbm_seed_ensemble_metrics = {
+                name: evaluate_model_bundle(
+                    model,
+                    name,
+                    train_df,
+                    valid_df,
+                    test_df,
+                    feature_columns,
+                    categorical_columns,
+                )
+                for name, model in lightgbm_seed_ensemble_models.items()
+            }
+        else:
+            lightgbm_seed_ensemble_metrics = {}
+        mark_train_stage_completed(
+            checkpoint_path,
+            checkpoint,
+            "lightgbm_seed_ensemble",
+            lightgbm_seed_ensemble_metrics,
+        )
     collect_garbage()
 
     variant_paths = enabled_lightgbm_variant_paths(config, artifacts["lightgbm_model_path"])
@@ -2532,15 +2773,64 @@ def train_ranker_from_splits(
         )
     collect_garbage()
 
+    neural_regression_variant_paths = enabled_neural_regression_variant_paths(
+        config,
+        artifacts["neural_model_path"],
+    )
+    if (
+        resume
+        and train_stage_completed(checkpoint, "neural_regression_variants", neural_regression_variant_paths)
+        and "neural_regression_variants" in checkpoint_metrics
+    ):
+        progress("skipping neural regression variants: train checkpoint completed")
+        neural_regression_variant_models = {
+            str(variant["name"]): joblib.load(
+                neural_variant_model_path(artifacts["neural_model_path"], str(variant["name"]))
+            )
+            for variant in get_enabled_neural_regression_variants(config)
+        }
+        neural_regression_variant_metrics = checkpoint_metrics.get("neural_regression_variants", {})
+    else:
+        neural_regression_variant_models = train_neural_regression_variants(
+            train_df,
+            valid_df,
+            feature_columns,
+            categorical_columns,
+            config,
+            progress_callback=progress,
+        )
+        save_neural_variants(neural_regression_variant_models, artifacts["neural_model_path"])
+        neural_regression_variant_metrics = {
+            name: evaluate_model_bundle(
+                model,
+                name,
+                train_df,
+                valid_df,
+                test_df,
+                feature_columns,
+                categorical_columns,
+            )
+            for name, model in neural_regression_variant_models.items()
+        }
+        mark_train_stage_completed(
+            checkpoint_path,
+            checkpoint,
+            "neural_regression_variants",
+            neural_regression_variant_metrics,
+        )
+    collect_garbage()
+
     models = {
         **({"catboost": catboost_model} if catboost_model is not None else {}),
         "lightgbm": lightgbm_model,
+        **lightgbm_seed_ensemble_models,
         **lightgbm_variant_models,
         **lightgbm_regression_variant_models,
         **xgboost_variant_models,
         **xgboost_regression_variant_models,
         **random_forest_regression_variant_models,
         **ridge_regression_variant_models,
+        **neural_regression_variant_models,
     }
     if resume and train_stage_completed(checkpoint, "ensemble", [artifacts["ensemble_weights_path"]]) and "ensemble" in checkpoint_metrics:
         progress("skipping ensemble optimization: train checkpoint completed")
@@ -2662,12 +2952,14 @@ def train_ranker_from_splits(
     ranker_metrics = {
         **({"catboost": catboost_metrics} if catboost_model is not None else {}),
         "lightgbm": lightgbm_metrics,
+        **lightgbm_seed_ensemble_metrics,
         **lightgbm_variant_metrics,
         **lightgbm_regression_variant_metrics,
         **xgboost_variant_metrics,
         **xgboost_regression_variant_metrics,
         **random_forest_regression_variant_metrics,
         **ridge_regression_variant_metrics,
+        **neural_regression_variant_metrics,
         "ensemble": ensemble_metrics,
     }
     metrics = {
@@ -2907,6 +3199,24 @@ def lightgbm_prediction_feature_columns(model: lgb.Booster, default_feature_colu
     return default_feature_columns
 
 
+def predict_lightgbm_seed_ensemble_raw(
+    model_bundle: dict[str, Any],
+    df: pd.DataFrame,
+    feature_columns: list[str],
+    categorical_columns: list[str],
+) -> np.ndarray:
+    boosters = model_bundle.get("models", {}) if isinstance(model_bundle, dict) else {}
+    if not boosters:
+        raise ValueError("LightGBM seed ensemble contains no models.")
+    raw_parts: list[np.ndarray] = []
+    for booster in boosters.values():
+        model_feature_columns = lightgbm_prediction_feature_columns(booster, feature_columns)
+        model_categorical_columns = [column for column in categorical_columns if column in model_feature_columns]
+        frame = build_lightgbm_frame(df, model_feature_columns, model_categorical_columns)
+        raw_parts.append(np.asarray(booster.predict(frame), dtype=float))
+    return np.mean(np.vstack(raw_parts), axis=0)
+
+
 def train_catboost(
     train_df: pd.DataFrame,
     valid_df: pd.DataFrame,
@@ -3098,6 +3408,79 @@ def train_lightgbm_variants(
     return trained
 
 
+def train_lightgbm_seed_ensemble(
+    train_df: pd.DataFrame,
+    valid_df: pd.DataFrame,
+    feature_columns: list[str],
+    categorical_columns: list[str],
+    config: dict,
+    base_model: lgb.Booster,
+    progress_callback: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    settings = get_lightgbm_seed_ensemble_settings(config)
+    if not bool(settings.get("enabled", False)):
+        return {}
+
+    seeds = [int(seed) for seed in settings.get("seeds", [])]
+    base_seed = int(config.get("model", {}).get("random_seed", seeds[0] if seeds else 42))
+    extra_seeds = [seed for seed in seeds if seed != base_seed]
+    if not extra_seeds:
+        return {}
+
+    workers = min(int(settings.get("parallel_workers", 1)), len(extra_seeds))
+    num_threads = int(settings.get("num_threads_per_seed", 2))
+    _emit_progress(
+        progress_callback,
+        f"training lightgbm seed ensemble: workers={workers}, seeds={seeds}",
+    )
+
+    def train_one(seed: int) -> tuple[int, lgb.Booster]:
+        _emit_progress(progress_callback, f"training lightgbm seed model: seed={seed}")
+        params = dict(settings.get("params", {}) or {})
+        params.update(
+            {
+                "seed": seed,
+                "bagging_seed": seed,
+                "feature_fraction_seed": seed,
+                "data_random_seed": seed,
+                "drop_seed": seed,
+            }
+        )
+        model = train_lightgbm(
+            train_df,
+            valid_df,
+            feature_columns,
+            categorical_columns,
+            config,
+            param_overrides=params,
+            num_threads=num_threads,
+        )
+        _emit_progress(progress_callback, f"completed lightgbm seed model: seed={seed}")
+        return seed, model
+
+    trained: dict[int, lgb.Booster] = {base_seed: base_model}
+    if workers <= 1 or len(extra_seeds) <= 1:
+        trained.update(dict(train_one(seed) for seed in extra_seeds))
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_seed = {executor.submit(train_one, seed): seed for seed in extra_seeds}
+            for future in as_completed(future_to_seed):
+                seed, model = future.result()
+                trained[seed] = model
+
+    ordered_models = {str(seed): trained[seed] for seed in seeds if seed in trained}
+    if len(ordered_models) < 2:
+        return {}
+    return {
+        LIGHTGBM_SEED_ENSEMBLE_MODEL_NAME: {
+            "type": LIGHTGBM_SEED_ENSEMBLE_MODEL_NAME,
+            "base_seed": base_seed,
+            "seeds": seeds,
+            "models": ordered_models,
+        }
+    }
+
+
 def train_lightgbm_regression(
     train_df: pd.DataFrame,
     valid_df: pd.DataFrame,
@@ -3230,6 +3613,294 @@ def build_xgboost_frame(
         else:
             data[column] = pd.to_numeric(data[column], errors="coerce").astype("float32")
     return data
+
+
+def require_torch() -> Any:
+    try:
+        import torch
+    except ImportError as exc:  # pragma: no cover - depends on optional dependency
+        raise ImportError(
+            "torch is required when models.neural_regression_variants includes model_type=mlp. "
+            "Install dependencies with: python -m pip install -e \".[nn]\""
+        ) from exc
+    return torch
+
+
+def require_tabnet_regressor() -> Any:
+    try:
+        from pytorch_tabnet.tab_model import TabNetRegressor
+    except ImportError as exc:  # pragma: no cover - depends on optional dependency
+        raise ImportError(
+            "pytorch-tabnet is required when models.neural_regression_variants includes model_type=tabnet. "
+            "Install dependencies with: python -m pip install -e \".[nn]\""
+        ) from exc
+    return TabNetRegressor
+
+
+class TabularNeuralPreprocessor:
+    def __init__(self, categorical_columns: list[str]) -> None:
+        self.requested_categorical_columns = list(categorical_columns)
+        self.feature_columns: list[str] = []
+        self.numeric_columns: list[str] = []
+        self.categorical_columns: list[str] = []
+        self.numeric_medians: dict[str, float] = {}
+        self.numeric_means: dict[str, float] = {}
+        self.numeric_scales: dict[str, float] = {}
+        self.category_maps: dict[str, dict[str, int]] = {}
+
+    def fit(self, frame: pd.DataFrame, feature_columns: list[str]) -> "TabularNeuralPreprocessor":
+        self.feature_columns = list(feature_columns)
+        categorical_set = set(self.requested_categorical_columns)
+        self.categorical_columns = [column for column in self.feature_columns if column in categorical_set]
+        self.numeric_columns = [column for column in self.feature_columns if column not in categorical_set]
+
+        for column in self.numeric_columns:
+            values = pd.to_numeric(frame[column], errors="coerce").astype(float)
+            median = float(values.median(skipna=True)) if values.notna().any() else 0.0
+            filled = values.fillna(median)
+            mean = float(filled.mean())
+            scale = float(filled.std())
+            if not np.isfinite(scale) or scale <= 1e-12:
+                scale = 1.0
+            self.numeric_medians[column] = median
+            self.numeric_means[column] = mean
+            self.numeric_scales[column] = scale
+
+        for column in self.categorical_columns:
+            values = frame[column].fillna("NA").astype(str)
+            uniques = pd.Index(values.unique()).sort_values()
+            self.category_maps[column] = {str(value): index + 1 for index, value in enumerate(uniques)}
+        return self
+
+    def transform_numeric(self, frame: pd.DataFrame) -> np.ndarray:
+        if not self.numeric_columns:
+            return np.zeros((len(frame), 0), dtype=np.float32)
+        parts = []
+        for column in self.numeric_columns:
+            values = pd.to_numeric(frame[column], errors="coerce").astype(float)
+            filled = values.fillna(self.numeric_medians[column])
+            scaled = (filled - self.numeric_means[column]) / self.numeric_scales[column]
+            parts.append(scaled.to_numpy(dtype=np.float32))
+        return np.column_stack(parts).astype(np.float32)
+
+    def transform_categorical(self, frame: pd.DataFrame) -> np.ndarray:
+        if not self.categorical_columns:
+            return np.zeros((len(frame), 0), dtype=np.int64)
+        parts = []
+        for column in self.categorical_columns:
+            values = frame[column].fillna("NA").astype(str)
+            mapping = self.category_maps[column]
+            parts.append(values.map(mapping).fillna(0).to_numpy(dtype=np.int64))
+        return np.column_stack(parts).astype(np.int64)
+
+    def categorical_cardinalities(self) -> list[int]:
+        return [len(self.category_maps[column]) + 1 for column in self.categorical_columns]
+
+    def transform_tabnet(self, frame: pd.DataFrame) -> np.ndarray:
+        numeric = self.transform_numeric(frame)
+        categorical = self.transform_categorical(frame).astype(np.float32)
+        if categorical.size == 0:
+            return numeric.astype(np.float32)
+        if numeric.size == 0:
+            return categorical.astype(np.float32)
+        return np.column_stack([numeric, categorical]).astype(np.float32)
+
+
+class TorchEmbeddingMLPRegressor:
+    def __init__(
+        self,
+        *,
+        categorical_columns: list[str],
+        params: dict[str, Any],
+        random_seed: int,
+    ) -> None:
+        self.params = dict(params)
+        self.random_seed = int(random_seed)
+        self.preprocessor = TabularNeuralPreprocessor(categorical_columns)
+        self.state_dict: dict[str, Any] | None = None
+        self.input_size = 0
+        self.embedding_dims: list[int] = []
+        self._module: Any | None = None
+
+    def _build_module(self) -> Any:
+        torch = require_torch()
+        nn = torch.nn
+        numeric_size = len(self.preprocessor.numeric_columns)
+        cardinalities = self.preprocessor.categorical_cardinalities()
+        embedding_dim = int(self.params.get("embedding_dim", 8))
+        embedding_dims = [min(max(2, embedding_dim), max(2, cardinality)) for cardinality in cardinalities]
+        hidden_units = [int(value) for value in self.params.get("hidden_units", [256, 128, 64, 32])]
+        dropout = float(self.params.get("dropout", 0.10))
+
+        class Module(nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.embeddings = nn.ModuleList(
+                    [nn.Embedding(cardinality, dim) for cardinality, dim in zip(cardinalities, embedding_dims)]
+                )
+                layers: list[Any] = []
+                in_features = numeric_size + sum(embedding_dims)
+                for units in hidden_units:
+                    layers.append(nn.Linear(in_features, units))
+                    layers.append(nn.ReLU())
+                    if dropout > 0:
+                        layers.append(nn.Dropout(dropout))
+                    in_features = units
+                layers.append(nn.Linear(in_features, 1))
+                self.net = nn.Sequential(*layers)
+
+            def forward(self, numeric: Any, categorical: Any) -> Any:
+                if self.embeddings:
+                    embedded = [embedding(categorical[:, index]) for index, embedding in enumerate(self.embeddings)]
+                    x = torch.cat([numeric, *embedded], dim=1) if numeric.shape[1] else torch.cat(embedded, dim=1)
+                else:
+                    x = numeric
+                return self.net(x).squeeze(1)
+
+        return Module()
+
+    def fit(
+        self,
+        train_frame: pd.DataFrame,
+        y_train: pd.Series,
+        feature_columns: list[str],
+        valid_frame: pd.DataFrame,
+        y_valid: pd.Series,
+    ) -> "TorchEmbeddingMLPRegressor":
+        torch = require_torch()
+        torch.manual_seed(self.random_seed)
+        torch.set_num_threads(max(int(self.params.get("torch_num_threads", 2)), 1))
+        self.preprocessor.fit(train_frame, feature_columns)
+        train_numeric = torch.tensor(self.preprocessor.transform_numeric(train_frame), dtype=torch.float32)
+        train_categorical = torch.tensor(self.preprocessor.transform_categorical(train_frame), dtype=torch.long)
+        train_target = torch.tensor(pd.to_numeric(y_train, errors="coerce").to_numpy(dtype=np.float32), dtype=torch.float32)
+        valid_numeric = torch.tensor(self.preprocessor.transform_numeric(valid_frame), dtype=torch.float32)
+        valid_categorical = torch.tensor(self.preprocessor.transform_categorical(valid_frame), dtype=torch.long)
+        valid_target = torch.tensor(pd.to_numeric(y_valid, errors="coerce").to_numpy(dtype=np.float32), dtype=torch.float32)
+
+        self._module = self._build_module()
+        optimizer = torch.optim.AdamW(
+            self._module.parameters(),
+            lr=float(self.params.get("learning_rate", 0.001)),
+            weight_decay=float(self.params.get("weight_decay", 0.0001)),
+        )
+        loss_fn = torch.nn.MSELoss()
+        batch_size = max(int(self.params.get("batch_size", 4096)), 1)
+        epochs = max(int(self.params.get("epochs", 20)), 1)
+        patience = max(int(self.params.get("patience", 5)), 1)
+        best_loss = float("inf")
+        best_state = None
+        stale_epochs = 0
+
+        for _epoch in range(epochs):
+            permutation = torch.randperm(train_numeric.shape[0])
+            self._module.train()
+            for start in range(0, len(permutation), batch_size):
+                batch = permutation[start : start + batch_size]
+                optimizer.zero_grad()
+                prediction = self._module(train_numeric[batch], train_categorical[batch])
+                loss = loss_fn(prediction, train_target[batch])
+                loss.backward()
+                optimizer.step()
+
+            self._module.eval()
+            with torch.no_grad():
+                valid_prediction = self._module(valid_numeric, valid_categorical)
+                valid_loss = float(loss_fn(valid_prediction, valid_target).item())
+            if valid_loss < best_loss:
+                best_loss = valid_loss
+                best_state = {key: value.detach().cpu().clone() for key, value in self._module.state_dict().items()}
+                stale_epochs = 0
+            else:
+                stale_epochs += 1
+                if stale_epochs >= patience:
+                    break
+
+        if best_state is not None:
+            self._module.load_state_dict(best_state)
+            self.state_dict = best_state
+        else:
+            self.state_dict = {key: value.detach().cpu().clone() for key, value in self._module.state_dict().items()}
+        return self
+
+    def predict(self, frame: pd.DataFrame) -> np.ndarray:
+        torch = require_torch()
+        if self._module is None:
+            self._module = self._build_module()
+            if self.state_dict is not None:
+                self._module.load_state_dict(self.state_dict)
+        numeric = torch.tensor(self.preprocessor.transform_numeric(frame), dtype=torch.float32)
+        categorical = torch.tensor(self.preprocessor.transform_categorical(frame), dtype=torch.long)
+        self._module.eval()
+        with torch.no_grad():
+            return self._module(numeric, categorical).detach().cpu().numpy().astype(float)
+
+    def __getstate__(self) -> dict[str, Any]:
+        state = dict(self.__dict__)
+        state["_module"] = None
+        return state
+
+
+class TabNetFinishPositionRegressor:
+    def __init__(
+        self,
+        *,
+        categorical_columns: list[str],
+        params: dict[str, Any],
+        random_seed: int,
+    ) -> None:
+        self.params = dict(params)
+        self.random_seed = int(random_seed)
+        self.preprocessor = TabularNeuralPreprocessor(categorical_columns)
+        self.model: Any | None = None
+
+    def fit(
+        self,
+        train_frame: pd.DataFrame,
+        y_train: pd.Series,
+        feature_columns: list[str],
+        valid_frame: pd.DataFrame,
+        y_valid: pd.Series,
+    ) -> "TabNetFinishPositionRegressor":
+        TabNetRegressor = require_tabnet_regressor()
+        self.preprocessor.fit(train_frame, feature_columns)
+        train_x = self.preprocessor.transform_tabnet(train_frame)
+        valid_x = self.preprocessor.transform_tabnet(valid_frame)
+        train_y = pd.to_numeric(y_train, errors="coerce").to_numpy(dtype=np.float32).reshape(-1, 1)
+        valid_y = pd.to_numeric(y_valid, errors="coerce").to_numpy(dtype=np.float32).reshape(-1, 1)
+        numeric_count = len(self.preprocessor.numeric_columns)
+        cat_dims = self.preprocessor.categorical_cardinalities()
+        cat_idxs = list(range(numeric_count, numeric_count + len(cat_dims)))
+        model_params = {
+            "n_d": int(self.params.get("n_d", 16)),
+            "n_a": int(self.params.get("n_a", 16)),
+            "n_steps": int(self.params.get("n_steps", 4)),
+            "gamma": float(self.params.get("gamma", 1.5)),
+            "lambda_sparse": float(self.params.get("lambda_sparse", 0.0001)),
+            "seed": self.random_seed,
+            "verbose": 0,
+            "cat_idxs": cat_idxs,
+            "cat_dims": cat_dims,
+            "cat_emb_dim": int(self.params.get("cat_emb_dim", 8)),
+        }
+        self.model = TabNetRegressor(**model_params)
+        self.model.fit(
+            train_x,
+            train_y,
+            eval_set=[(valid_x, valid_y)],
+            max_epochs=int(self.params.get("max_epochs", 30)),
+            patience=int(self.params.get("patience", 5)),
+            batch_size=int(self.params.get("batch_size", 4096)),
+            virtual_batch_size=int(self.params.get("virtual_batch_size", 512)),
+            optimizer_params={"lr": float(self.params.get("learning_rate", 0.001))},
+            drop_last=False,
+        )
+        return self
+
+    def predict(self, frame: pd.DataFrame) -> np.ndarray:
+        if self.model is None:
+            raise ValueError("TabNet model is not fitted.")
+        return np.asarray(self.model.predict(self.preprocessor.transform_tabnet(frame))).reshape(-1).astype(float)
 
 
 def train_xgboost_ranker(
@@ -3610,6 +4281,99 @@ def train_ridge_regression_variants(
     return trained
 
 
+def train_neural_regression(
+    train_df: pd.DataFrame,
+    valid_df: pd.DataFrame,
+    feature_columns: list[str],
+    categorical_columns: list[str],
+    config: dict,
+    *,
+    model_type: str,
+    target: str = "finish_position",
+    param_overrides: dict[str, Any] | None = None,
+) -> Any:
+    if target not in train_df.columns or target not in valid_df.columns:
+        raise ValueError(f"Neural regression target column is missing: {target}")
+    train_sorted = sort_for_grouping(train_df)
+    valid_sorted = sort_for_grouping(valid_df)
+    params = dict(param_overrides or {})
+    random_seed = int(params.pop("random_seed", config["model"]["random_seed"]))
+    categorical_for_model = [column for column in categorical_columns if column in feature_columns]
+    if model_type == "mlp":
+        model = TorchEmbeddingMLPRegressor(
+            categorical_columns=categorical_for_model,
+            params=params,
+            random_seed=random_seed,
+        )
+    elif model_type == "tabnet":
+        model = TabNetFinishPositionRegressor(
+            categorical_columns=categorical_for_model,
+            params=params,
+            random_seed=random_seed,
+        )
+    else:
+        raise ValueError(f"Unsupported neural regression model_type: {model_type}")
+    try:
+        model.fit(
+            train_sorted[feature_columns],
+            train_sorted[target],
+            feature_columns,
+            valid_sorted[feature_columns],
+            valid_sorted[target],
+        )
+        return model
+    finally:
+        del train_sorted, valid_sorted
+        collect_garbage()
+
+
+def train_neural_regression_variants(
+    train_df: pd.DataFrame,
+    valid_df: pd.DataFrame,
+    feature_columns: list[str],
+    categorical_columns: list[str],
+    config: dict,
+    progress_callback: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    variants = get_enabled_neural_regression_variants(config)
+    if not variants:
+        return {}
+    settings = get_neural_regression_variant_settings(config)
+    workers = min(int(settings.get("parallel_workers", 1)), len(variants))
+    _emit_progress(
+        progress_callback,
+        f"training neural regression variants: workers={workers}, variants={len(variants)}",
+    )
+
+    def train_one(variant: dict[str, Any]) -> tuple[str, Any]:
+        name = str(variant["name"])
+        model_type = str(variant.get("model_type", "mlp"))
+        _emit_progress(progress_callback, f"training neural regression variant: {name}, model_type={model_type}")
+        model = train_neural_regression(
+            train_df,
+            valid_df,
+            feature_columns,
+            categorical_columns,
+            config,
+            model_type=model_type,
+            target=str(variant.get("target", "finish_position")),
+            param_overrides=dict(variant.get("params", {}) or {}),
+        )
+        _emit_progress(progress_callback, f"completed neural regression variant: {name}")
+        return name, model
+
+    if workers <= 1 or len(variants) <= 1:
+        return dict(train_one(variant) for variant in variants)
+
+    trained: dict[str, Any] = {}
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_name = {executor.submit(train_one, variant): str(variant["name"]) for variant in variants}
+        for future in as_completed(future_to_name):
+            name, model = future.result()
+            trained[name] = model
+    return trained
+
+
 def build_lightgbm_frame(
     df: pd.DataFrame,
     feature_columns: list[str],
@@ -3705,6 +4469,8 @@ def score_frame(
     if model_type == "catboost":
         pool = build_catboost_pool(df, feature_columns, categorical_columns)
         raw_scores = model.predict(pool)
+    elif is_lightgbm_seed_ensemble_model_name(model_type):
+        raw_scores = predict_lightgbm_seed_ensemble_raw(model, df, feature_columns, categorical_columns)
     elif is_lightgbm_model_name(model_type):
         model_feature_columns = lightgbm_prediction_feature_columns(model, feature_columns)
         model_categorical_columns = [column for column in categorical_columns if column in model_feature_columns]
@@ -3727,6 +4493,10 @@ def score_frame(
         frame = build_xgboost_frame(df, feature_columns, categorical_columns)
         raw_scores = model.predict(frame)
         if is_ridge_regression_model_name(model_type):
+            raw_scores = -np.asarray(raw_scores, dtype=float)
+    elif is_neural_model_name(model_type):
+        raw_scores = model.predict(df[feature_columns])
+        if is_neural_regression_model_name(model_type):
             raw_scores = -np.asarray(raw_scores, dtype=float)
     else:
         raise ValueError(f"Unknown model_type: {model_type}")
@@ -3800,6 +4570,7 @@ def save_artifacts(
     xgboost_model_path: Path | None = None,
     random_forest_model_path: Path | None = None,
     ridge_model_path: Path | None = None,
+    neural_model_path: Path | None = None,
 ) -> None:
     catboost_model_path.parent.mkdir(parents=True, exist_ok=True)
     lightgbm_model_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3812,6 +4583,9 @@ def save_artifacts(
         models["catboost"].save_model(catboost_model_path)
     models["lightgbm"].save_model(str(lightgbm_model_path))
     for model_name, model in models.items():
+        if is_lightgbm_seed_ensemble_model_name(model_name):
+            save_lightgbm_seed_ensemble(model, lightgbm_model_path)
+            continue
         if model_name in RESERVED_MODEL_NAMES or not is_lightgbm_model_name(model_name):
             continue
         path = lightgbm_variant_model_path(lightgbm_model_path, model_name)
@@ -3833,6 +4607,11 @@ def save_artifacts(
         save_ridge_variants(
             {name: model for name, model in models.items() if is_ridge_model_name(name)},
             ridge_model_path,
+        )
+    if neural_model_path is not None:
+        save_neural_variants(
+            {name: model for name, model in models.items() if is_neural_model_name(name)},
+            neural_model_path,
         )
     features_path.write_text(json.dumps(feature_columns, ensure_ascii=False, indent=2), encoding="utf-8")
     ensemble_weights_path.write_text(
@@ -3883,6 +4662,8 @@ def predict_race_order(
         if model_type == "catboost":
             pool = build_catboost_pool_for_inference(base, feature_columns, categorical_columns)
             raw_scores = model.predict(pool)
+        elif is_lightgbm_seed_ensemble_model_name(model_type):
+            raw_scores = predict_lightgbm_seed_ensemble_raw(model, base, feature_columns, categorical_columns)
         elif is_lightgbm_model_name(model_type):
             model_feature_columns = lightgbm_prediction_feature_columns(model, feature_columns)
             model_categorical_columns = [column for column in categorical_columns if column in model_feature_columns]
@@ -3905,6 +4686,10 @@ def predict_race_order(
             frame = build_xgboost_frame(base, feature_columns, categorical_columns)
             raw_scores = model.predict(frame)
             if is_ridge_regression_model_name(model_type):
+                raw_scores = -np.asarray(raw_scores, dtype=float)
+        elif is_neural_model_name(model_type):
+            raw_scores = model.predict(base[feature_columns])
+            if is_neural_regression_model_name(model_type):
                 raw_scores = -np.asarray(raw_scores, dtype=float)
         else:
             continue
@@ -4357,6 +5142,12 @@ def load_models(config: dict) -> dict[str, Any]:
         catboost_model = CatBoostRanker()
         catboost_model.load_model(str(artifacts["catboost_model_path"]))
         models["catboost"] = catboost_model
+    if is_lightgbm_seed_ensemble_enabled(config):
+        models[LIGHTGBM_SEED_ENSEMBLE_MODEL_NAME] = load_lightgbm_seed_ensemble(
+            config,
+            artifacts["lightgbm_model_path"],
+            lightgbm_model,
+        )
     for variant in get_enabled_lightgbm_variants(config):
         name = str(variant["name"])
         path = lightgbm_variant_model_path(artifacts["lightgbm_model_path"], name)
@@ -4400,6 +5191,12 @@ def load_models(config: dict) -> dict[str, Any]:
         path = ridge_variant_model_path(artifacts["ridge_model_path"], name)
         if not path.exists():
             raise FileNotFoundError(f"Configured ridge regression variant artifact not found: {path}")
+        models[name] = joblib.load(path)
+    for variant in get_enabled_neural_regression_variants(config):
+        name = str(variant["name"])
+        path = neural_variant_model_path(artifacts["neural_model_path"], name)
+        if not path.exists():
+            raise FileNotFoundError(f"Configured neural regression variant artifact not found: {path}")
         models[name] = joblib.load(path)
     return models
 
@@ -4530,6 +5327,44 @@ def save_lightgbm_variants(models: dict[str, lgb.Booster], lightgbm_model_path: 
         model.save_model(str(path))
 
 
+def save_lightgbm_seed_ensemble(model_bundle: dict[str, Any], lightgbm_model_path: Path) -> None:
+    base_seed = int(model_bundle.get("base_seed", -1))
+    for seed_text, model in (model_bundle.get("models", {}) or {}).items():
+        seed = int(seed_text)
+        if seed == base_seed:
+            continue
+        path = lightgbm_seed_model_path(lightgbm_model_path, seed)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        model.save_model(str(path))
+
+
+def load_lightgbm_seed_ensemble(
+    config: dict,
+    lightgbm_model_path: Path,
+    base_model: lgb.Booster,
+) -> dict[str, Any]:
+    settings = get_lightgbm_seed_ensemble_settings(config)
+    seeds = [int(seed) for seed in settings.get("seeds", [])]
+    base_seed = int(config.get("model", {}).get("random_seed", seeds[0] if seeds else 42))
+    models: dict[str, lgb.Booster] = {}
+    for seed in seeds:
+        if seed == base_seed:
+            models[str(seed)] = base_model
+            continue
+        path = lightgbm_seed_model_path(lightgbm_model_path, seed)
+        if not path.exists():
+            raise FileNotFoundError(f"Configured LightGBM seed ensemble artifact not found: {path}")
+        models[str(seed)] = lgb.Booster(model_file=str(path))
+    if len(models) < 2:
+        raise ValueError("LightGBM seed ensemble requires at least two available seed models.")
+    return {
+        "type": LIGHTGBM_SEED_ENSEMBLE_MODEL_NAME,
+        "base_seed": base_seed,
+        "seeds": seeds,
+        "models": models,
+    }
+
+
 def save_xgboost_variants(models: dict[str, Any], xgboost_model_path: Path) -> None:
     for model_name, model in models.items():
         path = xgboost_variant_model_path(xgboost_model_path, model_name)
@@ -4551,10 +5386,29 @@ def save_ridge_variants(models: dict[str, Any], ridge_model_path: Path) -> None:
         joblib.dump(model, path)
 
 
+def save_neural_variants(models: dict[str, Any], neural_model_path: Path) -> None:
+    for model_name, model in models.items():
+        path = neural_variant_model_path(neural_model_path, model_name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        joblib.dump(model, path)
+
+
 def enabled_lightgbm_variant_paths(config: dict, lightgbm_model_path: Path) -> list[Path]:
     return [
         lightgbm_variant_model_path(lightgbm_model_path, str(variant["name"]))
         for variant in get_enabled_lightgbm_variants(config)
+    ]
+
+
+def enabled_lightgbm_seed_ensemble_paths(config: dict, lightgbm_model_path: Path) -> list[Path]:
+    settings = get_lightgbm_seed_ensemble_settings(config)
+    if not bool(settings.get("enabled", False)):
+        return []
+    base_seed = int((config or {}).get("model", {}).get("random_seed", 42))
+    return [
+        lightgbm_seed_model_path(lightgbm_model_path, int(seed))
+        for seed in settings.get("seeds", [])
+        if int(seed) != base_seed
     ]
 
 
@@ -4590,6 +5444,13 @@ def enabled_ridge_regression_variant_paths(config: dict, ridge_model_path: Path)
     return [
         ridge_variant_model_path(ridge_model_path, str(variant["name"]))
         for variant in get_enabled_ridge_regression_variants(config)
+    ]
+
+
+def enabled_neural_regression_variant_paths(config: dict, neural_model_path: Path) -> list[Path]:
+    return [
+        neural_variant_model_path(neural_model_path, str(variant["name"]))
+        for variant in get_enabled_neural_regression_variants(config)
     ]
 
 

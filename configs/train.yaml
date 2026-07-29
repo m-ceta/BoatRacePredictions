@@ -66,6 +66,11 @@ models:
           min_data_in_leaf: 80
           feature_fraction: 0.65
           lambda_l2: 5.0
+  lightgbm_seed_ensemble:
+    enabled: true
+    seeds: [42, 202, 777]
+    parallel_workers: 2
+    num_threads_per_seed: 2
   lightgbm_regression_variants:
     enabled: true
     parallel_workers: 1
@@ -146,6 +151,39 @@ models:
         score_transform: negative
         params:
           alpha: 10.0
+  neural_regression_variants:
+    enabled: true
+    parallel_workers: 1
+    variants:
+      - name: mlp_reg_finish_position
+        model_type: mlp
+        target: finish_position
+        score_transform: negative
+        params:
+          hidden_units: [256, 128, 64, 32]
+          embedding_dim: 8
+          dropout: 0.10
+          learning_rate: 0.001
+          weight_decay: 0.0001
+          epochs: 20
+          batch_size: 4096
+          patience: 5
+          torch_num_threads: 2
+      - name: tabnet_reg_finish_position
+        model_type: tabnet
+        target: finish_position
+        score_transform: negative
+        params:
+          n_d: 16
+          n_a: 16
+          n_steps: 4
+          gamma: 1.5
+          lambda_sparse: 0.0001
+          learning_rate: 0.001
+          max_epochs: 30
+          batch_size: 4096
+          virtual_batch_size: 512
+          patience: 5
 
 artifacts:
   catboost_model_path: artifacts/catboost_ranker.cbm
@@ -153,6 +191,7 @@ artifacts:
   xgboost_model_path: artifacts/xgboost_ranker.json
   random_forest_model_path: artifacts/random_forest_regressor.joblib
   ridge_model_path: artifacts/ridge_regressor.joblib
+  neural_model_path: artifacts/neural_regressor.joblib
   features_path: artifacts/feature_columns.json
   ensemble_weights_path: artifacts/ensemble_weights.json
   trifecta_calibrator_path: artifacts/trifecta_isotonic.joblib

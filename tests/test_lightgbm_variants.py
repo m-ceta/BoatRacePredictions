@@ -19,10 +19,46 @@ def test_lightgbm_regression_variants_are_disabled_by_default() -> None:
     assert ranker.get_enabled_lightgbm_regression_variants({}) == []
 
 
+def test_lightgbm_seed_ensemble_settings_deduplicate_seeds() -> None:
+    config = {
+        "models": {
+            "lightgbm_seed_ensemble": {
+                "enabled": True,
+                "seeds": [42, 42, 202],
+                "parallel_workers": 0,
+                "num_threads_per_seed": 0,
+            }
+        }
+    }
+
+    settings = ranker.get_lightgbm_seed_ensemble_settings(config)
+
+    assert settings["enabled"] is True
+    assert settings["seeds"] == [42, 202]
+    assert settings["parallel_workers"] == 1
+    assert settings["num_threads_per_seed"] == 1
+
+
+def test_lightgbm_seed_ensemble_requires_multiple_seeds() -> None:
+    config = {
+        "models": {
+            "lightgbm_seed_ensemble": {
+                "enabled": True,
+                "seeds": [42],
+            }
+        }
+    }
+
+    settings = ranker.get_lightgbm_seed_ensemble_settings(config)
+
+    assert settings["enabled"] is False
+
+
 def test_xgboost_and_random_forest_regression_variants_are_disabled_by_default() -> None:
     assert ranker.get_enabled_xgboost_regression_variants({}) == []
     assert ranker.get_enabled_random_forest_regression_variants({}) == []
     assert ranker.get_enabled_ridge_regression_variants({}) == []
+    assert ranker.get_enabled_neural_regression_variants({}) == []
 
 
 def test_lightgbm_variant_config_validates_names() -> None:
@@ -181,6 +217,51 @@ def test_ridge_regression_variant_config_validates_finish_position_target() -> N
     ]
 
 
+def test_neural_regression_variant_config_validates_supported_models() -> None:
+    config = {
+        "models": {
+            "neural_regression_variants": {
+                "enabled": True,
+                "variants": [
+                    {
+                        "name": "mlp_reg_finish_position",
+                        "model_type": "mlp",
+                        "target": "finish_position",
+                        "score_transform": "negative",
+                        "params": {"epochs": 2},
+                    },
+                    {
+                        "name": "tabnet_reg_finish_position",
+                        "model_type": "tabnet",
+                        "target": "finish_position",
+                        "score_transform": "negative",
+                        "params": {"max_epochs": 2},
+                    },
+                ],
+            }
+        }
+    }
+
+    variants = ranker.get_enabled_neural_regression_variants(config)
+
+    assert variants == [
+        {
+            "name": "mlp_reg_finish_position",
+            "model_type": "mlp",
+            "target": "finish_position",
+            "score_transform": "negative",
+            "params": {"epochs": 2},
+        },
+        {
+            "name": "tabnet_reg_finish_position",
+            "model_type": "tabnet",
+            "target": "finish_position",
+            "score_transform": "negative",
+            "params": {"max_epochs": 2},
+        },
+    ]
+
+
 def test_lightgbm_variant_config_rejects_reserved_name() -> None:
     config = {
         "models": {
@@ -281,6 +362,30 @@ def test_ridge_regression_score_uses_lower_predicted_finish_as_better() -> None:
     scored = ranker.score_frame(
         DummyRegressor(),
         "ridge_reg_finish_position",
+        df,
+        feature_columns=[],
+        categorical_columns=[],
+    )
+
+    assert scored.loc[scored["lane"] == 2, "pred_rank"].iloc[0] == 1
+
+
+def test_neural_regression_score_uses_lower_predicted_finish_as_better() -> None:
+    class DummyRegressor:
+        def predict(self, frame):
+            return [3.0, 1.0]
+
+    df = pd.DataFrame(
+        {
+            "race_id": ["R1", "R1"],
+            "lane": [1, 2],
+            "finish_position": [2, 1],
+        }
+    )
+
+    scored = ranker.score_frame(
+        DummyRegressor(),
+        "mlp_reg_finish_position",
         df,
         feature_columns=[],
         categorical_columns=[],

@@ -26,6 +26,10 @@ dev = [
   "pytest>=8.2.0",
   "ruff>=0.4.0",
 ]
+nn = [
+  "torch>=2.3.0",
+  "pytorch-tabnet>=4.1.0",
+]
 
 [project.scripts]
 boatrace-backfill-rowdata = "src.cli:backfill_rowdata_main"
