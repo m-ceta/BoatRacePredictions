@@ -20,6 +20,9 @@ import yaml
 from catboost import CatBoostError, CatBoostRanker, Pool
 from sklearn.isotonic import IsotonicRegression
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.linear_model import Ridge
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 
 try:
     import xgboost as xgb
@@ -84,6 +87,7 @@ DEFAULT_ARTIFACT_PATHS = {
     "lightgbm_model_path": "artifacts/lightgbm_ranker.txt",
     "xgboost_model_path": "artifacts/xgboost_ranker.json",
     "random_forest_model_path": "artifacts/random_forest_regressor.joblib",
+    "ridge_model_path": "artifacts/ridge_regressor.joblib",
     "features_path": "artifacts/feature_columns.json",
     "ensemble_weights_path": "artifacts/ensemble_weights.json",
     "trifecta_calibrator_path": "artifacts/trifecta_isotonic.joblib",
@@ -97,6 +101,7 @@ RESERVED_MODEL_NAMES = {"catboost", "lightgbm", "xgboost"}
 LIGHTGBM_VARIANT_NAME_RE = re.compile(r"^lightgbm_[A-Za-z0-9_]+$")
 XGBOOST_VARIANT_NAME_RE = re.compile(r"^xgboost_[A-Za-z0-9_]+$")
 RANDOM_FOREST_VARIANT_NAME_RE = re.compile(r"^random_forest_[A-Za-z0-9_]+$")
+RIDGE_VARIANT_NAME_RE = re.compile(r"^ridge_[A-Za-z0-9_]+$")
 TRIFECTA_V2_FEATURE_VERSION = 2
 
 DEFAULT_CATBOOST_SETTINGS = {
@@ -294,6 +299,23 @@ DEFAULT_RANDOM_FOREST_REGRESSION_VARIANT_SETTINGS = {
 }
 
 
+DEFAULT_RIDGE_REGRESSION_VARIANT_SETTINGS = {
+    "enabled": False,
+    "parallel_workers": 1,
+    "num_threads_per_variant": 1,
+    "variants": [
+        {
+            "name": "ridge_reg_finish_position",
+            "target": "finish_position",
+            "score_transform": "negative",
+            "params": {
+                "alpha": 10.0,
+            },
+        },
+    ],
+}
+
+
 DEFAULT_ENSEMBLE_SETTINGS = {
     "parallel_workers": 1,
     "max_eval_races": 0,
@@ -399,6 +421,18 @@ def get_random_forest_regression_variant_settings(config: dict | None) -> dict[s
     )
     settings["parallel_workers"] = max(int(settings.get("parallel_workers", 1)), 1)
     settings["num_threads_per_variant"] = max(int(settings.get("num_threads_per_variant", 2)), 1)
+    return settings
+
+
+def get_ridge_regression_variant_settings(config: dict | None) -> dict[str, Any]:
+    configured = ((config or {}).get("models", {}) or {}).get("ridge_regression_variants", {})
+    settings = {
+        **DEFAULT_RIDGE_REGRESSION_VARIANT_SETTINGS,
+        **(configured or {}),
+    }
+    settings["variants"] = list((configured or {}).get("variants", DEFAULT_RIDGE_REGRESSION_VARIANT_SETTINGS["variants"]))
+    settings["parallel_workers"] = max(int(settings.get("parallel_workers", 1)), 1)
+    settings["num_threads_per_variant"] = max(int(settings.get("num_threads_per_variant", 1)), 1)
     return settings
 
 
@@ -554,6 +588,36 @@ def get_enabled_random_forest_regression_variants(config: dict | None) -> list[d
     return variants
 
 
+def get_enabled_ridge_regression_variants(config: dict | None) -> list[dict[str, Any]]:
+    settings = get_ridge_regression_variant_settings(config)
+    if not bool(settings.get("enabled", False)):
+        return []
+    variants = [dict(variant) for variant in settings.get("variants", [])]
+    seen: set[str] = set()
+    for variant in variants:
+        name = str(variant.get("name", "")).strip()
+        if not name:
+            raise ValueError("Ridge regression variant name must not be empty.")
+        if name in RESERVED_MODEL_NAMES:
+            raise ValueError(f"Ridge regression variant name conflicts with reserved model name: {name}")
+        if not RIDGE_VARIANT_NAME_RE.match(name) or not name.startswith("ridge_reg_"):
+            raise ValueError(f"Invalid ridge regression variant name: {name}")
+        if name in seen:
+            raise ValueError(f"Duplicate ridge regression variant name: {name}")
+        target = str(variant.get("target", "finish_position")).strip()
+        if target not in {"finish_position"}:
+            raise ValueError(f"Unsupported ridge regression variant target: {target}")
+        score_transform = str(variant.get("score_transform", "negative")).strip()
+        if score_transform not in {"negative"}:
+            raise ValueError(f"Unsupported ridge regression score_transform: {score_transform}")
+        seen.add(name)
+        variant["name"] = name
+        variant["target"] = target
+        variant["score_transform"] = score_transform
+        variant["params"] = dict(variant.get("params", {}) or {})
+    return variants
+
+
 def is_lightgbm_model_name(model_name: str) -> bool:
     return model_name == "lightgbm" or model_name.startswith("lightgbm_")
 
@@ -578,6 +642,14 @@ def is_random_forest_regression_model_name(model_name: str) -> bool:
     return model_name.startswith("random_forest_reg_")
 
 
+def is_ridge_model_name(model_name: str) -> bool:
+    return model_name.startswith("ridge_")
+
+
+def is_ridge_regression_model_name(model_name: str) -> bool:
+    return model_name.startswith("ridge_reg_")
+
+
 def lightgbm_variant_model_path(base_path: Path, variant_name: str) -> Path:
     if variant_name == "lightgbm":
         return base_path
@@ -594,6 +666,11 @@ def xgboost_variant_model_path(base_path: Path, variant_name: str) -> Path:
 
 def random_forest_variant_model_path(base_path: Path, variant_name: str) -> Path:
     suffix = variant_name.removeprefix("random_forest_")
+    return base_path.with_name(f"{base_path.stem}_{suffix}{base_path.suffix}")
+
+
+def ridge_variant_model_path(base_path: Path, variant_name: str) -> Path:
+    suffix = variant_name.removeprefix("ridge_")
     return base_path.with_name(f"{base_path.stem}_{suffix}{base_path.suffix}")
 
 
@@ -1868,6 +1945,14 @@ def train_ranker(
         config,
     )
     collect_garbage()
+    ridge_regression_variant_models = train_ridge_regression_variants(
+        train_df,
+        valid_df,
+        feature_columns,
+        categorical_columns,
+        config,
+    )
+    collect_garbage()
     classifier_models = train_classifiers(train_df, valid_df, feature_columns, categorical_columns, config)
     collect_garbage()
     flow_model = None
@@ -1882,6 +1967,7 @@ def train_ranker(
         **xgboost_variant_models,
         **xgboost_regression_variant_models,
         **random_forest_regression_variant_models,
+        **ridge_regression_variant_models,
     }
     ensemble_weights = optimize_ensemble_weights(
         models,
@@ -1986,6 +2072,18 @@ def train_ranker(
                 categorical_columns,
             )
             for name, model in random_forest_regression_variant_models.items()
+        },
+        **{
+            name: evaluate_model_bundle(
+                model,
+                name,
+                train_df,
+                valid_df,
+                test_df,
+                feature_columns,
+                categorical_columns,
+            )
+            for name, model in ridge_regression_variant_models.items()
         },
         "ensemble": evaluate_ensemble(
             models,
@@ -2386,6 +2484,53 @@ def train_ranker_from_splits(
         )
     collect_garbage()
 
+    ridge_regression_variant_paths = enabled_ridge_regression_variant_paths(
+        config,
+        artifacts["ridge_model_path"],
+    )
+    if (
+        resume
+        and train_stage_completed(checkpoint, "ridge_regression_variants", ridge_regression_variant_paths)
+        and "ridge_regression_variants" in checkpoint_metrics
+    ):
+        progress("skipping ridge regression variants: train checkpoint completed")
+        ridge_regression_variant_models = {
+            str(variant["name"]): joblib.load(
+                ridge_variant_model_path(artifacts["ridge_model_path"], str(variant["name"]))
+            )
+            for variant in get_enabled_ridge_regression_variants(config)
+        }
+        ridge_regression_variant_metrics = checkpoint_metrics.get("ridge_regression_variants", {})
+    else:
+        ridge_regression_variant_models = train_ridge_regression_variants(
+            train_df,
+            valid_df,
+            feature_columns,
+            categorical_columns,
+            config,
+            progress_callback=progress,
+        )
+        save_ridge_variants(ridge_regression_variant_models, artifacts["ridge_model_path"])
+        ridge_regression_variant_metrics = {
+            name: evaluate_model_bundle(
+                model,
+                name,
+                train_df,
+                valid_df,
+                test_df,
+                feature_columns,
+                categorical_columns,
+            )
+            for name, model in ridge_regression_variant_models.items()
+        }
+        mark_train_stage_completed(
+            checkpoint_path,
+            checkpoint,
+            "ridge_regression_variants",
+            ridge_regression_variant_metrics,
+        )
+    collect_garbage()
+
     models = {
         **({"catboost": catboost_model} if catboost_model is not None else {}),
         "lightgbm": lightgbm_model,
@@ -2394,6 +2539,7 @@ def train_ranker_from_splits(
         **xgboost_variant_models,
         **xgboost_regression_variant_models,
         **random_forest_regression_variant_models,
+        **ridge_regression_variant_models,
     }
     if resume and train_stage_completed(checkpoint, "ensemble", [artifacts["ensemble_weights_path"]]) and "ensemble" in checkpoint_metrics:
         progress("skipping ensemble optimization: train checkpoint completed")
@@ -2520,6 +2666,7 @@ def train_ranker_from_splits(
         **xgboost_variant_metrics,
         **xgboost_regression_variant_metrics,
         **random_forest_regression_variant_metrics,
+        **ridge_regression_variant_metrics,
         "ensemble": ensemble_metrics,
     }
     metrics = {
@@ -3318,6 +3465,89 @@ def train_random_forest_regression_variants(
     return trained
 
 
+def train_ridge_regression(
+    train_df: pd.DataFrame,
+    valid_df: pd.DataFrame,
+    feature_columns: list[str],
+    categorical_columns: list[str],
+    config: dict,
+    *,
+    target: str = "finish_position",
+    param_overrides: dict[str, Any] | None = None,
+    num_threads: int | None = None,
+) -> Any:
+    if target not in train_df.columns:
+        raise ValueError(f"Ridge regression target column is missing: {target}")
+    train_sorted = sort_for_grouping(train_df)
+    train_frame = build_xgboost_frame(train_sorted, feature_columns, categorical_columns)
+    params: dict[str, Any] = {
+        "alpha": 10.0,
+        "random_state": config["model"]["random_seed"],
+    }
+    if param_overrides:
+        params.update(param_overrides)
+    model = make_pipeline(
+        StandardScaler(with_mean=False),
+        Ridge(**params),
+    )
+    try:
+        model.fit(
+            train_frame,
+            pd.to_numeric(train_sorted[target], errors="coerce").astype(float),
+        )
+        return model
+    finally:
+        del train_sorted, train_frame
+        collect_garbage()
+
+
+def train_ridge_regression_variants(
+    train_df: pd.DataFrame,
+    valid_df: pd.DataFrame,
+    feature_columns: list[str],
+    categorical_columns: list[str],
+    config: dict,
+    progress_callback: Callable[[str], None] | None = None,
+) -> dict[str, Any]:
+    variants = get_enabled_ridge_regression_variants(config)
+    if not variants:
+        return {}
+    settings = get_ridge_regression_variant_settings(config)
+    workers = min(int(settings.get("parallel_workers", 1)), len(variants))
+    num_threads = int(settings.get("num_threads_per_variant", 1))
+    _emit_progress(
+        progress_callback,
+        f"training ridge regression variants: workers={workers}, variants={len(variants)}",
+    )
+
+    def train_one(variant: dict[str, Any]) -> tuple[str, Any]:
+        name = str(variant["name"])
+        _emit_progress(progress_callback, f"training ridge regression variant: {name}")
+        model = train_ridge_regression(
+            train_df,
+            valid_df,
+            feature_columns,
+            categorical_columns,
+            config,
+            target=str(variant.get("target", "finish_position")),
+            param_overrides=dict(variant.get("params", {}) or {}),
+            num_threads=num_threads,
+        )
+        _emit_progress(progress_callback, f"completed ridge regression variant: {name}")
+        return name, model
+
+    if workers <= 1 or len(variants) <= 1:
+        return dict(train_one(variant) for variant in variants)
+
+    trained: dict[str, Any] = {}
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_name = {executor.submit(train_one, variant): str(variant["name"]) for variant in variants}
+        for future in as_completed(future_to_name):
+            name, model = future.result()
+            trained[name] = model
+    return trained
+
+
 def build_lightgbm_frame(
     df: pd.DataFrame,
     feature_columns: list[str],
@@ -3431,6 +3661,11 @@ def score_frame(
         raw_scores = model.predict(frame)
         if is_random_forest_regression_model_name(model_type):
             raw_scores = -np.asarray(raw_scores, dtype=float)
+    elif is_ridge_model_name(model_type):
+        frame = build_xgboost_frame(df, feature_columns, categorical_columns)
+        raw_scores = model.predict(frame)
+        if is_ridge_regression_model_name(model_type):
+            raw_scores = -np.asarray(raw_scores, dtype=float)
     else:
         raise ValueError(f"Unknown model_type: {model_type}")
 
@@ -3502,6 +3737,7 @@ def save_artifacts(
     trifecta_v3_calibrator_path: Path | None = None,
     xgboost_model_path: Path | None = None,
     random_forest_model_path: Path | None = None,
+    ridge_model_path: Path | None = None,
 ) -> None:
     catboost_model_path.parent.mkdir(parents=True, exist_ok=True)
     lightgbm_model_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3530,6 +3766,11 @@ def save_artifacts(
         save_random_forest_variants(
             {name: model for name, model in models.items() if is_random_forest_model_name(name)},
             random_forest_model_path,
+        )
+    if ridge_model_path is not None:
+        save_ridge_variants(
+            {name: model for name, model in models.items() if is_ridge_model_name(name)},
+            ridge_model_path,
         )
     features_path.write_text(json.dumps(feature_columns, ensure_ascii=False, indent=2), encoding="utf-8")
     ensemble_weights_path.write_text(
@@ -3597,6 +3838,11 @@ def predict_race_order(
             frame = build_xgboost_frame(base, feature_columns, categorical_columns)
             raw_scores = model.predict(frame)
             if is_random_forest_regression_model_name(model_type):
+                raw_scores = -np.asarray(raw_scores, dtype=float)
+        elif is_ridge_model_name(model_type):
+            frame = build_xgboost_frame(base, feature_columns, categorical_columns)
+            raw_scores = model.predict(frame)
+            if is_ridge_regression_model_name(model_type):
                 raw_scores = -np.asarray(raw_scores, dtype=float)
         else:
             continue
@@ -4087,6 +4333,12 @@ def load_models(config: dict) -> dict[str, Any]:
         if not path.exists():
             raise FileNotFoundError(f"Configured random forest regression variant artifact not found: {path}")
         models[name] = joblib.load(path)
+    for variant in get_enabled_ridge_regression_variants(config):
+        name = str(variant["name"])
+        path = ridge_variant_model_path(artifacts["ridge_model_path"], name)
+        if not path.exists():
+            raise FileNotFoundError(f"Configured ridge regression variant artifact not found: {path}")
+        models[name] = joblib.load(path)
     return models
 
 
@@ -4230,6 +4482,13 @@ def save_random_forest_variants(models: dict[str, Any], random_forest_model_path
         joblib.dump(model, path)
 
 
+def save_ridge_variants(models: dict[str, Any], ridge_model_path: Path) -> None:
+    for model_name, model in models.items():
+        path = ridge_variant_model_path(ridge_model_path, model_name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        joblib.dump(model, path)
+
+
 def enabled_lightgbm_variant_paths(config: dict, lightgbm_model_path: Path) -> list[Path]:
     return [
         lightgbm_variant_model_path(lightgbm_model_path, str(variant["name"]))
@@ -4262,6 +4521,13 @@ def enabled_random_forest_regression_variant_paths(config: dict, random_forest_m
     return [
         random_forest_variant_model_path(random_forest_model_path, str(variant["name"]))
         for variant in get_enabled_random_forest_regression_variants(config)
+    ]
+
+
+def enabled_ridge_regression_variant_paths(config: dict, ridge_model_path: Path) -> list[Path]:
+    return [
+        ridge_variant_model_path(ridge_model_path, str(variant["name"]))
+        for variant in get_enabled_ridge_regression_variants(config)
     ]
 
 

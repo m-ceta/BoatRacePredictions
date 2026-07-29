@@ -22,6 +22,7 @@ def test_lightgbm_regression_variants_are_disabled_by_default() -> None:
 def test_xgboost_and_random_forest_regression_variants_are_disabled_by_default() -> None:
     assert ranker.get_enabled_xgboost_regression_variants({}) == []
     assert ranker.get_enabled_random_forest_regression_variants({}) == []
+    assert ranker.get_enabled_ridge_regression_variants({}) == []
 
 
 def test_lightgbm_variant_config_validates_names() -> None:
@@ -151,6 +152,35 @@ def test_random_forest_regression_variant_config_validates_finish_position_targe
     ]
 
 
+def test_ridge_regression_variant_config_validates_finish_position_target() -> None:
+    config = {
+        "models": {
+            "ridge_regression_variants": {
+                "enabled": True,
+                "variants": [
+                    {
+                        "name": "ridge_reg_finish_position",
+                        "target": "finish_position",
+                        "score_transform": "negative",
+                        "params": {"alpha": 10.0},
+                    },
+                ],
+            }
+        }
+    }
+
+    variants = ranker.get_enabled_ridge_regression_variants(config)
+
+    assert variants == [
+        {
+            "name": "ridge_reg_finish_position",
+            "target": "finish_position",
+            "score_transform": "negative",
+            "params": {"alpha": 10.0},
+        }
+    ]
+
+
 def test_lightgbm_variant_config_rejects_reserved_name() -> None:
     config = {
         "models": {
@@ -227,6 +257,30 @@ def test_random_forest_regression_score_uses_lower_predicted_finish_as_better() 
     scored = ranker.score_frame(
         DummyRegressor(),
         "random_forest_reg_finish_position",
+        df,
+        feature_columns=[],
+        categorical_columns=[],
+    )
+
+    assert scored.loc[scored["lane"] == 2, "pred_rank"].iloc[0] == 1
+
+
+def test_ridge_regression_score_uses_lower_predicted_finish_as_better() -> None:
+    class DummyRegressor:
+        def predict(self, frame):
+            return [3.0, 1.0]
+
+    df = pd.DataFrame(
+        {
+            "race_id": ["R1", "R1"],
+            "lane": [1, 2],
+            "finish_position": [2, 1],
+        }
+    )
+
+    scored = ranker.score_frame(
+        DummyRegressor(),
+        "ridge_reg_finish_position",
         df,
         feature_columns=[],
         categorical_columns=[],

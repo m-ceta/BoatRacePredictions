@@ -136,12 +136,23 @@ models:
           bootstrap: true
           max_samples: 0.35
           random_state: 42
+  ridge_regression_variants:
+    enabled: true
+    parallel_workers: 1
+    num_threads_per_variant: 1
+    variants:
+      - name: ridge_reg_finish_position
+        target: finish_position
+        score_transform: negative
+        params:
+          alpha: 10.0
 
 artifacts:
   catboost_model_path: artifacts/catboost_ranker.cbm
   lightgbm_model_path: artifacts/lightgbm_ranker.txt
   xgboost_model_path: artifacts/xgboost_ranker.json
   random_forest_model_path: artifacts/random_forest_regressor.joblib
+  ridge_model_path: artifacts/ridge_regressor.joblib
   features_path: artifacts/feature_columns.json
   ensemble_weights_path: artifacts/ensemble_weights.json
   trifecta_calibrator_path: artifacts/trifecta_isotonic.joblib
