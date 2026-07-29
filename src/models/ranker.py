@@ -20,6 +20,7 @@ import yaml
 from catboost import CatBoostError, CatBoostRanker, Pool
 from sklearn.isotonic import IsotonicRegression
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.impute import SimpleImputer
 from sklearn.linear_model import Ridge
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
@@ -3487,6 +3488,7 @@ def train_ridge_regression(
     if param_overrides:
         params.update(param_overrides)
     model = make_pipeline(
+        SimpleImputer(strategy="median"),
         StandardScaler(with_mean=False),
         Ridge(**params),
     )
