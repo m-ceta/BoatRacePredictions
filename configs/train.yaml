@@ -41,6 +41,7 @@ models:
       od_wait: 30
   ensemble:
     parallel_workers: 8
+    model_metrics_parallel_workers: 2
     max_eval_races: 10000
     grid_step: 0.10
     objective: trifecta_top12_balanced

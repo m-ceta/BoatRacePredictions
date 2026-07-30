@@ -54,6 +54,22 @@ def test_lightgbm_seed_ensemble_requires_multiple_seeds() -> None:
     assert settings["enabled"] is False
 
 
+def test_ensemble_settings_normalizes_model_metrics_parallel_workers() -> None:
+    config = {
+        "models": {
+            "ensemble": {
+                "parallel_workers": 8,
+                "model_metrics_parallel_workers": 0,
+            }
+        }
+    }
+
+    settings = ranker.get_ensemble_settings(config)
+
+    assert settings["parallel_workers"] == 8
+    assert settings["model_metrics_parallel_workers"] == 1
+
+
 def test_xgboost_and_random_forest_regression_variants_are_disabled_by_default() -> None:
     assert ranker.get_enabled_xgboost_regression_variants({}) == []
     assert ranker.get_enabled_random_forest_regression_variants({}) == []

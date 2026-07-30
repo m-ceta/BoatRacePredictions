@@ -374,6 +374,7 @@ DEFAULT_NEURAL_REGRESSION_VARIANT_SETTINGS = {
 
 DEFAULT_ENSEMBLE_SETTINGS = {
     "parallel_workers": 1,
+    "model_metrics_parallel_workers": 1,
     "max_eval_races": 0,
     "grid_step": 0.10,
     "objective": "trifecta_top12_balanced",
@@ -536,6 +537,7 @@ def get_ensemble_settings(config: dict | None) -> dict[str, Any]:
         **(configured or {}),
     }
     settings["parallel_workers"] = max(int(settings.get("parallel_workers", 1)), 1)
+    settings["model_metrics_parallel_workers"] = max(int(settings.get("model_metrics_parallel_workers", 1)), 1)
     settings["max_eval_races"] = max(int(settings.get("max_eval_races", 0)), 0)
     settings["grid_step"] = float(settings.get("grid_step", 0.10))
     if settings["grid_step"] <= 0 or settings["grid_step"] > 1:
@@ -5958,6 +5960,7 @@ def evaluate_trifecta_v1_model_metrics(
     config: dict | None = None,
     progress_callback: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
+    settings = get_ensemble_settings(config)
     metrics: dict[str, Any] = {
         "ensemble": evaluate_trifecta_v1_metrics(
             models,
@@ -5973,7 +5976,11 @@ def evaluate_trifecta_v1_model_metrics(
             staged_models=staged_models,
         )
     }
-    for model_name, model in models.items():
+    model_items = list(models.items())
+    workers = min(int(settings.get("model_metrics_parallel_workers", 1)), len(model_items)) if model_items else 1
+    _emit_progress(progress_callback, f"trifecta v1 model metrics workers: {workers}")
+
+    def evaluate_one(model_name: str, model: Any) -> tuple[str, dict[str, Any]]:
         _emit_progress(progress_callback, f"evaluating trifecta v1 metrics for model: {model_name}")
         single_models = {model_name: model}
         single_weights = single_model_ensemble_weights(model_name, config)
@@ -5984,19 +5991,39 @@ def evaluate_trifecta_v1_model_metrics(
             feature_columns,
             categorical_columns,
         )
-        metrics[model_name] = evaluate_trifecta_v1_metrics(
-            single_models,
-            single_weights,
-            single_calibrator,
-            valid_df,
-            test_df,
-            feature_columns,
-            categorical_columns,
-            classifier_models=classifier_models,
-            flow_model=flow_model,
-            flow_classes=flow_classes,
-            staged_models=staged_models,
+        return (
+            model_name,
+            evaluate_trifecta_v1_metrics(
+                single_models,
+                single_weights,
+                single_calibrator,
+                valid_df,
+                test_df,
+                feature_columns,
+                categorical_columns,
+                classifier_models=classifier_models,
+                flow_model=flow_model,
+                flow_classes=flow_classes,
+                staged_models=staged_models,
+            ),
         )
+
+    if workers <= 1 or len(model_items) <= 1:
+        for model_name, model in model_items:
+            name, result = evaluate_one(model_name, model)
+            metrics[name] = result
+    else:
+        parallel_results: dict[str, dict[str, Any]] = {}
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(evaluate_one, model_name, model): model_name
+                for model_name, model in model_items
+            }
+            for future in as_completed(futures):
+                name, result = future.result()
+                parallel_results[name] = result
+        for model_name, _ in model_items:
+            metrics[model_name] = parallel_results[model_name]
     return metrics
 
 
