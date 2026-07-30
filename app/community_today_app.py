@@ -114,6 +114,13 @@ def load_today_schedule():
     return filter_future_schedule(fetch_daily_race_schedule())
 
 
+@st.cache_data(show_spinner=False, ttl=60)
+def load_exhibition_courses(venue: str, race_no: int, race_date: date) -> tuple[int, int, int, int, int, int] | None:
+    from src.live import fetch_boatrace_exhibition_courses
+
+    return fetch_boatrace_exhibition_courses(race_date, venue, race_no)
+
+
 @st.cache_data(show_spinner=False, ttl=300)
 def predict_today_cached(
     config_path: str,
@@ -154,25 +161,39 @@ def _parse_course_assignment_text(value: str) -> tuple[int, int, int, int, int, 
     return courses  # type: ignore[return-value]
 
 
-def _render_course_inputs(scope: str) -> tuple[tuple[int, int, int, int, int, int], bool]:
-    default_courses = (1, 2, 3, 4, 5, 6)
+def _format_courses(courses: tuple[int, int, int, int, int, int]) -> str:
+    return "".join(str(course) for course in courses)
+
+
+def _render_course_inputs(
+    scope: str,
+    exhibition_courses: tuple[int, int, int, int, int, int] | None,
+) -> tuple[tuple[int, int, int, int, int, int], bool]:
+    lane_courses = (1, 2, 3, 4, 5, 6)
+    default_courses = exhibition_courses or lane_courses
+    default_source = "展示進入" if exhibition_courses is not None else "枠なり"
+    mode_options = ["展示進入を使う・編集", "枠なり"] if exhibition_courses is not None else ["枠なり", "進入を手入力"]
     with st.expander("進入コース設定", expanded=False):
+        if exhibition_courses is not None:
+            st.success(f"展示進入を取得しました: {_format_courses(exhibition_courses)}")
+        else:
+            st.info("展示進入を取得できない場合は、枠なりを初期値にします。")
         mode = st.radio(
             "予測に使う進入",
-            options=["枠なり", "展示進入を指定"],
+            options=mode_options,
             horizontal=True,
-            key=f"community_prediction_course_mode_{scope}",
+            key=f"community_prediction_course_mode_{scope}_{default_source}_{_format_courses(default_courses)}",
         )
         if mode == "枠なり":
-            courses = default_courses
+            courses = lane_courses
             is_valid = True
             st.info("枠番と同じ進入コースで予測します。")
         else:
             raw_value = st.text_input(
                 "展示進入（1号艇から順に入力）",
-                value="123456",
+                value=_format_courses(default_courses),
                 help="例: 213456 は 1号艇が2コース、2号艇が1コースです。カンマ区切りの 2,1,3,4,5,6 も使えます。",
-                key=f"community_prediction_course_text_{scope}",
+                key=f"community_prediction_course_text_{scope}_{default_source}_{_format_courses(default_courses)}",
             )
             parsed = _parse_course_assignment_text(raw_value)
             is_valid = parsed is not None
@@ -405,7 +426,14 @@ def render_prediction_tab() -> None:
         format_func=lambda value: f"{int(value)}R",
         key=race_key,
     )
-    course_overrides, course_overrides_valid = _render_course_inputs(f"{selected}_{int(race_no):02d}")
+    from src.today_schedule import current_jst_date
+
+    target_date = current_jst_date()
+    exhibition_courses = load_exhibition_courses(selected, int(race_no), target_date)
+    course_overrides, course_overrides_valid = _render_course_inputs(
+        f"{selected}_{int(race_no):02d}_{target_date.isoformat()}",
+        exhibition_courses,
+    )
     submitted = st.button("予測する", disabled=not course_overrides_valid)
 
     if not submitted:
@@ -414,8 +442,6 @@ def render_prediction_tab() -> None:
     data_url, artifacts_url = get_shared_data_urls()
 
     try:
-        from src.today_schedule import current_jst_date
-
         if data_url or artifacts_url:
             with st.spinner("共有データを確認しています..."):
                 ensure_shared_data(data_url, artifacts_url)

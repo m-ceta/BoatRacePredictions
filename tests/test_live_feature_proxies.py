@@ -3,7 +3,12 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from src.live import apply_course_overrides, fill_live_measurement_proxies, merge_recent_group_features
+from src.live import (
+    apply_course_overrides,
+    fill_live_measurement_proxies,
+    merge_recent_group_features,
+    parse_start_exhibition_courses_html,
+)
 
 
 def test_merge_recent_group_features_adds_venue_measurement_averages() -> None:
@@ -129,3 +134,34 @@ def test_apply_course_overrides_rejects_duplicate_courses() -> None:
 
     with pytest.raises(ValueError, match="unique"):
         apply_course_overrides(frame, "1=2")
+
+
+def test_parse_start_exhibition_courses_html_maps_boat_order_to_lane_courses() -> None:
+    html = """
+    <div class="table1_boatImage1">
+      <span class="table1_boatImage1Number is-type1">1</span>
+      <span class="table1_boatImage1Time">.15</span>
+    </div>
+    <div class="table1_boatImage1">
+      <span class="table1_boatImage1Number is-type2">2</span>
+      <span class="table1_boatImage1Time">.22</span>
+    </div>
+    <div class="table1_boatImage1">
+      <span class="table1_boatImage1Number is-type3">3</span>
+      <span class="table1_boatImage1Time">.31</span>
+    </div>
+    <div class="table1_boatImage1">
+      <span class="table1_boatImage1Number is-type6">6</span>
+      <span class="table1_boatImage1Time">.11</span>
+    </div>
+    <div class="table1_boatImage1">
+      <span class="table1_boatImage1Number is-type4">4</span>
+      <span class="table1_boatImage1Time">.09</span>
+    </div>
+    <div class="table1_boatImage1">
+      <span class="table1_boatImage1Number is-type5">5</span>
+      <span class="table1_boatImage1Time">.02</span>
+    </div>
+    """
+
+    assert parse_start_exhibition_courses_html(html) == (1, 2, 3, 5, 6, 4)

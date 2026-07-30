@@ -822,6 +822,74 @@ def fetch_boatrace_trifecta_odds(target_date: date, venue_code: str, race_no: in
     return parse_trifecta_odds_html(html)
 
 
+def fetch_boatrace_exhibition_courses(
+    target_date: date,
+    venue_code: str,
+    race_no: int,
+) -> tuple[int, int, int, int, int, int] | None:
+    hd = target_date.strftime("%Y%m%d")
+    url = f"https://www.boatrace.jp/owpc/pc/race/beforeinfo?jcd={venue_code}&hd={hd}&rno={int(race_no):02d}"
+    try:
+        html = fetch_text(url, referer="https://www.boatrace.jp/")
+    except Exception:
+        return None
+    match = _HTML_TITLE_RE.search(html)
+    title = re.sub(r"\s+", " ", match.group(1)).strip() if match else ""
+    if title == "BOAT RACE オフィシャルウェブサイト" or "システムエラー" in title:
+        return None
+    return parse_start_exhibition_courses_html(html)
+
+
+def parse_start_exhibition_courses_html(html: str) -> tuple[int, int, int, int, int, int] | None:
+    soup = BeautifulSoup(html, "html.parser")
+    numbers: list[int] = []
+    for block in soup.select(".table1_boatImage1"):
+        number = _extract_start_exhibition_boat_number(block)
+        if number is not None:
+            numbers.append(number)
+        if len(numbers) >= 6:
+            break
+    if len(numbers) < 6:
+        numbers = []
+        for span in soup.select(".table1_boatImage1Number"):
+            value = parse_int_text(span.get_text(" ", strip=True))
+            if value is not None:
+                numbers.append(value)
+            if len(numbers) >= 6:
+                break
+    if len(numbers) != 6 or sorted(numbers) != [1, 2, 3, 4, 5, 6]:
+        return None
+    lane_to_course = {lane: course for course, lane in enumerate(numbers, start=1)}
+    return tuple(lane_to_course[lane] for lane in range(1, 7))  # type: ignore[return-value]
+
+
+def _extract_start_exhibition_boat_number(block: Any) -> int | None:
+    number_span = block.select_one(".table1_boatImage1Number")
+    if number_span is not None:
+        number = parse_int_text(number_span.get_text(" ", strip=True))
+        if number is not None:
+            return number
+        class_text = " ".join(str(value) for value in number_span.get("class", []))
+        match = re.search(r"is-type([1-6])", class_text)
+        if match:
+            return int(match.group(1))
+    image = block.find("img")
+    if image is not None:
+        for attr in ("alt", "title", "src"):
+            value = str(image.get(attr, ""))
+            match = re.search(r"(?:^|[_-])([1-6])(?:\D|$)", value)
+            if match:
+                return int(match.group(1))
+    return None
+
+
+def parse_int_text(text: str) -> int | None:
+    match = re.search(r"[1-6]", str(text))
+    if not match:
+        return None
+    return int(match.group(0))
+
+
 def parse_trifecta_odds_html(html: str) -> dict[str, float] | None:
     soup = BeautifulSoup(html, "html.parser")
     candidate_tables = []
