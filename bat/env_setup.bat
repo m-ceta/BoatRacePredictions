@@ -5,6 +5,7 @@ call "%~dp0_common.bat"
 
 if not defined PYTHON_VERSION set "PYTHON_VERSION=3.11"
 if not defined INSTALL_PROJECT set "INSTALL_PROJECT=1"
+if not defined INSTALL_NN set "INSTALL_NN=1"
 
 call "%~dp0_common.bat" :find_conda
 if errorlevel 1 exit /b %errorlevel%
@@ -24,8 +25,15 @@ if errorlevel 1 exit /b %errorlevel%
 python -m pip install --upgrade pip
 if errorlevel 1 exit /b %errorlevel%
 
+python -m pip install -r requirements.txt
+if errorlevel 1 exit /b %errorlevel%
+
 if "%INSTALL_PROJECT%"=="1" (
-    python -m pip install -e .
+    if "%INSTALL_NN%"=="1" (
+        python -m pip install -e ".[nn]"
+    ) else (
+        python -m pip install -e .
+    )
     if errorlevel 1 exit /b %errorlevel%
 )
 

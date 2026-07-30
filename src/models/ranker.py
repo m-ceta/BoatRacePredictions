@@ -3882,6 +3882,7 @@ class TabNetFinishPositionRegressor:
             "cat_idxs": cat_idxs,
             "cat_dims": cat_dims,
             "cat_emb_dim": int(self.params.get("cat_emb_dim", 8)),
+            "optimizer_params": {"lr": float(self.params.get("learning_rate", 0.001))},
         }
         self.model = TabNetRegressor(**model_params)
         self.model.fit(
@@ -3892,7 +3893,6 @@ class TabNetFinishPositionRegressor:
             patience=int(self.params.get("patience", 5)),
             batch_size=int(self.params.get("batch_size", 4096)),
             virtual_batch_size=int(self.params.get("virtual_batch_size", 512)),
-            optimizer_params={"lr": float(self.params.get("learning_rate", 0.001))},
             drop_last=False,
         )
         return self

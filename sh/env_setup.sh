@@ -10,6 +10,7 @@ INSTALL_RCLONE="${INSTALL_RCLONE:-1}"
 CONDA_INIT="${CONDA_INIT:-1}"
 CONFIGURE_RCLONE="${CONFIGURE_RCLONE:-1}"
 MOUNT_GDRIVE="${MOUNT_GDRIVE:-1}"
+INSTALL_NN="${INSTALL_NN:-1}"
 ENABLE_SWAP="${ENABLE_SWAP:-1}"
 SWAP_FILE="${SWAP_FILE:-/swapfile}"
 SWAP_SIZE="${SWAP_SIZE:-16G}"
@@ -117,7 +118,11 @@ fi
 echo "[5/5] Installing project runtime dependencies"
 conda run -n "${ENV_NAME}" python -m pip install --upgrade pip
 conda run -n "${ENV_NAME}" python -m pip install -r requirements.txt
-conda run -n "${ENV_NAME}" python -m pip install -e .
+if [[ "${INSTALL_NN}" == "1" ]]; then
+  conda run -n "${ENV_NAME}" python -m pip install -e ".[nn]"
+else
+  conda run -n "${ENV_NAME}" python -m pip install -e .
+fi
 
 if [[ "${INSTALL_RCLONE}" == "1" && "${CONFIGURE_RCLONE}" == "1" ]]; then
   if ! command -v rclone >/dev/null 2>&1; then
