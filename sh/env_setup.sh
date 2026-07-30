@@ -11,6 +11,9 @@ CONDA_INIT="${CONDA_INIT:-1}"
 CONFIGURE_RCLONE="${CONFIGURE_RCLONE:-1}"
 MOUNT_GDRIVE="${MOUNT_GDRIVE:-1}"
 INSTALL_NN="${INSTALL_NN:-1}"
+PYTORCH_DEVICE="${PYTORCH_DEVICE:-auto}"
+PYTORCH_CUDA_VERSION="${PYTORCH_CUDA_VERSION:-cu121}"
+PYTORCH_INDEX_URL="${PYTORCH_INDEX_URL:-}"
 ENABLE_SWAP="${ENABLE_SWAP:-1}"
 SWAP_FILE="${SWAP_FILE:-/swapfile}"
 SWAP_SIZE="${SWAP_SIZE:-16G}"
@@ -58,6 +61,48 @@ setup_swap() {
     echo "[extra] Persisting swap in /etc/fstab"
     echo "${SWAP_FILE} none swap sw 0 0" | sudo tee -a /etc/fstab >/dev/null
   fi
+}
+
+resolve_pytorch_device() {
+  case "${PYTORCH_DEVICE,,}" in
+    cpu)
+      echo "cpu"
+      ;;
+    gpu|cuda)
+      echo "gpu"
+      ;;
+    auto)
+      if command -v nvidia-smi >/dev/null 2>&1; then
+        echo "gpu"
+      else
+        echo "cpu"
+      fi
+      ;;
+    *)
+      echo "Unsupported PYTORCH_DEVICE: ${PYTORCH_DEVICE}. Use cpu, gpu, cuda, or auto." >&2
+      exit 1
+      ;;
+  esac
+}
+
+install_neural_dependencies() {
+  if [[ "${INSTALL_NN}" != "1" ]]; then
+    return
+  fi
+
+  resolved_device="$(resolve_pytorch_device)"
+  if [[ -n "${PYTORCH_INDEX_URL}" ]]; then
+    torch_index_url="${PYTORCH_INDEX_URL}"
+  elif [[ "${resolved_device}" == "gpu" ]]; then
+    torch_index_url="https://download.pytorch.org/whl/${PYTORCH_CUDA_VERSION}"
+  else
+    torch_index_url="https://download.pytorch.org/whl/cpu"
+  fi
+
+  echo "[extra] Installing neural dependencies: PYTORCH_DEVICE=${resolved_device}, index=${torch_index_url}"
+  conda run -n "${ENV_NAME}" python -m pip uninstall -y torch torchvision torchaudio >/dev/null 2>&1 || true
+  conda run -n "${ENV_NAME}" python -m pip install --index-url "${torch_index_url}" torch
+  conda run -n "${ENV_NAME}" python -m pip install "pytorch-tabnet>=4.1.0"
 }
 
 if [[ "${INSTALL_SYSTEM_PACKAGES}" == "1" ]]; then
@@ -119,6 +164,7 @@ echo "[5/5] Installing project runtime dependencies"
 conda run -n "${ENV_NAME}" python -m pip install --upgrade pip
 conda run -n "${ENV_NAME}" python -m pip install -r requirements.txt
 if [[ "${INSTALL_NN}" == "1" ]]; then
+  install_neural_dependencies
   conda run -n "${ENV_NAME}" python -m pip install -e ".[nn]"
 else
   conda run -n "${ENV_NAME}" python -m pip install -e .

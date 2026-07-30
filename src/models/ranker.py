@@ -3637,6 +3637,37 @@ def require_tabnet_regressor() -> Any:
     return TabNetRegressor
 
 
+def resolve_torch_device(torch: Any, params: dict[str, Any], *, key: str = "device", default: str = "auto") -> Any:
+    device_name = str(params.get(key, default)).strip().lower()
+    device_id = int(params.get("device_id", 0))
+    if device_name in {"auto", ""}:
+        resolved = f"cuda:{device_id}" if torch.cuda.is_available() else "cpu"
+    elif device_name in {"cuda", "gpu"}:
+        if not torch.cuda.is_available():
+            raise ValueError("Neural regression variant requested CUDA, but torch.cuda.is_available() is false.")
+        resolved = f"cuda:{device_id}"
+    elif device_name.startswith("cuda:"):
+        if not torch.cuda.is_available():
+            raise ValueError("Neural regression variant requested CUDA, but torch.cuda.is_available() is false.")
+        resolved = device_name
+    elif device_name == "cpu":
+        resolved = "cpu"
+    else:
+        raise ValueError(f"Unsupported neural device: {params.get(key)}")
+    return torch.device(resolved)
+
+
+def resolve_tabnet_device_name(params: dict[str, Any], *, key: str = "device", default: str = "auto") -> str:
+    device_name = str(params.get(key, default)).strip().lower()
+    if device_name in {"", "auto"}:
+        return "auto"
+    if device_name == "cpu":
+        return "cpu"
+    if device_name in {"cuda", "gpu"} or device_name.startswith("cuda:"):
+        return "cuda"
+    raise ValueError(f"Unsupported TabNet device: {params.get(key)}")
+
+
 class TabularNeuralPreprocessor:
     def __init__(self, categorical_columns: list[str]) -> None:
         self.requested_categorical_columns = list(categorical_columns)
@@ -3770,15 +3801,24 @@ class TorchEmbeddingMLPRegressor:
         torch = require_torch()
         torch.manual_seed(self.random_seed)
         torch.set_num_threads(max(int(self.params.get("torch_num_threads", 2)), 1))
+        device = resolve_torch_device(torch, self.params)
         self.preprocessor.fit(train_frame, feature_columns)
-        train_numeric = torch.tensor(self.preprocessor.transform_numeric(train_frame), dtype=torch.float32)
-        train_categorical = torch.tensor(self.preprocessor.transform_categorical(train_frame), dtype=torch.long)
-        train_target = torch.tensor(pd.to_numeric(y_train, errors="coerce").to_numpy(dtype=np.float32), dtype=torch.float32)
-        valid_numeric = torch.tensor(self.preprocessor.transform_numeric(valid_frame), dtype=torch.float32)
-        valid_categorical = torch.tensor(self.preprocessor.transform_categorical(valid_frame), dtype=torch.long)
-        valid_target = torch.tensor(pd.to_numeric(y_valid, errors="coerce").to_numpy(dtype=np.float32), dtype=torch.float32)
+        train_numeric = torch.tensor(self.preprocessor.transform_numeric(train_frame), dtype=torch.float32, device=device)
+        train_categorical = torch.tensor(self.preprocessor.transform_categorical(train_frame), dtype=torch.long, device=device)
+        train_target = torch.tensor(
+            pd.to_numeric(y_train, errors="coerce").to_numpy(dtype=np.float32),
+            dtype=torch.float32,
+            device=device,
+        )
+        valid_numeric = torch.tensor(self.preprocessor.transform_numeric(valid_frame), dtype=torch.float32, device=device)
+        valid_categorical = torch.tensor(self.preprocessor.transform_categorical(valid_frame), dtype=torch.long, device=device)
+        valid_target = torch.tensor(
+            pd.to_numeric(y_valid, errors="coerce").to_numpy(dtype=np.float32),
+            dtype=torch.float32,
+            device=device,
+        )
 
-        self._module = self._build_module()
+        self._module = self._build_module().to(device)
         optimizer = torch.optim.AdamW(
             self._module.parameters(),
             lr=float(self.params.get("learning_rate", 0.001)),
@@ -3825,12 +3865,14 @@ class TorchEmbeddingMLPRegressor:
 
     def predict(self, frame: pd.DataFrame) -> np.ndarray:
         torch = require_torch()
+        device = resolve_torch_device(torch, self.params, key="predict_device", default="cpu")
         if self._module is None:
             self._module = self._build_module()
             if self.state_dict is not None:
-                self._module.load_state_dict(self.state_dict)
-        numeric = torch.tensor(self.preprocessor.transform_numeric(frame), dtype=torch.float32)
-        categorical = torch.tensor(self.preprocessor.transform_categorical(frame), dtype=torch.long)
+                self._module.load_state_dict(self.state_dict, strict=True)
+        self._module = self._module.to(device)
+        numeric = torch.tensor(self.preprocessor.transform_numeric(frame), dtype=torch.float32, device=device)
+        categorical = torch.tensor(self.preprocessor.transform_categorical(frame), dtype=torch.long, device=device)
         self._module.eval()
         with torch.no_grad():
             return self._module(numeric, categorical).detach().cpu().numpy().astype(float)
@@ -3883,6 +3925,7 @@ class TabNetFinishPositionRegressor:
             "cat_dims": cat_dims,
             "cat_emb_dim": int(self.params.get("cat_emb_dim", 8)),
             "optimizer_params": {"lr": float(self.params.get("learning_rate", 0.001))},
+            "device_name": resolve_tabnet_device_name(self.params),
         }
         self.model = TabNetRegressor(**model_params)
         self.model.fit(
@@ -3900,7 +3943,25 @@ class TabNetFinishPositionRegressor:
     def predict(self, frame: pd.DataFrame) -> np.ndarray:
         if self.model is None:
             raise ValueError("TabNet model is not fitted.")
+        self._move_model_to_predict_device()
         return np.asarray(self.model.predict(self.preprocessor.transform_tabnet(frame))).reshape(-1).astype(float)
+
+    def _move_model_to_predict_device(self) -> None:
+        device_name = resolve_tabnet_device_name(self.params, key="predict_device", default="cpu")
+        if self.model is None:
+            return
+        try:
+            torch = require_torch()
+            torch_device = torch.device("cuda" if device_name == "cuda" else "cpu")
+        except Exception:
+            return
+        if hasattr(self.model, "device_name"):
+            self.model.device_name = device_name
+        if hasattr(self.model, "device"):
+            self.model.device = torch_device
+        network = getattr(self.model, "network", None)
+        if network is not None and hasattr(network, "to"):
+            network.to(torch_device)
 
 
 def train_xgboost_ranker(

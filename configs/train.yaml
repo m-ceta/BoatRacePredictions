@@ -169,6 +169,9 @@ models:
           batch_size: 4096
           patience: 5
           torch_num_threads: 2
+          device: auto
+          device_id: 0
+          predict_device: cpu
       - name: tabnet_reg_finish_position
         model_type: tabnet
         target: finish_position
@@ -184,15 +187,17 @@ models:
           batch_size: 4096
           virtual_batch_size: 512
           patience: 5
-
-artifacts:
-  catboost_model_path: artifacts/catboost_ranker.cbm
-  lightgbm_model_path: artifacts/lightgbm_ranker.txt
-  xgboost_model_path: artifacts/xgboost_ranker.json
-  random_forest_model_path: artifacts/random_forest_regressor.joblib
-  ridge_model_path: artifacts/ridge_regressor.joblib
-  neural_model_path: artifacts/neural_regressor.joblib
-  features_path: artifacts/feature_columns.json
-  ensemble_weights_path: artifacts/ensemble_weights.json
-  trifecta_calibrator_path: artifacts/trifecta_isotonic.joblib
+          device: auto
+          predict_device: cpu
+  
+  artifacts:
+    catboost_model_path: artifacts/catboost_ranker.cbm
+    lightgbm_model_path: artifacts/lightgbm_ranker.txt
+    xgboost_model_path: artifacts/xgboost_ranker.json
+    random_forest_model_path: artifacts/random_forest_regressor.joblib
+    ridge_model_path: artifacts/ridge_regressor.joblib
+    neural_model_path: artifacts/neural_regressor.joblib
+    features_path: artifacts/feature_columns.json
+    ensemble_weights_path: artifacts/ensemble_weights.json
+    trifecta_calibrator_path: artifacts/trifecta_isotonic.joblib
   metrics_path: artifacts/metrics.json

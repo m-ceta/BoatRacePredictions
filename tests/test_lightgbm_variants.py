@@ -228,14 +228,14 @@ def test_neural_regression_variant_config_validates_supported_models() -> None:
                         "model_type": "mlp",
                         "target": "finish_position",
                         "score_transform": "negative",
-                        "params": {"epochs": 2},
+                        "params": {"epochs": 2, "device": "auto", "device_id": 0, "predict_device": "cpu"},
                     },
                     {
                         "name": "tabnet_reg_finish_position",
                         "model_type": "tabnet",
                         "target": "finish_position",
                         "score_transform": "negative",
-                        "params": {"max_epochs": 2},
+                        "params": {"max_epochs": 2, "device": "cpu", "predict_device": "cpu"},
                     },
                 ],
             }
@@ -250,14 +250,14 @@ def test_neural_regression_variant_config_validates_supported_models() -> None:
             "model_type": "mlp",
             "target": "finish_position",
             "score_transform": "negative",
-            "params": {"epochs": 2},
+            "params": {"epochs": 2, "device": "auto", "device_id": 0, "predict_device": "cpu"},
         },
         {
             "name": "tabnet_reg_finish_position",
             "model_type": "tabnet",
             "target": "finish_position",
             "score_transform": "negative",
-            "params": {"max_epochs": 2},
+            "params": {"max_epochs": 2, "device": "cpu", "predict_device": "cpu"},
         },
     ]
 

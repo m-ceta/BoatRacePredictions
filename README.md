@@ -57,6 +57,36 @@ bat\train_full.bat
 bat\train_full_resume.bat
 ```
 
+## Neural / GPU Setup
+
+`env_setup` はニューラル variant 用の依存関係をデフォルトでインストールします。`PYTORCH_DEVICE` のデフォルトは `auto` です。
+
+CPU版PyTorchを使う場合:
+
+```bash
+PYTORCH_DEVICE=cpu bash sh/env_setup.sh
+```
+
+CUDA版PyTorchを使う場合:
+
+```bash
+PYTORCH_DEVICE=gpu PYTORCH_CUDA_VERSION=cu121 bash sh/env_setup.sh
+```
+
+デフォルト動作（`nvidia-smi` がある場合だけGPUを使う）:
+
+```bash
+PYTORCH_DEVICE=auto bash sh/env_setup.sh
+```
+
+Windows:
+
+```bat
+set PYTORCH_DEVICE=gpu
+set PYTORCH_CUDA_VERSION=cu121
+bat\env_setup.bat
+```
+
 `train_full` は以下の順で実行します。
 
 1. Google Drive mount
