@@ -279,6 +279,12 @@ def test_proxy_st_structure_features_are_rebuilt_from_prediction_time_st() -> No
             "racer_prev_avg_st": [0.19, 0.18, 0.17, 0.16, 0.15, 0.14],
             "racer_prev_avg_st_5": [0.16, 0.19, 0.15, 0.18, 0.13, 0.15],
             "racer_prev_avg_st_10": [0.17, 0.16, 0.18, 0.14, 0.16, 0.12],
+            "racer_prev_best_st_5": [0.14, 0.15, 0.13, 0.12, 0.11, 0.10],
+            "racer_prev_best_st_10": [0.13, 0.14, 0.12, 0.11, 0.10, 0.09],
+            "racer_prev_best_st_30": [0.12, 0.13, 0.11, 0.10, 0.09, 0.08],
+            "racer_prev_worst_st_5": [0.21, 0.20, 0.22, 0.19, 0.18, 0.17],
+            "racer_prev_worst_st_10": [0.22, 0.21, 0.23, 0.20, 0.19, 0.18],
+            "racer_prev_worst_st_30": [0.24, 0.23, 0.25, 0.22, 0.21, 0.20],
             "racer_venue_prev_avg_exhibition": [6.80, 6.79, 6.78, 6.77, 6.76, 6.75],
             "racer_prev_avg_exhibition": [6.81, 6.80, 6.79, 6.78, 6.77, 6.76],
         }
@@ -292,9 +298,10 @@ def test_proxy_st_structure_features_are_rebuilt_from_prediction_time_st() -> No
     assert np.isclose(proxied.loc[0, "race_outer_inner_avg_st_gap"], 0.14 - 0.17)
     assert np.isclose(proxied.loc[0, "lane_st_gap_inner3_avg"], 0.18 - 0.17)
     assert np.isclose(proxied.loc[5, "lane_st_gap_outer3_avg"], 0.13 - 0.14)
-    assert np.isclose(proxied.loc[0, "racer_prev_avg_st_window_best"], 0.16)
-    assert np.isclose(proxied.loc[0, "racer_prev_avg_st_window_worst"], 0.19)
-    assert np.isclose(proxied.loc[0, "start_timing_gap_st_window_best"], 0.18 - 0.16)
+    assert np.isclose(proxied.loc[0, "racer_prev_avg_st_window_best"], 0.12)
+    assert np.isclose(proxied.loc[0, "racer_prev_avg_st_window_worst"], 0.24)
+    assert np.isclose(proxied.loc[0, "racer_prev_avg_st_window_range"], 0.12)
+    assert np.isclose(proxied.loc[0, "start_timing_gap_st_window_best"], 0.18 - 0.12)
 
 
 def test_select_rerank_candidate_mask_from_v1_does_not_force_actual_inclusion() -> None:

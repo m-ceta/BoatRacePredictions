@@ -130,6 +130,24 @@ def add_racer_history_features(df: pd.DataFrame) -> pd.DataFrame:
     racer_sorted["racer_prev_std_st_10"] = grouped["start_timing"].transform(
         lambda s: s.shift(1).rolling(10, min_periods=3).std()
     )
+    racer_sorted["racer_prev_best_st_5"] = grouped["start_timing"].transform(
+        lambda s: s.shift(1).rolling(5, min_periods=2).min()
+    )
+    racer_sorted["racer_prev_best_st_10"] = grouped["start_timing"].transform(
+        lambda s: s.shift(1).rolling(10, min_periods=3).min()
+    )
+    racer_sorted["racer_prev_best_st_30"] = grouped["start_timing"].transform(
+        lambda s: s.shift(1).rolling(30, min_periods=3).min()
+    )
+    racer_sorted["racer_prev_worst_st_5"] = grouped["start_timing"].transform(
+        lambda s: s.shift(1).rolling(5, min_periods=2).max()
+    )
+    racer_sorted["racer_prev_worst_st_10"] = grouped["start_timing"].transform(
+        lambda s: s.shift(1).rolling(10, min_periods=3).max()
+    )
+    racer_sorted["racer_prev_worst_st_30"] = grouped["start_timing"].transform(
+        lambda s: s.shift(1).rolling(30, min_periods=3).max()
+    )
     racer_sorted["racer_prev_best_finish_5"] = grouped["finish_position"].transform(
         lambda s: s.shift(1).rolling(5, min_periods=2).min()
     )
@@ -270,6 +288,12 @@ def add_race_relative_features(df: pd.DataFrame) -> pd.DataFrame:
         "racer_prev_avg_st",
         "racer_prev_avg_st_5",
         "racer_prev_avg_st_10",
+        "racer_prev_best_st_5",
+        "racer_prev_best_st_10",
+        "racer_prev_best_st_30",
+        "racer_prev_worst_st_5",
+        "racer_prev_worst_st_10",
+        "racer_prev_worst_st_30",
         "racer_prev_avg_exhibition",
         "racer_lane_prev_win_rate",
         "racer_lane_prev_top3_rate",
@@ -492,16 +516,24 @@ def add_proxy_st_structure_features(df: pd.DataFrame) -> pd.DataFrame:
 
     st_windows = [
         pd.to_numeric(frame[column], errors="coerce")
-        for column in ("racer_prev_avg_st_5", "racer_prev_avg_st_10", "racer_prev_avg_st")
+        for column in ("racer_prev_best_st_5", "racer_prev_best_st_10", "racer_prev_best_st_30")
         if column in frame.columns
     ]
-    if st_windows:
-        st_window_frame = pd.concat(st_windows, axis=1)
-        window_best = st_window_frame.min(axis=1, skipna=True)
-        window_worst = st_window_frame.max(axis=1, skipna=True)
-    else:
-        window_best = pd.Series(np.nan, index=frame.index)
-        window_worst = pd.Series(np.nan, index=frame.index)
+    worst_st_windows = [
+        pd.to_numeric(frame[column], errors="coerce")
+        for column in ("racer_prev_worst_st_5", "racer_prev_worst_st_10", "racer_prev_worst_st_30")
+        if column in frame.columns
+    ]
+    window_best = (
+        pd.concat(st_windows, axis=1).min(axis=1, skipna=True)
+        if st_windows
+        else pd.Series(np.nan, index=frame.index)
+    )
+    window_worst = (
+        pd.concat(worst_st_windows, axis=1).max(axis=1, skipna=True)
+        if worst_st_windows
+        else pd.Series(np.nan, index=frame.index)
+    )
     frame["racer_prev_avg_st_window_best"] = window_best.astype("float32")
     frame["racer_prev_avg_st_window_worst"] = window_worst.astype("float32")
     frame["racer_prev_avg_st_window_range"] = (window_worst - window_best).astype("float32")
