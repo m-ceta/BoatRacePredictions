@@ -113,6 +113,7 @@ bat\env_setup.bat
 - `sh/zip_upload.sh`, `bat/zip_upload.bat`: rowdata / data / artifacts を zip 化して Drive に更新
 - `sh/full_ui.sh`, `bat/full_ui.bat`: 通常 Web UI
 - `sh/today_ui.sh`, `bat/today_ui.bat`: 当日予測 UI
+- `notebooks/colab_train_full.ipynb`: Google Colab で `train_full` 相当を実行するNotebook
 
 ## 注意
 
