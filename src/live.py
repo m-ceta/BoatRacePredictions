@@ -6,7 +6,7 @@ import tempfile
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping, Sequence
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
@@ -169,6 +169,7 @@ def predict_today_race(
     race_no: int,
     race_date: date | None = None,
     history_df: pd.DataFrame | None = None,
+    course_overrides: Mapping[int, int] | Sequence[int] | str | None = None,
 ) -> TodayRacePrediction:
     target_date = normalize_target_date(race_date)
     venue_code = normalize_venue_code(venue)
@@ -187,6 +188,8 @@ def predict_today_race(
         raise ValueError(
             f"No entry data found for venue={venue} race_no={race_no} on {target_date.isoformat()}."
         )
+
+    race_entries = apply_course_overrides(race_entries, course_overrides)
 
     history = history_df
     if history is None:
@@ -247,6 +250,81 @@ def predict_today_race(
         race_upset_label=race_upset_label,
         buy_candidates=buy_candidates,
     )
+
+
+def normalize_course_overrides(
+    course_overrides: Mapping[int, int] | Sequence[int] | str | None,
+) -> dict[int, int]:
+    if course_overrides is None:
+        return {}
+    if isinstance(course_overrides, str):
+        value = course_overrides.strip()
+        if not value:
+            return {}
+        if "=" in value:
+            parsed: dict[int, int] = {}
+            for item in value.split(","):
+                token = item.strip()
+                if not token:
+                    continue
+                if "=" not in token:
+                    raise ValueError("Course override items must be formatted as lane=course.")
+                lane_text, course_text = token.split("=", 1)
+                parsed[int(lane_text.strip())] = int(course_text.strip())
+            return _validate_course_overrides(parsed)
+        parts = [part.strip() for part in value.split(",") if part.strip()]
+        if len(parts) == 1 and len(parts[0]) == 6 and parts[0].isdigit():
+            parts = list(parts[0])
+        if len(parts) != 6:
+            raise ValueError("Course list must contain 6 values, for example: 1,2,3,4,5,6.")
+        return _validate_course_overrides({lane: int(course) for lane, course in enumerate(parts, start=1)})
+    if isinstance(course_overrides, Mapping):
+        return _validate_course_overrides({int(lane): int(course) for lane, course in course_overrides.items()})
+    values = list(course_overrides)
+    if len(values) != 6:
+        raise ValueError("Course override sequence must contain 6 values.")
+    return _validate_course_overrides({lane: int(course) for lane, course in enumerate(values, start=1)})
+
+
+def apply_course_overrides(
+    race_entries: pd.DataFrame,
+    course_overrides: Mapping[int, int] | Sequence[int] | str | None,
+) -> pd.DataFrame:
+    frame = race_entries.copy()
+    if "course" not in frame.columns:
+        frame["course"] = frame["lane"]
+    frame["course"] = pd.to_numeric(frame["course"], errors="coerce").fillna(
+        pd.to_numeric(frame["lane"], errors="coerce")
+    )
+    overrides = normalize_course_overrides(course_overrides)
+    if overrides:
+        for lane, course in overrides.items():
+            frame.loc[pd.to_numeric(frame["lane"], errors="coerce") == lane, "course"] = course
+    _validate_race_entry_courses(frame)
+    frame["course"] = pd.to_numeric(frame["course"], errors="coerce").astype(int)
+    return frame
+
+
+def _validate_course_overrides(overrides: dict[int, int]) -> dict[int, int]:
+    for lane, course in overrides.items():
+        if lane < 1 or lane > 6:
+            raise ValueError(f"Lane must be between 1 and 6: {lane}")
+        if course < 1 or course > 6:
+            raise ValueError(f"Course must be between 1 and 6: {course}")
+    return overrides
+
+
+def _validate_race_entry_courses(frame: pd.DataFrame) -> None:
+    lane_values = pd.to_numeric(frame.get("lane"), errors="coerce")
+    course_values = pd.to_numeric(frame.get("course"), errors="coerce")
+    if lane_values.isna().any() or course_values.isna().any():
+        raise ValueError("Lane and course must be available for all race entries.")
+    courses = [int(value) for value in course_values.tolist()]
+    invalid = [course for course in courses if course < 1 or course > 6]
+    if invalid:
+        raise ValueError(f"Course must be between 1 and 6: {invalid[0]}")
+    if len(courses) == 6 and len(set(courses)) != 6:
+        raise ValueError("Course assignments must be unique across the 6 lanes.")
 
 
 def fetch_daily_race_schedule(target_date: date | None = None) -> dict[str, dict[int, time]]:

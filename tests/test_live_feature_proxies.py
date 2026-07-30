@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
-from src.live import fill_live_measurement_proxies, merge_recent_group_features
+from src.live import apply_course_overrides, fill_live_measurement_proxies, merge_recent_group_features
 
 
 def test_merge_recent_group_features_adds_venue_measurement_averages() -> None:
@@ -97,3 +98,34 @@ def test_fill_live_measurement_proxies_uses_venue_then_overall_history() -> None
     assert float(filled.loc[1, "start_timing"]) == 0.16
     assert float(filled.loc[1, "course"]) == 3.1
     assert float(filled.loc[1, "exhibition_time"]) == 6.77
+
+
+def test_apply_course_overrides_defaults_to_lane() -> None:
+    frame = pd.DataFrame({"lane": [1, 2, 3, 4, 5, 6]})
+
+    filled = apply_course_overrides(frame, None)
+
+    assert filled["course"].tolist() == [1, 2, 3, 4, 5, 6]
+
+
+def test_apply_course_overrides_accepts_course_list_string() -> None:
+    frame = pd.DataFrame({"lane": [1, 2, 3, 4, 5, 6]})
+
+    filled = apply_course_overrides(frame, "2,1,3,4,5,6")
+
+    assert filled["course"].tolist() == [2, 1, 3, 4, 5, 6]
+
+
+def test_apply_course_overrides_accepts_lane_course_pairs() -> None:
+    frame = pd.DataFrame({"lane": [1, 2, 3, 4, 5, 6]})
+
+    filled = apply_course_overrides(frame, "1=2,2=1")
+
+    assert filled["course"].tolist() == [2, 1, 3, 4, 5, 6]
+
+
+def test_apply_course_overrides_rejects_duplicate_courses() -> None:
+    frame = pd.DataFrame({"lane": [1, 2, 3, 4, 5, 6]})
+
+    with pytest.raises(ValueError, match="unique"):
+        apply_course_overrides(frame, "1=2")

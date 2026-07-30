@@ -83,6 +83,54 @@ def _prediction_race_key() -> str:
     return "prediction_selected_race_no"
 
 
+def _parse_course_assignment_text(value: str) -> tuple[int, int, int, int, int, int] | None:
+    normalized = value.strip().replace("，", ",").replace("、", ",").replace(" ", "")
+    if not normalized:
+        return None
+    parts = normalized.split(",") if "," in normalized else list(normalized)
+    if len(parts) != 6 or any(not part.isdigit() for part in parts):
+        return None
+    courses = tuple(int(part) for part in parts)
+    if sorted(courses) != [1, 2, 3, 4, 5, 6]:
+        return None
+    return courses  # type: ignore[return-value]
+
+
+def _render_course_inputs(scope: str) -> tuple[tuple[int, int, int, int, int, int], bool]:
+    default_courses = (1, 2, 3, 4, 5, 6)
+    with st.expander("進入コース設定", expanded=False):
+        mode = st.radio(
+            "予測に使う進入",
+            options=["枠なり", "展示進入を指定"],
+            horizontal=True,
+            key=f"prediction_course_mode_{scope}",
+        )
+        if mode == "枠なり":
+            courses = default_courses
+            is_valid = True
+            st.info("枠番と同じ進入コースで予測します。")
+        else:
+            raw_value = st.text_input(
+                "展示進入（1号艇から順に入力）",
+                value="123456",
+                help="例: 213456 は 1号艇が2コース、2号艇が1コースです。カンマ区切りの 2,1,3,4,5,6 も使えます。",
+                key=f"prediction_course_text_{scope}",
+            )
+            parsed = _parse_course_assignment_text(raw_value)
+            is_valid = parsed is not None
+            courses = parsed if parsed is not None else default_courses
+            if not is_valid:
+                st.error("1〜6を重複なく6つ指定してください。例: 213456")
+
+        preview = [
+            {"艇番": f"{lane}号艇", "予測に使う進入": f"{course}コース"}
+            for lane, course in enumerate(courses, start=1)
+        ]
+        st.dataframe(preview, use_container_width=True, hide_index=True)
+        st.caption("この進入コースを使って、場別コース成績・攻め圧・三連単確率などを再計算します。")
+    return courses, is_valid
+
+
 def _set_default_prediction_race(schedule: dict[str, dict[int, object]]) -> None:
     venue = st.session_state.get(_prediction_venue_key(), "15")
     st.session_state[_prediction_race_key()] = choose_default_today_race_no(schedule, venue)
@@ -362,7 +410,8 @@ def render_prediction_tab() -> None:
         format_func=lambda value: f"{int(value)}R",
         key=race_key,
     )
-    submitted = st.button("予測を実行")
+    course_overrides, course_overrides_valid = _render_course_inputs(f"{selected}_{int(race_no):02d}")
+    submitted = st.button("予測を実行", disabled=not course_overrides_valid)
 
     if not submitted:
         return
@@ -374,6 +423,7 @@ def render_prediction_tab() -> None:
                 venue=selected,
                 race_no=int(race_no),
                 config_path=config_path,
+                course_overrides=course_overrides,
             )
     except Exception as exc:  # pragma: no cover
         st.error(f"予測に失敗しました: {exc}")

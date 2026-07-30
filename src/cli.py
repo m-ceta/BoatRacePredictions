@@ -1523,10 +1523,31 @@ def predict_today_main() -> None:
     parser.add_argument("--config", type=Path, default=Path("configs/train.yaml"))
     parser.add_argument("--venue", type=str, required=True)
     parser.add_argument("--race-no", type=int, required=True)
+    parser.add_argument(
+        "--courses",
+        type=str,
+        default=None,
+        help="Course assignment by lane. Examples: 123456 or 1,2,3,4,5,6",
+    )
+    parser.add_argument(
+        "--course-overrides",
+        type=str,
+        default=None,
+        help="Partial course overrides. Example: 1=2,2=1",
+    )
     args = parser.parse_args()
 
+    if args.courses and args.course_overrides:
+        parser.error("--courses and --course-overrides cannot be used together.")
+    course_overrides = args.courses or args.course_overrides
+
     bundle = load_bundle(args.config)
-    prediction = predict_today_race(bundle=bundle, venue=args.venue, race_no=args.race_no)
+    prediction = predict_today_race(
+        bundle=bundle,
+        venue=args.venue,
+        race_no=args.race_no,
+        course_overrides=course_overrides,
+    )
     print(prediction.text)
 
 

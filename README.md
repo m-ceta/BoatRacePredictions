@@ -35,6 +35,8 @@ boatrace-backfill-rowdata --rowdata rowdata
 boatrace-build --rowdata rowdata --output data/processed
 boatrace-train --config configs/train.yaml
 boatrace-predict-today --config configs/train.yaml --venue 15 --race-no 1
+boatrace-predict-today --config configs/train.yaml --venue 15 --race-no 1 --courses 213456
+boatrace-predict-today --config configs/train.yaml --venue 15 --race-no 1 --course-overrides 1=2,2=1
 boatrace-webui
 boatrace-webui-today
 ```

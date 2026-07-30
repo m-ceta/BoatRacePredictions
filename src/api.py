@@ -204,8 +204,15 @@ def predict_today(
     race_no: int,
     config_path: str | Path = Path("configs/train.yaml"),
     race_date: Any | None = None,
+    course_overrides: Any | None = None,
 ) -> "TodayRacePrediction":
     from src.live import predict_today_race
 
     bundle = load_bundle(config_path)
-    return predict_today_race(bundle=bundle, venue=venue, race_no=race_no, race_date=race_date)
+    return predict_today_race(
+        bundle=bundle,
+        venue=venue,
+        race_no=race_no,
+        race_date=race_date,
+        course_overrides=course_overrides,
+    )
