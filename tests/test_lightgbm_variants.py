@@ -278,6 +278,37 @@ def test_neural_regression_variant_config_validates_supported_models() -> None:
     ]
 
 
+def test_variant_config_skips_disabled_individual_variant() -> None:
+    config = {
+        "models": {
+            "neural_regression_variants": {
+                "enabled": True,
+                "variants": [
+                    {
+                        "name": "mlp_reg_finish_position",
+                        "model_type": "mlp",
+                        "target": "finish_position",
+                        "score_transform": "negative",
+                        "params": {},
+                    },
+                    {
+                        "name": "tabnet_reg_finish_position",
+                        "enabled": False,
+                        "model_type": "tabnet",
+                        "target": "finish_position",
+                        "score_transform": "negative",
+                        "params": {},
+                    },
+                ],
+            }
+        }
+    }
+
+    variants = ranker.get_enabled_neural_regression_variants(config)
+
+    assert [variant["name"] for variant in variants] == ["mlp_reg_finish_position"]
+
+
 def test_lightgbm_variant_config_rejects_reserved_name() -> None:
     config = {
         "models": {

@@ -552,7 +552,7 @@ def get_enabled_lightgbm_variants(config: dict | None) -> list[dict[str, Any]]:
     settings = get_lightgbm_variant_settings(config)
     if not bool(settings.get("enabled", False)):
         return []
-    variants = [dict(variant) for variant in settings.get("variants", [])]
+    variants = [dict(variant) for variant in settings.get("variants", []) if bool(variant.get("enabled", True))]
     seen: set[str] = set()
     for variant in variants:
         name = str(variant.get("name", "")).strip()
@@ -575,7 +575,7 @@ def get_enabled_lightgbm_regression_variants(config: dict | None) -> list[dict[s
     settings = get_lightgbm_regression_variant_settings(config)
     if not bool(settings.get("enabled", False)):
         return []
-    variants = [dict(variant) for variant in settings.get("variants", [])]
+    variants = [dict(variant) for variant in settings.get("variants", []) if bool(variant.get("enabled", True))]
     seen: set[str] = set()
     for variant in variants:
         name = str(variant.get("name", "")).strip()
@@ -605,7 +605,7 @@ def get_enabled_xgboost_variants(config: dict | None) -> list[dict[str, Any]]:
     settings = get_xgboost_variant_settings(config)
     if not bool(settings.get("enabled", False)):
         return []
-    variants = [dict(variant) for variant in settings.get("variants", [])]
+    variants = [dict(variant) for variant in settings.get("variants", []) if bool(variant.get("enabled", True))]
     seen: set[str] = set()
     for variant in variants:
         name = str(variant.get("name", "")).strip()
@@ -627,7 +627,7 @@ def get_enabled_xgboost_regression_variants(config: dict | None) -> list[dict[st
     settings = get_xgboost_regression_variant_settings(config)
     if not bool(settings.get("enabled", False)):
         return []
-    variants = [dict(variant) for variant in settings.get("variants", [])]
+    variants = [dict(variant) for variant in settings.get("variants", []) if bool(variant.get("enabled", True))]
     seen: set[str] = set()
     for variant in variants:
         name = str(variant.get("name", "")).strip()
@@ -657,7 +657,7 @@ def get_enabled_random_forest_regression_variants(config: dict | None) -> list[d
     settings = get_random_forest_regression_variant_settings(config)
     if not bool(settings.get("enabled", False)):
         return []
-    variants = [dict(variant) for variant in settings.get("variants", [])]
+    variants = [dict(variant) for variant in settings.get("variants", []) if bool(variant.get("enabled", True))]
     seen: set[str] = set()
     for variant in variants:
         name = str(variant.get("name", "")).strip()
@@ -687,7 +687,7 @@ def get_enabled_ridge_regression_variants(config: dict | None) -> list[dict[str,
     settings = get_ridge_regression_variant_settings(config)
     if not bool(settings.get("enabled", False)):
         return []
-    variants = [dict(variant) for variant in settings.get("variants", [])]
+    variants = [dict(variant) for variant in settings.get("variants", []) if bool(variant.get("enabled", True))]
     seen: set[str] = set()
     for variant in variants:
         name = str(variant.get("name", "")).strip()
@@ -717,7 +717,7 @@ def get_enabled_neural_regression_variants(config: dict | None) -> list[dict[str
     settings = get_neural_regression_variant_settings(config)
     if not bool(settings.get("enabled", False)):
         return []
-    variants = [dict(variant) for variant in settings.get("variants", [])]
+    variants = [dict(variant) for variant in settings.get("variants", []) if bool(variant.get("enabled", True))]
     seen: set[str] = set()
     for variant in variants:
         name = str(variant.get("name", "")).strip()
