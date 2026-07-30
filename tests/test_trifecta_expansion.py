@@ -267,6 +267,36 @@ def test_evaluation_measurement_proxies_rebuild_relative_features() -> None:
     assert "race_outer_link_risk" in proxied.columns
 
 
+def test_proxy_st_structure_features_are_rebuilt_from_prediction_time_st() -> None:
+    frame = pd.DataFrame(
+        {
+            "race_id": ["R1"] * 6,
+            "lane": [1, 2, 3, 4, 5, 6],
+            "start_timing": [0.01, 0.02, 0.03, 0.04, 0.05, 0.06],
+            "exhibition_time": [6.70, 6.71, 6.72, 6.73, 6.74, 6.75],
+            "course": [1, 2, 3, 4, 5, 6],
+            "racer_venue_prev_avg_st": [0.18, 0.17, 0.16, 0.15, 0.14, 0.13],
+            "racer_prev_avg_st": [0.19, 0.18, 0.17, 0.16, 0.15, 0.14],
+            "racer_prev_avg_st_5": [0.16, 0.19, 0.15, 0.18, 0.13, 0.15],
+            "racer_prev_avg_st_10": [0.17, 0.16, 0.18, 0.14, 0.16, 0.12],
+            "racer_venue_prev_avg_exhibition": [6.80, 6.79, 6.78, 6.77, 6.76, 6.75],
+            "racer_prev_avg_exhibition": [6.81, 6.80, 6.79, 6.78, 6.77, 6.76],
+        }
+    )
+    with_actual_relative = add_race_relative_features(frame)
+
+    proxied = apply_prediction_time_measurement_proxies(with_actual_relative)
+
+    assert np.isclose(proxied.loc[0, "race_inner3_avg_st"], (0.18 + 0.17 + 0.16) / 3)
+    assert np.isclose(proxied.loc[0, "race_outer3_avg_st"], (0.15 + 0.14 + 0.13) / 3)
+    assert np.isclose(proxied.loc[0, "race_outer_inner_avg_st_gap"], 0.14 - 0.17)
+    assert np.isclose(proxied.loc[0, "lane_st_gap_inner3_avg"], 0.18 - 0.17)
+    assert np.isclose(proxied.loc[5, "lane_st_gap_outer3_avg"], 0.13 - 0.14)
+    assert np.isclose(proxied.loc[0, "racer_prev_avg_st_window_best"], 0.16)
+    assert np.isclose(proxied.loc[0, "racer_prev_avg_st_window_worst"], 0.19)
+    assert np.isclose(proxied.loc[0, "start_timing_gap_st_window_best"], 0.18 - 0.16)
+
+
 def test_select_rerank_candidate_mask_from_v1_does_not_force_actual_inclusion() -> None:
     v1_df = pd.DataFrame(
         {

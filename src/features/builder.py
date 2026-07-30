@@ -24,6 +24,15 @@ RACE_RELATIVE_GENERATED_EXACT_COLUMNS = {
     "race_attack_pressure",
     "race_inner_collapse_risk",
     "race_outer_link_risk",
+    "race_inner3_avg_st",
+    "race_outer3_avg_st",
+    "race_outer_inner_avg_st_gap",
+    "lane_st_gap_inner3_avg",
+    "lane_st_gap_outer3_avg",
+    "racer_prev_avg_st_window_best",
+    "racer_prev_avg_st_window_worst",
+    "racer_prev_avg_st_window_range",
+    "start_timing_gap_st_window_best",
     "lane_escape_support_score",
     "lane_attack_pressure_gap",
     "lane_outer_link_fit",
@@ -296,6 +305,7 @@ def add_race_relative_features(df: pd.DataFrame) -> pd.DataFrame:
     df = add_measurement_relative_features(df, race_groups)
     df = add_neighbor_gap_features(df)
     df = add_inside_outside_mean_gap_features(df)
+    df = add_proxy_st_structure_features(df)
     df = add_pre_race_attack_candidate_features(df)
     df = add_pre_race_flow_features(df)
 
@@ -460,6 +470,43 @@ def add_inside_outside_mean_gap_features(df: pd.DataFrame) -> pd.DataFrame:
     if feature_frames:
         ordered = pd.concat([ordered, pd.DataFrame(feature_frames, index=ordered.index)], axis=1)
     return ordered.sort_index()
+
+
+def add_proxy_st_structure_features(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or "race_id" not in df.columns or "lane" not in df.columns:
+        return df
+    frame = df.copy()
+    lane = pd.to_numeric(frame["lane"], errors="coerce")
+    st = pd.to_numeric(frame.get("start_timing"), errors="coerce")
+    race_keys = frame["race_id"]
+
+    inner_st = st.where(lane <= 3)
+    outer_st = st.where(lane >= 4)
+    inner3_avg = inner_st.groupby(race_keys).transform("mean")
+    outer3_avg = outer_st.groupby(race_keys).transform("mean")
+    frame["race_inner3_avg_st"] = inner3_avg.astype("float32")
+    frame["race_outer3_avg_st"] = outer3_avg.astype("float32")
+    frame["race_outer_inner_avg_st_gap"] = (outer3_avg - inner3_avg).astype("float32")
+    frame["lane_st_gap_inner3_avg"] = (st - inner3_avg).astype("float32")
+    frame["lane_st_gap_outer3_avg"] = (st - outer3_avg).astype("float32")
+
+    st_windows = [
+        pd.to_numeric(frame[column], errors="coerce")
+        for column in ("racer_prev_avg_st_5", "racer_prev_avg_st_10", "racer_prev_avg_st")
+        if column in frame.columns
+    ]
+    if st_windows:
+        st_window_frame = pd.concat(st_windows, axis=1)
+        window_best = st_window_frame.min(axis=1, skipna=True)
+        window_worst = st_window_frame.max(axis=1, skipna=True)
+    else:
+        window_best = pd.Series(np.nan, index=frame.index)
+        window_worst = pd.Series(np.nan, index=frame.index)
+    frame["racer_prev_avg_st_window_best"] = window_best.astype("float32")
+    frame["racer_prev_avg_st_window_worst"] = window_worst.astype("float32")
+    frame["racer_prev_avg_st_window_range"] = (window_worst - window_best).astype("float32")
+    frame["start_timing_gap_st_window_best"] = (st - window_best).astype("float32")
+    return frame
 
 
 def add_pre_race_attack_candidate_features(df: pd.DataFrame) -> pd.DataFrame:
