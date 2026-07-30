@@ -74,6 +74,7 @@ def test_fast_v1_trifecta_metrics_match_dataframe_metrics() -> None:
         {
             "race_id": ["R1"] * 6 + ["R2"] * 6,
             "lane": [1, 2, 3, 4, 5, 6] * 2,
+            "course": [1, 2, 3, 4, 5, 6, 1, 3, 2, 4, 5, 6],
             "finish_position": [1, 2, 3, 4, 5, 6, 3, 1, 2, 4, 5, 6],
             "win_probability_like": [0.42, 0.21, 0.16, 0.09, 0.07, 0.05, 0.18, 0.32, 0.24, 0.12, 0.08, 0.06],
         }
@@ -99,6 +100,9 @@ def test_fast_v1_trifecta_metrics_match_dataframe_metrics() -> None:
         "mean_top_probability",
     ):
         assert np.isclose(float(fast[key]), float(expected[key]))
+    subset_metrics = fast["entry_course_subset_metrics"]
+    assert subset_metrics["lane_course_match"]["race_count"] == 1.0
+    assert subset_metrics["lane_course_mismatch"]["race_count"] == 1.0
 
 
 def test_fast_v1_calibrator_matches_dataframe_training_payload() -> None:

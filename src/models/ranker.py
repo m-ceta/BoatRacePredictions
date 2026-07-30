@@ -1575,6 +1575,7 @@ def _evaluate_fast_v1_trifecta_metrics_from_ranked(
     lane_prob_rows: list[np.ndarray] = []
     actual_indices: list[int] = []
     scenario_labels: list[str] = []
+    entry_course_subset_labels: list[str] = []
     race_ids: list[str] = []
     for race_id, race_df in ranked.groupby("race_id", sort=False):
         if len(race_df) != 6:
@@ -1596,6 +1597,7 @@ def _evaluate_fast_v1_trifecta_metrics_from_ranked(
         lane_prob_rows.append(lane_probs)
         actual_indices.append(int(actual_index))
         scenario_labels.append(_phase3_scenario_label(_phase3_scenario_context(race_df.set_index("lane"))))
+        entry_course_subset_labels.append(_entry_course_subset_label(race_df))
         race_ids.append(str(race_id))
     if not lane_prob_rows:
         return None
@@ -1633,6 +1635,11 @@ def _evaluate_fast_v1_trifecta_metrics_from_ranked(
     metrics = _fast_matrix_metrics(prob_matrix, actual_array)
     if not metrics:
         return None
+    metrics["entry_course_subset_metrics"] = _fast_entry_course_subset_metrics(
+        prob_matrix,
+        actual_array,
+        entry_course_subset_labels,
+    )
 
     scenario_min_races = int(weights.get("scenario_metric_min_races", DEFAULT_PHASE3_SETTINGS["evaluation"]["scenario_min_races"]))
     scenario_metrics: dict[str, Any] = {}
@@ -1657,6 +1664,46 @@ def _evaluate_fast_v1_trifecta_metrics_from_ranked(
     metrics["scenario_metrics_grouped"] = grouped_metrics
     metrics["evaluation_mode"] = "fast_numpy_v1"
     metrics["fast_eval_races"] = float(len(race_ids))
+    return metrics
+
+
+def _entry_course_subset_label(race_df: pd.DataFrame) -> str:
+    if not {"lane", "course"}.issubset(race_df.columns):
+        return "course_unknown"
+    lanes = pd.to_numeric(race_df["lane"], errors="coerce")
+    courses = pd.to_numeric(race_df["course"], errors="coerce")
+    if lanes.isna().any() or courses.isna().any() or len(race_df) != 6:
+        return "course_unknown"
+    lane_values = lanes.astype(int).to_numpy()
+    course_values = courses.astype(int).to_numpy()
+    if len(set(lane_values.tolist())) != 6 or len(set(course_values.tolist())) != 6:
+        return "course_unknown"
+    return "lane_course_match" if bool(np.all(lane_values == course_values)) else "lane_course_mismatch"
+
+
+def _entry_course_subset_by_race(df: pd.DataFrame) -> dict[str, str]:
+    if df.empty or "race_id" not in df.columns:
+        return {}
+    return {
+        str(race_id): _entry_course_subset_label(race_df)
+        for race_id, race_df in df.groupby("race_id", sort=False)
+    }
+
+
+def _fast_entry_course_subset_metrics(
+    prob_matrix: np.ndarray,
+    actual_indices: np.ndarray,
+    subset_labels: list[str],
+) -> dict[str, Any]:
+    if len(subset_labels) != len(actual_indices):
+        return {}
+    subset_array = np.asarray(subset_labels, dtype=object)
+    metrics: dict[str, Any] = {}
+    for subset_label in ("lane_course_match", "lane_course_mismatch", "course_unknown"):
+        mask = subset_array == subset_label
+        if not mask.any():
+            continue
+        metrics[subset_label] = _fast_matrix_metrics(prob_matrix[mask], actual_indices[mask])
     return metrics
 
 
@@ -6971,6 +7018,24 @@ def evaluate_trifecta(
             probability_col="probability",
             baseline_col="probability_v1",
         )
+    entry_course_subset_by_race = _entry_course_subset_by_race(race_probs)
+    entry_course_subset_metrics: dict[str, Any] = {}
+    for subset_label in ("lane_course_match", "lane_course_mismatch", "course_unknown"):
+        race_ids = {
+            race_id for race_id, label in entry_course_subset_by_race.items() if label == subset_label
+        }
+        if not race_ids:
+            continue
+        subset_frame = trifecta[trifecta["race_id"].astype(str).isin(race_ids)].copy()
+        subset_result = compute_trifecta_metrics(subset_frame, probability_col="probability")
+        if rerank_top_n is not None:
+            subset_result["rerank_metrics"] = compute_trifecta_rerank_metrics(
+                subset_frame,
+                probability_col="probability",
+                baseline_col="probability_v1",
+            )
+        entry_course_subset_metrics[subset_label] = subset_result
+    metrics["entry_course_subset_metrics"] = entry_course_subset_metrics
     scenario_by_race = {
         str(race_id): _phase3_scenario_label(_phase3_scenario_context(race_df.set_index("lane")))
         for race_id, race_df in race_probs.groupby("race_id", sort=False)
