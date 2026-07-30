@@ -142,12 +142,18 @@ def parse_rowdata_file_date(path: Path) -> date | None:
     return date(year, int(match.group("mm")), int(match.group("dd")))
 
 
-def iter_month_groups(rowdata_dir: Path, max_date: date | None = None) -> list[tuple[str, list[Path], list[Path]]]:
+def iter_month_groups(
+    rowdata_dir: Path,
+    min_date: date | None = None,
+    max_date: date | None = None,
+) -> list[tuple[str, list[Path], list[Path]]]:
     grouped: dict[str, dict[str, list[Path]]] = {}
     for kind in ("B", "K"):
         for path in sorted(rowdata_dir.glob(f"{kind}*.TXT")):
             file_date = parse_rowdata_file_date(path)
             if file_date is None:
+                continue
+            if min_date is not None and file_date < min_date:
                 continue
             if max_date is not None and file_date > max_date:
                 continue
@@ -503,6 +509,7 @@ def add_racer_history_features_streaming(base_chunk: pd.DataFrame, carryovers: H
 def build_training_table_streaming(
     rowdata_dir: Path,
     output_dir: Path,
+    min_date: date | None = None,
     max_date: date | None = None,
 ) -> BuildSummary:
     output_dir = output_dir.resolve()
@@ -530,7 +537,7 @@ def build_training_table_streaming(
         return writer
 
     try:
-        for _, entry_paths, result_paths in iter_month_groups(rowdata_dir, max_date=max_date):
+        for _, entry_paths, result_paths in iter_month_groups(rowdata_dir, min_date=min_date, max_date=max_date):
             entry_records = []
             for path in entry_paths:
                 entry_records.extend(item.to_dict() for item in parse_entry_file(path))

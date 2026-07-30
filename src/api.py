@@ -72,12 +72,15 @@ def build_dataset_from_rowdata(
 def build_dataset_from_rowdata_streaming(
     rowdata_dir: str | Path,
     output_dir: str | Path,
+    min_date: Any | None = None,
     max_date: Any | None = None,
 ) -> BuildSummary:
+    normalized_min_date = pd.Timestamp(min_date).date() if min_date is not None else None
     normalized_max_date = pd.Timestamp(max_date).date() if max_date is not None else None
     return build_training_table_streaming(
         rowdata_dir=Path(rowdata_dir),
         output_dir=Path(output_dir),
+        min_date=normalized_min_date,
         max_date=normalized_max_date,
     )
 

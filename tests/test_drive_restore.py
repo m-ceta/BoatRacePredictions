@@ -148,6 +148,33 @@ def test_export_package_archives_writes_top_level_directories(tmp_path) -> None:
         assert zf.read("artifacts/model.txt").decode("utf-8") == "model"
 
 
+def test_export_package_archives_removes_unnecessary_data_directories(tmp_path) -> None:
+    project_root = tmp_path / "project"
+    output_dir = tmp_path / "drive"
+    (project_root / "data" / "processed").mkdir(parents=True)
+    (project_root / "data" / "data" / "processed").mkdir(parents=True)
+    (project_root / "data" / "processed_streaming_tmp_abcd").mkdir()
+    (project_root / "data" / "processed" / "training_table.parquet").write_text("current", encoding="utf-8")
+    (project_root / "data" / "data" / "processed" / "training_table.parquet").write_text("old", encoding="utf-8")
+    (project_root / "data" / "processed_streaming_tmp_abcd" / "partial.parquet").write_text("tmp", encoding="utf-8")
+
+    drive_restore.export_package_archives(
+        project_root=project_root,
+        output_dir=output_dir,
+        export_rowdata=False,
+        export_data=True,
+        export_artifacts=False,
+    )
+
+    assert not (project_root / "data" / "data").exists()
+    assert not (project_root / "data" / "processed_streaming_tmp_abcd").exists()
+    with zipfile.ZipFile(output_dir / "data.zip") as zf:
+        names = set(zf.namelist())
+    assert "data/processed/training_table.parquet" in names
+    assert "data/data/processed/training_table.parquet" not in names
+    assert "data/processed_streaming_tmp_abcd/partial.parquet" not in names
+
+
 class _FakeResponse:
     def __init__(
         self,

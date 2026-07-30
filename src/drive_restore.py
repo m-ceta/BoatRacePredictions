@@ -209,6 +209,26 @@ def _zip_directory(source_dir: Path, zip_path: Path) -> Path:
     return zip_path
 
 
+def cleanup_data_directory_before_export(data_dir: Path) -> list[Path]:
+    if not data_dir.exists() or not data_dir.is_dir():
+        return []
+    data_root = data_dir.resolve()
+    candidates = [
+        data_root / "data",
+        *data_root.glob("*_streaming_tmp_*"),
+    ]
+    removed: list[Path] = []
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if not resolved.exists() or not resolved.is_dir():
+            continue
+        if resolved == data_root or data_root not in resolved.parents:
+            raise ValueError(f"Refusing to remove path outside data directory: {resolved}")
+        shutil.rmtree(resolved)
+        removed.append(resolved)
+    return removed
+
+
 def _download_unique_archives(
     root: Path,
     requested: list[tuple[str, str, str]],
@@ -370,6 +390,7 @@ def export_package_archives(
         _zip_directory(root / "rowdata", rowdata_zip)
         exported_targets.append("rowdata")
     if export_data and data_zip is not None:
+        cleanup_data_directory_before_export(root / "data")
         _zip_directory(root / "data", data_zip)
         exported_targets.append("data")
     if export_artifacts and artifacts_zip is not None:

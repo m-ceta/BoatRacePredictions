@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+from datetime import date
 from datetime import datetime
+import math
 import hashlib
 import json
 from pathlib import Path
@@ -26,6 +28,7 @@ from src.drive_restore import (
     restore_packages_from_zip_files,
 )
 from src.features.streaming_builder import compare_processed_tables
+from src.features.streaming_builder import parse_rowdata_file_date
 from src.live import predict_today_race
 from src.recent_backtest import evaluate_recent_week_predictions
 from src.recent_backtest import export_backtest_report_artifacts
@@ -97,16 +100,67 @@ def print_progress(command_name: str, message: str) -> None:
     print(f"[{current_log_time()}] [{command_name}] {message}", flush=True)
 
 
+def infer_rowdata_latest_file_date(rowdata_dir: Path, max_date: date | None = None) -> date | None:
+    latest: date | None = None
+    for kind in ("B", "K"):
+        for path in rowdata_dir.glob(f"{kind}*.TXT"):
+            file_date = parse_rowdata_file_date(path)
+            if file_date is None:
+                continue
+            if max_date is not None and file_date > max_date:
+                continue
+            latest = file_date if latest is None else max(latest, file_date)
+    return latest
+
+
+def resolve_build_min_date(
+    rowdata_dir: Path,
+    min_date_value: str | None,
+    max_date_value: str | None,
+    config_path: Path,
+) -> str | None:
+    if min_date_value is not None:
+        normalized = str(min_date_value).strip().lower()
+        if normalized in {"", "none", "all"}:
+            return None
+        if normalized != "auto":
+            return pd.Timestamp(min_date_value).date().isoformat()
+
+    rolling_years = 3.5
+    if config_path.exists():
+        try:
+            config = load_config(config_path)
+            rolling_years = float(config.get("data", {}).get("rolling_years", rolling_years))
+        except Exception:
+            rolling_years = 3.5
+
+    normalized_max_date = pd.Timestamp(max_date_value).date() if max_date_value is not None else None
+    latest_date = normalized_max_date or infer_rowdata_latest_file_date(rowdata_dir)
+    if latest_date is None:
+        return None
+
+    history_years = rolling_years + 2.0
+    history_days = int(math.ceil(history_years * 365.25))
+    return (pd.Timestamp(latest_date) - pd.Timedelta(days=history_days)).date().isoformat()
+
+
 def build_dataset_main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--rowdata", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--config", type=Path, default=Path("configs/train.yaml"))
+    parser.add_argument("--min-date", type=str, default="auto")
     parser.add_argument("--max-date", type=str, default=None)
     args = parser.parse_args()
-    print_progress("boatrace-build", f"start: rowdata={args.rowdata}, output={args.output}, max_date={args.max_date}")
+    resolved_min_date = resolve_build_min_date(args.rowdata, args.min_date, args.max_date, args.config)
+    print_progress(
+        "boatrace-build",
+        f"start: rowdata={args.rowdata}, output={args.output}, min_date={resolved_min_date}, max_date={args.max_date}",
+    )
     summary = build_dataset_from_rowdata_streaming(
         rowdata_dir=args.rowdata,
         output_dir=args.output,
+        min_date=resolved_min_date,
         max_date=args.max_date,
     )
     print_progress("boatrace-build", "completed")
