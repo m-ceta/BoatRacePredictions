@@ -25,9 +25,9 @@ from src.models.ranker import attach_darkhorse_odds_context, predict_race_order,
 from src.odds.expected_value import (
     BUY_EXPECTED_VALUE_THRESHOLD,
     BUY_MIN_ODDS,
-    attach_buy_score_columns,
 )
 from src.parsers.bk_parser import parse_entry_text
+from src.top12_confidence import attach_top12_confidence_columns
 from src.today_schedule import (
     choose_default_today_race_no as _choose_default_today_race_no,
     choose_default_today_venue as _choose_default_today_venue,
@@ -139,7 +139,7 @@ class TodayRacePrediction:
                     f"オッズ評価上位: {top_odds['trifecta']}",
                     f"現在オッズ: {float(top_odds['odds']):.1f}倍",
                     f"期待値: {float(top_odds['expected_value']):.2f}",
-                    f"買い判断スコア: {float(top_odds.get('buy_score', 0.0)):.1f} ({top_odds.get('buy_score_label', '-')})",
+                    f"Top12信頼スコア: {float(top_odds.get('top12_confidence_score', 0.0)):.1f} ({top_odds.get('top12_confidence_label', '-')})",
                     f"判定: {top_odds['buy_decision']}",
                 ]
             )
@@ -149,7 +149,7 @@ class TodayRacePrediction:
                 lines.append(
                     f"{row.trifecta} | 確率 {format_percent(float(row.probability))} | オッズ {float(row.odds):.1f}倍 | "
                     f"期待値 {float(row.expected_value):.2f} | "
-                    f"スコア {float(getattr(row, 'buy_score', 0.0)):.1f} ({getattr(row, 'buy_score_label', '-')}) | "
+                    f"Top12信頼 {float(getattr(row, 'top12_confidence_score', 0.0)):.1f} ({getattr(row, 'top12_confidence_label', '-')}) | "
                     f"判定 {row.buy_decision}"
                 )
         lines.append("Top10 3連単候補:")
@@ -222,12 +222,13 @@ def predict_today_race(
         use_v2=False,
         rerank_top_n=None,
     )
+    trifecta = attach_top12_confidence_columns(trifecta)
     confidence_score = calculate_prediction_confidence(ranking, trifecta)
     odds = fetch_boatrace_trifecta_odds(target_date, venue_code, int(race_no))
     odds_frame = None
     buy_candidates = None
     if odds:
-        odds_frame = attach_odds_and_value(trifecta, odds, confidence_score=confidence_score)
+        odds_frame = attach_odds_and_value(trifecta, odds)
         buy_candidates = select_buy_candidates(odds_frame)
     race_upset_score = 0.0
     race_scenario_id = "S6_MIXED_OTHER"
@@ -984,7 +985,6 @@ def attach_odds_and_value(
     odds_map: dict[str, float],
     expected_value_threshold: float = BUY_EXPECTED_VALUE_THRESHOLD,
     min_odds: float = BUY_MIN_ODDS,
-    confidence_score: float | None = None,
 ) -> pd.DataFrame:
     frame = trifecta.copy()
     frame["odds"] = frame["trifecta"].map(odds_map)
@@ -996,12 +996,6 @@ def attach_odds_and_value(
     frame["odds"] = pd.to_numeric(frame["odds"], errors="coerce")
     frame["expected_value"] = frame["odds"] * frame["probability"]
     frame = attach_darkhorse_odds_context(frame)
-    frame = attach_buy_score_columns(
-        frame,
-        min_odds=min_odds,
-        expected_value_threshold=expected_value_threshold,
-        confidence_score=confidence_score,
-    )
     frame = frame.sort_values(["expected_value", "probability"], ascending=[False, False]).reset_index(drop=True)
     frame["buy_decision"] = frame.apply(
         lambda row: "買い"
@@ -1016,7 +1010,7 @@ def select_buy_candidates(odds_frame: pd.DataFrame, top_n: int = 5) -> pd.DataFr
     if odds_frame.empty:
         return odds_frame
     buy_only = odds_frame[odds_frame["buy_decision"] != "見送り"].copy()
-    sort_columns = ["buy_score", "expected_value", "ticket_priority_score", "probability"]
+    sort_columns = ["top12_confidence_score", "expected_value", "ticket_priority_score", "probability"]
     sort_columns = [column for column in sort_columns if column in odds_frame.columns]
     if not buy_only.empty:
         return buy_only.sort_values(

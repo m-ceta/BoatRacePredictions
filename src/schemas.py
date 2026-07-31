@@ -59,7 +59,6 @@ class RaceResult:
     wind_speed_m: int | None
     wave_cm: int | None
     winning_style: str | None
-    trifecta_payout: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

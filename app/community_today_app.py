@@ -285,8 +285,8 @@ def _format_odds_frame(frame):
             ("probability", "予想確率"),
             ("odds", "現在オッズ"),
             ("expected_value", "期待値"),
-            ("buy_score", "買い判断スコア"),
-            ("buy_score_label", "スコア判定"),
+            ("top12_confidence_score", "Top12信頼スコア"),
+            ("top12_confidence_label", "Top12信頼"),
             ("buy_decision", "判定"),
         ],
     )
@@ -300,8 +300,8 @@ def _format_buy_candidates_frame(frame):
             ("probability", "予想確率"),
             ("odds", "現在オッズ"),
             ("expected_value", "期待値"),
-            ("buy_score", "買い判断スコア"),
-            ("buy_score_label", "スコア判定"),
+            ("top12_confidence_score", "Top12信頼スコア"),
+            ("top12_confidence_label", "Top12信頼"),
             ("buy_decision", "判定"),
         ],
     )
@@ -335,8 +335,8 @@ def _render_prediction_guide() -> None:
 
 - `期待値` は `現在オッズ × 予想確率` です。
 - `期待値` が 1.0 以上、かつ `現在オッズ` が 12.0 倍以上なら `買い`、それ以外は `見送り` です。
-- `買い判断スコア` は 0〜100 の総合指標です。期待値、オッズ条件、予想確率、買い目優先度、予想信頼度、荒れすぎペナルティを合成しています。
-- `スコア判定` は 80以上が強く買い候補、65以上が買い候補、50以上が抑え候補、50未満が見送りです。
+- `Top12信頼スコア` は 0〜100 の総合指標です。Top12内の確率合計、上位確率の集中度、1位と2位の差、Top12境界の余裕、荒れ度を合成しています。
+- `Top12信頼` は 75以上が高、60以上が中、60未満が低です。
 
 **予想信頼度**
 

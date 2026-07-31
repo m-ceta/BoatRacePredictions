@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import brier_score_loss, log_loss
 
-from src.odds.expected_value import attach_buy_score_columns
+from src.top12_confidence import attach_top12_confidence_columns, top12_confidence_label_key
 
 
 def compute_trifecta_metrics(
@@ -74,190 +74,67 @@ def compute_trifecta_metrics(
             thresholds=expected_value_thresholds,
         )
 
-    buy_signal_metrics = compute_buy_signal_top12_metrics(trifecta_df, probability_col=probability_col)
-    if buy_signal_metrics:
-        metrics["buy_signal_top12_metrics"] = buy_signal_metrics
-
-    payout_proxy_metrics = compute_payout_proxy_buy_score_top12_metrics(
-        trifecta_df,
-        probability_col=probability_col,
-    )
-    if payout_proxy_metrics:
-        metrics["payout_proxy_buy_score_top12_metrics"] = payout_proxy_metrics
+    top12_confidence_metrics = compute_top12_confidence_metrics(trifecta_df, probability_col=probability_col)
+    if top12_confidence_metrics:
+        metrics["top12_confidence_metrics"] = top12_confidence_metrics
 
     return metrics
 
 
-def compute_payout_proxy_buy_score_top12_metrics(
+def compute_top12_confidence_metrics(
     trifecta_df: pd.DataFrame,
     probability_col: str = "probability",
 ) -> dict[str, dict[str, float]]:
-    if trifecta_df.empty or "trifecta_payout" not in trifecta_df.columns:
-        return {}
-
-    required = {"race_id", probability_col, "is_actual", "trifecta_payout"}
-    missing = required - set(trifecta_df.columns)
-    if missing:
-        raise ValueError(f"Missing payout proxy metric columns: {sorted(missing)}")
-
-    records: list[dict[str, float | str]] = []
-    for race_id, race_df in trifecta_df.groupby("race_id", sort=False):
-        ordered = race_df.sort_values(probability_col, ascending=False).reset_index(drop=True)
-        actual_positions = np.flatnonzero(ordered["is_actual"].to_numpy(dtype=bool))
-        if len(actual_positions) != 1:
-            continue
-        actual_idx = int(actual_positions[0])
-        actual_row = ordered.iloc[actual_idx]
-        payout = pd.to_numeric(pd.Series([actual_row.get("trifecta_payout")]), errors="coerce").dropna()
-        if payout.empty or float(payout.iloc[0]) <= 0.0:
-            continue
-
-        proxy_odds = float(payout.iloc[0]) / 100.0
-        probability = float(actual_row[probability_col])
-        proxy_frame = pd.DataFrame(
-            {
-                "race_id": [str(race_id)],
-                "probability": [probability],
-                "odds": [proxy_odds],
-                "expected_value": [probability * proxy_odds],
-                "ticket_priority_score": [_safe_float(actual_row.get("ticket_priority_score"), 0.0)],
-                "race_upset_score": [_safe_float(actual_row.get("race_upset_score"), 0.0)],
-            }
-        )
-        scored = attach_buy_score_columns(proxy_frame)
-        records.append(
-            {
-                "score_label": _buy_score_label_key(scored.loc[0, "buy_score_label"]),
-                "top12_hit": float(int(actual_idx < 12)),
-                "buy_score": float(scored.loc[0, "buy_score"]),
-                "proxy_expected_value": float(scored.loc[0, "expected_value"]),
-                "proxy_odds": proxy_odds,
-                "payout": float(payout.iloc[0]),
-            }
-        )
-
-    grouped: dict[str, list[dict[str, float | str]]] = {}
-    for record in records:
-        grouped.setdefault(str(record["score_label"]), []).append(record)
-
-    return {
-        key: _summarize_payout_proxy_records(value)
-        for key, value in sorted(grouped.items())
-    }
-
-
-def _safe_float(value: object, default: float = 0.0) -> float:
-    converted = pd.to_numeric(pd.Series([value]), errors="coerce").fillna(default)
-    return float(converted.iloc[0])
-
-
-def _summarize_payout_proxy_records(records: list[dict[str, float | str]]) -> dict[str, float]:
-    if not records:
-        return {
-            "race_count": 0.0,
-            "top12_hit_rate": 0.0,
-            "mean_buy_score": 0.0,
-            "mean_proxy_expected_value": 0.0,
-            "mean_proxy_odds": 0.0,
-            "mean_payout": 0.0,
-        }
-    return {
-        "race_count": float(len(records)),
-        "top12_hit_rate": float(np.mean([float(record["top12_hit"]) for record in records])),
-        "mean_buy_score": float(np.mean([float(record["buy_score"]) for record in records])),
-        "mean_proxy_expected_value": float(np.mean([float(record["proxy_expected_value"]) for record in records])),
-        "mean_proxy_odds": float(np.mean([float(record["proxy_odds"]) for record in records])),
-        "mean_payout": float(np.mean([float(record["payout"]) for record in records])),
-    }
-
-
-def compute_buy_signal_top12_metrics(
-    trifecta_df: pd.DataFrame,
-    probability_col: str = "probability",
-) -> dict[str, dict[str, dict[str, float]]]:
-    if trifecta_df.empty or "buy_score" not in trifecta_df.columns:
+    if trifecta_df.empty:
         return {}
 
     required = {"race_id", probability_col, "is_actual"}
     missing = required - set(trifecta_df.columns)
     if missing:
-        raise ValueError(f"Missing buy signal metric columns: {sorted(missing)}")
+        raise ValueError(f"Missing top12 confidence metric columns: {sorted(missing)}")
 
-    by_decision: dict[str, list[dict[str, float]]] = {}
-    by_score_label: dict[str, list[dict[str, float]]] = {}
+    frame = attach_top12_confidence_columns(trifecta_df, probability_col=probability_col)
+    by_label: dict[str, list[dict[str, float]]] = {}
 
-    for _, race_df in trifecta_df.groupby("race_id", sort=False):
-        ordered = race_df.sort_values(probability_col, ascending=False).reset_index(drop=True)
+    for _, scored_race in frame.groupby("race_id", sort=False):
+        ordered = scored_race.sort_values(probability_col, ascending=False).reset_index(drop=True)
         actual_positions = np.flatnonzero(ordered["is_actual"].to_numpy(dtype=bool))
         if len(actual_positions) != 1:
             continue
-
-        score_sort_columns = [column for column in ("buy_score", "expected_value", probability_col) if column in race_df.columns]
-        score_sorted = race_df.sort_values(
-            score_sort_columns,
-            ascending=[False] * len(score_sort_columns),
-        ).reset_index(drop=True)
-        top_signal = score_sorted.iloc[0]
-        buy_score = float(pd.to_numeric(pd.Series([top_signal.get("buy_score")]), errors="coerce").fillna(0.0).iloc[0])
-        buy_candidate_count = _buy_candidate_count(race_df)
-        top12_hit = float(int(int(actual_positions[0]) < 12))
+        top_row = ordered.iloc[0]
         record = {
-            "top12_hit": top12_hit,
-            "buy_score": buy_score,
-            "buy_candidate_count": float(buy_candidate_count),
+            "top12_hit": float(int(int(actual_positions[0]) < 12)),
+            "score": float(top_row.get("top12_confidence_score", 0.0) or 0.0),
+            "top12_probability_mass": float(top_row.get("top12_probability_mass", 0.0) or 0.0),
+            "top5_probability_mass": float(top_row.get("top5_probability_mass", 0.0) or 0.0),
         }
-
-        by_decision.setdefault(_race_buy_decision_label(race_df), []).append(record)
-        by_score_label.setdefault(_buy_score_label_key(top_signal.get("buy_score_label")), []).append(record)
+        by_label.setdefault(top12_confidence_label_key(top_row.get("top12_confidence_label")), []).append(record)
 
     return {
-        "by_buy_decision": {key: _summarize_buy_signal_records(records) for key, records in sorted(by_decision.items())},
-        "by_score_label": {key: _summarize_buy_signal_records(records) for key, records in sorted(by_score_label.items())},
+        key: _summarize_top12_confidence_records(records)
+        for key, records in sorted(by_label.items())
     }
 
 
-def _buy_candidate_count(race_df: pd.DataFrame) -> int:
-    if "buy_decision" not in race_df.columns:
-        return int((pd.to_numeric(race_df["buy_score"], errors="coerce").fillna(0.0) >= 50.0).sum())
-    decisions = race_df["buy_decision"].astype(str)
-    return int((decisions != "見送り").sum())
-
-
-def _race_buy_decision_label(race_df: pd.DataFrame) -> str:
-    if "buy_decision" not in race_df.columns:
-        score = pd.to_numeric(race_df["buy_score"], errors="coerce").fillna(0.0)
-        return "buy" if bool((score >= 50.0).any()) else "skip"
-    decisions = race_df["buy_decision"].astype(str)
-    return "buy" if bool((decisions != "見送り").any()) else "skip"
-
-
-def _buy_score_label_key(value: object) -> str:
-    text = str(value)
-    if text == "強く買い候補":
-        return "strong_buy"
-    if text == "買い候補":
-        return "buy"
-    if text == "抑え候補":
-        return "keep"
-    return "skip"
-
-
-def _summarize_buy_signal_records(records: list[dict[str, float]]) -> dict[str, float]:
+def _summarize_top12_confidence_records(records: list[dict[str, float]]) -> dict[str, float]:
     if not records:
         return {
             "race_count": 0.0,
             "top12_hit_rate": 0.0,
-            "mean_buy_score": 0.0,
-            "average_buy_candidate_count": 0.0,
+            "mean_score": 0.0,
+            "mean_top12_probability_mass": 0.0,
+            "mean_top5_probability_mass": 0.0,
         }
     top12_hits = [record["top12_hit"] for record in records]
-    buy_scores = [record["buy_score"] for record in records]
-    buy_candidate_counts = [record["buy_candidate_count"] for record in records]
+    scores = [record["score"] for record in records]
+    top12_masses = [record["top12_probability_mass"] for record in records]
+    top5_masses = [record["top5_probability_mass"] for record in records]
     return {
         "race_count": float(len(records)),
         "top12_hit_rate": float(np.mean(top12_hits)),
-        "mean_buy_score": float(np.mean(buy_scores)),
-        "average_buy_candidate_count": float(np.mean(buy_candidate_counts)),
+        "mean_score": float(np.mean(scores)),
+        "mean_top12_probability_mass": float(np.mean(top12_masses)),
+        "mean_top5_probability_mass": float(np.mean(top5_masses)),
     }
 
 
