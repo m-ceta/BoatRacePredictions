@@ -86,7 +86,7 @@ VENUE_CODE_MAP = {
 _HTML_TITLE_RE = re.compile(r"<title>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 LIVE_JST = ZoneInfo("Asia/Tokyo")
 BUY_EXPECTED_VALUE_THRESHOLD = 1.0
-BUY_MIN_ODDS = 10.0
+BUY_MIN_ODDS = 12.0
 
 
 @dataclass(slots=True)
