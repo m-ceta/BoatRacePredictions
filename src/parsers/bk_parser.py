@@ -47,6 +47,9 @@ DATE_JP_RE = re.compile(r"(?P<year>\d{2,4})年\s*(?P<month>\d{1,2})月\s*(?P<day
 DATE_SLASH_RE = re.compile(r"(?P<year>\d{2,4})/\s*(?P<month>\d{1,2})/\s*(?P<day>\d{1,2})")
 VENUE_SUFFIX_RE = re.compile(r"(?P<venue>[^\d\s]{1,6})\s*(?:競艇場|競走場|ボートレース)")
 VENUE_RESULT_RE = re.compile(r"^(?P<venue>[^\d\s]{1,6})\s*［成績］")
+TRIFECTA_PAYOUT_RE = re.compile(
+    r"^\s*.*?(?P<trifecta>[1-6]-[1-6]-[1-6])\s+(?P<payout>\d+)\b"
+)
 SECTION_CODE_RE = re.compile(r"^(?P<section_code>\d{2})[BK]BGN$")
 RACE_TIME_RE = re.compile(r"^\d+\.\d+\.\d+$")
 KNOWN_WINNING_STYLES = {
@@ -186,6 +189,7 @@ def parse_result_lines(lines: list[str]) -> list[RaceResult]:
     separator_count = 0
     collecting_results = False
     collected_for_race = 0
+    trifecta_payouts: dict[str, float] = {}
 
     for line in lines:
         section_code_match = SECTION_CODE_RE.match(line.strip())
@@ -226,6 +230,10 @@ def parse_result_lines(lines: list[str]) -> list[RaceResult]:
             continue
 
         race_id = build_race_id(race_date, current_section_code or venue, current_race_no)
+        payout_match = TRIFECTA_PAYOUT_RE.match(normalized)
+        if payout_match:
+            trifecta_payouts[race_id] = float(payout_match.group("payout"))
+            continue
 
         if line.strip().startswith("-"):
             separator_count += 1
@@ -263,9 +271,13 @@ def parse_result_lines(lines: list[str]) -> list[RaceResult]:
                 wind_speed_m=current_wind_speed,
                 wave_cm=current_wave,
                 winning_style=current_winning_style,
+                trifecta_payout=trifecta_payouts.get(race_id),
             )
         )
         collected_for_race += 1
+    for result in results:
+        if result.trifecta_payout is None and result.race_id in trifecta_payouts:
+            result.trifecta_payout = trifecta_payouts[result.race_id]
     return results
 
 

@@ -85,6 +85,7 @@ DEFAULT_DROP_COLUMNS = {
     "is_top2",
     "is_top3",
     "winning_style",
+    "trifecta_payout",
 }
 
 DEFAULT_ARTIFACT_PATHS = {
@@ -1581,6 +1582,7 @@ def _evaluate_fast_v1_trifecta_metrics_from_ranked(
     scenario_labels: list[str] = []
     entry_course_subset_labels: list[str] = []
     race_ids: list[str] = []
+    trifecta_payouts: list[float] = []
     for race_id, race_df in ranked.groupby("race_id", sort=False):
         if len(race_df) != 6:
             continue
@@ -1603,6 +1605,11 @@ def _evaluate_fast_v1_trifecta_metrics_from_ranked(
         scenario_labels.append(_phase3_scenario_label(_phase3_scenario_context(race_df.set_index("lane"))))
         entry_course_subset_labels.append(_entry_course_subset_label(race_df))
         race_ids.append(str(race_id))
+        if "trifecta_payout" in race_df.columns:
+            payout_values = pd.to_numeric(race_df["trifecta_payout"], errors="coerce").dropna()
+            trifecta_payouts.append(float(payout_values.iloc[0]) if not payout_values.empty else float("nan"))
+        else:
+            trifecta_payouts.append(float("nan"))
     if not lane_prob_rows:
         return None
 
@@ -1647,6 +1654,13 @@ def _evaluate_fast_v1_trifecta_metrics_from_ranked(
     top12_confidence_metrics = _fast_top12_confidence_metrics(prob_matrix, actual_array)
     if top12_confidence_metrics:
         metrics["top12_confidence_metrics"] = top12_confidence_metrics
+    payout_band_metrics = _fast_payout_band_metrics(
+        prob_matrix,
+        actual_array,
+        np.asarray(trifecta_payouts, dtype=float),
+    )
+    if payout_band_metrics:
+        metrics["payout_band_metrics"] = payout_band_metrics
 
     scenario_min_races = int(weights.get("scenario_metric_min_races", DEFAULT_PHASE3_SETTINGS["evaluation"]["scenario_min_races"]))
     scenario_metrics: dict[str, Any] = {}
@@ -1759,12 +1773,79 @@ def _fast_top12_confidence_metrics(
             continue
         metrics[label] = {
             "race_count": float(mask.sum()),
+            "race_rate": float(mask.sum() / len(valid_actual)) if len(valid_actual) else 0.0,
             "top12_hit_rate": float(np.mean(top12_hits[mask])),
             "mean_score": float(np.mean(score[mask])),
             "mean_top12_probability_mass": float(np.mean(top12_mass[mask])),
             "mean_top5_probability_mass": float(np.mean(top5_mass[mask])),
         }
     return metrics
+
+
+def _fast_payout_band_metrics(
+    prob_matrix: np.ndarray,
+    actual_indices: np.ndarray,
+    trifecta_payouts: np.ndarray,
+) -> dict[str, Any]:
+    if prob_matrix.size == 0 or len(actual_indices) == 0 or len(trifecta_payouts) != len(actual_indices):
+        return {}
+    valid_mask = (
+        (actual_indices >= 0)
+        & (actual_indices < prob_matrix.shape[1])
+        & np.isfinite(trifecta_payouts)
+        & (trifecta_payouts > 0.0)
+    )
+    if not bool(valid_mask.any()):
+        return {}
+
+    valid_probs = prob_matrix[valid_mask]
+    valid_actual = actual_indices[valid_mask].astype(int)
+    valid_payouts = trifecta_payouts[valid_mask].astype(float)
+    order = np.argsort(-valid_probs, axis=1, kind="mergesort")
+    positions = np.empty_like(order)
+    positions[np.arange(len(order))[:, None], order] = np.arange(order.shape[1], dtype=int)
+    actual_ranks = positions[np.arange(len(valid_actual)), valid_actual]
+    actual_probabilities = np.clip(valid_probs[np.arange(len(valid_actual)), valid_actual], 1e-15, 1.0)
+
+    band_keys = np.asarray([_payout_band_key_for_metrics(float(payout)) for payout in valid_payouts], dtype=object)
+    metrics: dict[str, Any] = {}
+    for band_key in ("lt_10000", "gte_10000_lt_50000", "gte_50000_lt_100000", "gte_100000"):
+        mask = band_keys == band_key
+        if not bool(mask.any()):
+            continue
+        metrics[band_key] = {
+            "label": _payout_band_label_for_metrics(band_key),
+            "race_count": float(mask.sum()),
+            "race_rate": float(mask.sum() / len(valid_actual)) if len(valid_actual) else 0.0,
+            "top1_hit_rate": float(np.mean(actual_ranks[mask] < 1)),
+            "top3_hit_rate": float(np.mean(actual_ranks[mask] < 3)),
+            "top5_hit_rate": float(np.mean(actual_ranks[mask] < 5)),
+            "top10_hit_rate": float(np.mean(actual_ranks[mask] < 10)),
+            "top12_hit_rate": float(np.mean(actual_ranks[mask] < 12)),
+            "log_loss": float(np.mean(-np.log(actual_probabilities[mask]))),
+            "mean_payout": float(np.mean(valid_payouts[mask])),
+        }
+    return metrics
+
+
+def _payout_band_key_for_metrics(payout: float) -> str:
+    if payout < 10000.0:
+        return "lt_10000"
+    if payout < 50000.0:
+        return "gte_10000_lt_50000"
+    if payout < 100000.0:
+        return "gte_50000_lt_100000"
+    return "gte_100000"
+
+
+def _payout_band_label_for_metrics(key: str) -> str:
+    labels = {
+        "lt_10000": "under_10000",
+        "gte_10000_lt_50000": "10000_to_49999",
+        "gte_50000_lt_100000": "50000_to_99999",
+        "gte_100000": "100000_or_more",
+    }
+    return labels.get(key, "unknown")
 
 
 def _fast_v1_raw_and_labels_from_ranked(ranked: pd.DataFrame) -> tuple[np.ndarray, np.ndarray] | None:
@@ -4934,6 +5015,10 @@ def build_trifecta_prediction_frame(
             if "is_actual" in v1.columns:
                 merged["is_actual"] = v1["is_actual"].to_numpy()
             merged["probability"] = merged["probability_v1"]
+            if "trifecta_payout" in race_df.columns:
+                payout_values = pd.to_numeric(race_df["trifecta_payout"], errors="coerce").dropna()
+                if not payout_values.empty:
+                    merged["trifecta_payout"] = float(payout_values.iloc[0])
             merged = attach_race_upset_and_darkhorse_scores(merged, race_df, scenario_model_bundle=None)
             rows.append(merged)
             continue
@@ -4992,6 +5077,10 @@ def build_trifecta_prediction_frame(
         )
         if "is_actual" in v1.columns:
             merged["is_actual"] = v1["is_actual"].to_numpy()
+        if "trifecta_payout" in race_df.columns:
+            payout_values = pd.to_numeric(race_df["trifecta_payout"], errors="coerce").dropna()
+            if not payout_values.empty:
+                merged["trifecta_payout"] = float(payout_values.iloc[0])
         if rerank_top_n is not None and rerank_top_n > 0 and not use_v2:
             merged = merged.loc[candidate_mask].copy().reset_index(drop=True)
             for probability_col in ("probability_v1", "probability_v2"):
@@ -5026,6 +5115,7 @@ def build_trifecta_prediction_frame(
                 "is_darkhorse_candidate",
                 "ticket_priority_score",
                 "ticket_hint",
+                "trifecta_payout",
                 "dynamic_rerank_subset",
                 "dynamic_rerank_weight",
                 "dynamic_rerank_enabled",

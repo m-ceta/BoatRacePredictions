@@ -9,6 +9,14 @@ from sklearn.metrics import brier_score_loss, log_loss
 from src.top12_confidence import attach_top12_confidence_columns, top12_confidence_label_key
 
 
+PAYOUT_BANDS: tuple[tuple[str, float | None, float | None, str], ...] = (
+    ("lt_10000", None, 10000.0, "under_10000"),
+    ("gte_10000_lt_50000", 10000.0, 50000.0, "10000_to_49999"),
+    ("gte_50000_lt_100000", 50000.0, 100000.0, "50000_to_99999"),
+    ("gte_100000", 100000.0, None, "100000_or_more"),
+)
+
+
 def compute_trifecta_metrics(
     trifecta_df: pd.DataFrame,
     probability_col: str = "probability",
@@ -78,7 +86,100 @@ def compute_trifecta_metrics(
     if top12_confidence_metrics:
         metrics["top12_confidence_metrics"] = top12_confidence_metrics
 
+    payout_band_metrics = compute_payout_band_metrics(trifecta_df, probability_col=probability_col)
+    if payout_band_metrics:
+        metrics["payout_band_metrics"] = payout_band_metrics
+
     return metrics
+
+
+def compute_payout_band_metrics(
+    trifecta_df: pd.DataFrame,
+    probability_col: str = "probability",
+    payout_col: str = "trifecta_payout",
+) -> dict[str, dict[str, float | str]]:
+    if trifecta_df.empty or payout_col not in trifecta_df.columns:
+        return {}
+
+    by_band: dict[str, list[dict[str, float]]] = {}
+    for _, race_df in trifecta_df.groupby("race_id", sort=False):
+        payout_values = pd.to_numeric(race_df[payout_col], errors="coerce").dropna()
+        if payout_values.empty:
+            continue
+        payout = float(payout_values.iloc[0])
+        if payout <= 0.0:
+            continue
+        ordered = race_df.sort_values(probability_col, ascending=False).reset_index(drop=True)
+        actual_positions = np.flatnonzero(ordered["is_actual"].to_numpy(dtype=bool))
+        if len(actual_positions) != 1:
+            continue
+        actual_idx = int(actual_positions[0])
+        actual_probability = max(float(ordered.loc[actual_idx, probability_col]), 1e-15)
+        record = {
+            "payout": payout,
+            "top1_hit": float(int(actual_idx < 1)),
+            "top3_hit": float(int(actual_idx < 3)),
+            "top5_hit": float(int(actual_idx < 5)),
+            "top10_hit": float(int(actual_idx < 10)),
+            "top12_hit": float(int(actual_idx < 12)),
+            "log_loss": float(-np.log(actual_probability)),
+        }
+        by_band.setdefault(_payout_band_key(payout), []).append(record)
+
+    total_races = sum(len(records) for records in by_band.values())
+    return {
+        key: _summarize_payout_band_records(key, records, total_races=total_races)
+        for key, records in sorted(by_band.items())
+    }
+
+
+def _payout_band_key(payout: float) -> str:
+    for key, lower, upper, _ in PAYOUT_BANDS:
+        if lower is not None and payout < lower:
+            continue
+        if upper is not None and payout >= upper:
+            continue
+        return key
+    return "unknown"
+
+
+def _payout_band_label(key: str) -> str:
+    for band_key, _, _, label in PAYOUT_BANDS:
+        if band_key == key:
+            return label
+    return "unknown"
+
+
+def _summarize_payout_band_records(
+    key: str,
+    records: list[dict[str, float]],
+    total_races: int,
+) -> dict[str, float | str]:
+    if not records:
+        return {
+            "label": _payout_band_label(key),
+            "race_count": 0.0,
+            "race_rate": 0.0,
+            "top1_hit_rate": 0.0,
+            "top3_hit_rate": 0.0,
+            "top5_hit_rate": 0.0,
+            "top10_hit_rate": 0.0,
+            "top12_hit_rate": 0.0,
+            "log_loss": 0.0,
+            "mean_payout": 0.0,
+        }
+    return {
+        "label": _payout_band_label(key),
+        "race_count": float(len(records)),
+        "race_rate": float(len(records) / total_races) if total_races else 0.0,
+        "top1_hit_rate": float(np.mean([record["top1_hit"] for record in records])),
+        "top3_hit_rate": float(np.mean([record["top3_hit"] for record in records])),
+        "top5_hit_rate": float(np.mean([record["top5_hit"] for record in records])),
+        "top10_hit_rate": float(np.mean([record["top10_hit"] for record in records])),
+        "top12_hit_rate": float(np.mean([record["top12_hit"] for record in records])),
+        "log_loss": float(np.mean([record["log_loss"] for record in records])),
+        "mean_payout": float(np.mean([record["payout"] for record in records])),
+    }
 
 
 def compute_top12_confidence_metrics(
@@ -110,16 +211,21 @@ def compute_top12_confidence_metrics(
         }
         by_label.setdefault(top12_confidence_label_key(top_row.get("top12_confidence_label")), []).append(record)
 
+    total_races = sum(len(records) for records in by_label.values())
     return {
-        key: _summarize_top12_confidence_records(records)
+        key: _summarize_top12_confidence_records(records, total_races=total_races)
         for key, records in sorted(by_label.items())
     }
 
 
-def _summarize_top12_confidence_records(records: list[dict[str, float]]) -> dict[str, float]:
+def _summarize_top12_confidence_records(
+    records: list[dict[str, float]],
+    total_races: int,
+) -> dict[str, float]:
     if not records:
         return {
             "race_count": 0.0,
+            "race_rate": 0.0,
             "top12_hit_rate": 0.0,
             "mean_score": 0.0,
             "mean_top12_probability_mass": 0.0,
@@ -131,6 +237,7 @@ def _summarize_top12_confidence_records(records: list[dict[str, float]]) -> dict
     top5_masses = [record["top5_probability_mass"] for record in records]
     return {
         "race_count": float(len(records)),
+        "race_rate": float(len(records) / total_races) if total_races else 0.0,
         "top12_hit_rate": float(np.mean(top12_hits)),
         "mean_score": float(np.mean(scores)),
         "mean_top12_probability_mass": float(np.mean(top12_masses)),

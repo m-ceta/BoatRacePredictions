@@ -42,6 +42,32 @@ def test_compute_trifecta_metrics_includes_top12_confidence_metrics() -> None:
 
     confidence_metrics = metrics["top12_confidence_metrics"]
     assert confidence_metrics["high"]["race_count"] == 1.0
+    assert confidence_metrics["high"]["race_rate"] == 0.5
     assert confidence_metrics["high"]["top12_hit_rate"] == 1.0
     assert confidence_metrics["low"]["race_count"] == 1.0
+    assert confidence_metrics["low"]["race_rate"] == 0.5
     assert confidence_metrics["low"]["top12_hit_rate"] == 0.0
+
+
+def test_compute_trifecta_metrics_includes_payout_band_metrics() -> None:
+    rows = []
+    for race_id, actual_index, payout in [
+        ("R1", 3, 9000.0),
+        ("R2", 15, 12000.0),
+        ("R3", 6, 60000.0),
+        ("R4", 30, 150000.0),
+    ]:
+        probabilities = [1.0 / 120.0] * 120
+        for row in _race_rows(race_id, actual_index, probabilities):
+            row["trifecta_payout"] = payout
+            rows.append(row)
+
+    metrics = compute_trifecta_metrics(pd.DataFrame(rows))
+
+    payout_metrics = metrics["payout_band_metrics"]
+    assert payout_metrics["lt_10000"]["race_count"] == 1.0
+    assert payout_metrics["lt_10000"]["race_rate"] == 0.25
+    assert payout_metrics["lt_10000"]["top12_hit_rate"] == 1.0
+    assert payout_metrics["gte_10000_lt_50000"]["top12_hit_rate"] == 0.0
+    assert payout_metrics["gte_50000_lt_100000"]["top12_hit_rate"] == 1.0
+    assert payout_metrics["gte_100000"]["top12_hit_rate"] == 0.0
