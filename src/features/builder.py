@@ -60,6 +60,9 @@ RACE_RELATIVE_GENERATED_SUFFIXES = (
 
 
 def build_training_table(entries: pd.DataFrame, results: pd.DataFrame) -> pd.DataFrame:
+    results = results.copy()
+    if "trifecta_payout" not in results.columns:
+        results["trifecta_payout"] = np.nan
     merged = entries.merge(
         results[
             [
@@ -74,6 +77,7 @@ def build_training_table(entries: pd.DataFrame, results: pd.DataFrame) -> pd.Dat
                 "wind_speed_m",
                 "wave_cm",
                 "winning_style",
+                "trifecta_payout",
             ]
         ],
         on=["race_id", "lane"],

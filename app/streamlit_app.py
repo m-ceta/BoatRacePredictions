@@ -226,6 +226,8 @@ def _format_odds_frame(frame: pd.DataFrame) -> pd.DataFrame:
             ("probability", "予想確率"),
             ("odds", "現在オッズ"),
             ("expected_value", "期待値"),
+            ("buy_score", "買い判断スコア"),
+            ("buy_score_label", "スコア判定"),
             ("buy_decision", "判定"),
         ],
     )
@@ -239,6 +241,8 @@ def _format_buy_candidates_frame(frame: pd.DataFrame) -> pd.DataFrame:
             ("probability", "予想確率"),
             ("odds", "現在オッズ"),
             ("expected_value", "期待値"),
+            ("buy_score", "買い判断スコア"),
+            ("buy_score_label", "スコア判定"),
             ("buy_decision", "判定"),
         ],
     )

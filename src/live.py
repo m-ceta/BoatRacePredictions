@@ -22,6 +22,11 @@ except ImportError:  # pragma: no cover - optional runtime dependency
 from src.features.builder import add_current_meet_features, add_race_relative_features
 from src.features.scenario import scenario_description, scenario_display_name
 from src.models.ranker import attach_darkhorse_odds_context, predict_race_order, predict_trifecta_probabilities
+from src.odds.expected_value import (
+    BUY_EXPECTED_VALUE_THRESHOLD,
+    BUY_MIN_ODDS,
+    attach_buy_score_columns,
+)
 from src.parsers.bk_parser import parse_entry_text
 from src.today_schedule import (
     choose_default_today_race_no as _choose_default_today_race_no,
@@ -85,8 +90,6 @@ VENUE_CODE_MAP = {
 
 _HTML_TITLE_RE = re.compile(r"<title>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 LIVE_JST = ZoneInfo("Asia/Tokyo")
-BUY_EXPECTED_VALUE_THRESHOLD = 1.0
-BUY_MIN_ODDS = 12.0
 
 
 @dataclass(slots=True)
@@ -136,6 +139,7 @@ class TodayRacePrediction:
                     f"オッズ評価上位: {top_odds['trifecta']}",
                     f"現在オッズ: {float(top_odds['odds']):.1f}倍",
                     f"期待値: {float(top_odds['expected_value']):.2f}",
+                    f"買い判断スコア: {float(top_odds.get('buy_score', 0.0)):.1f} ({top_odds.get('buy_score_label', '-')})",
                     f"判定: {top_odds['buy_decision']}",
                 ]
             )
@@ -144,7 +148,9 @@ class TodayRacePrediction:
             for row in self.buy_candidates.head(5).itertuples(index=False):
                 lines.append(
                     f"{row.trifecta} | 確率 {format_percent(float(row.probability))} | オッズ {float(row.odds):.1f}倍 | "
-                    f"期待値 {float(row.expected_value):.2f} | 判定 {row.buy_decision}"
+                    f"期待値 {float(row.expected_value):.2f} | "
+                    f"スコア {float(getattr(row, 'buy_score', 0.0)):.1f} ({getattr(row, 'buy_score_label', '-')}) | "
+                    f"判定 {row.buy_decision}"
                 )
         lines.append("Top10 3連単候補:")
         for row in self.trifecta.head(10).itertuples(index=False):
@@ -216,13 +222,13 @@ def predict_today_race(
         use_v2=False,
         rerank_top_n=None,
     )
+    confidence_score = calculate_prediction_confidence(ranking, trifecta)
     odds = fetch_boatrace_trifecta_odds(target_date, venue_code, int(race_no))
     odds_frame = None
     buy_candidates = None
     if odds:
-        odds_frame = attach_odds_and_value(trifecta, odds)
+        odds_frame = attach_odds_and_value(trifecta, odds, confidence_score=confidence_score)
         buy_candidates = select_buy_candidates(odds_frame)
-    confidence_score = calculate_prediction_confidence(ranking, trifecta)
     race_upset_score = 0.0
     race_scenario_id = "S6_MIXED_OTHER"
     race_upset_label = "堅め"
@@ -978,6 +984,7 @@ def attach_odds_and_value(
     odds_map: dict[str, float],
     expected_value_threshold: float = BUY_EXPECTED_VALUE_THRESHOLD,
     min_odds: float = BUY_MIN_ODDS,
+    confidence_score: float | None = None,
 ) -> pd.DataFrame:
     frame = trifecta.copy()
     frame["odds"] = frame["trifecta"].map(odds_map)
@@ -989,6 +996,12 @@ def attach_odds_and_value(
     frame["odds"] = pd.to_numeric(frame["odds"], errors="coerce")
     frame["expected_value"] = frame["odds"] * frame["probability"]
     frame = attach_darkhorse_odds_context(frame)
+    frame = attach_buy_score_columns(
+        frame,
+        min_odds=min_odds,
+        expected_value_threshold=expected_value_threshold,
+        confidence_score=confidence_score,
+    )
     frame = frame.sort_values(["expected_value", "probability"], ascending=[False, False]).reset_index(drop=True)
     frame["buy_decision"] = frame.apply(
         lambda row: "買い"
@@ -1003,14 +1016,16 @@ def select_buy_candidates(odds_frame: pd.DataFrame, top_n: int = 5) -> pd.DataFr
     if odds_frame.empty:
         return odds_frame
     buy_only = odds_frame[odds_frame["buy_decision"] != "見送り"].copy()
+    sort_columns = ["buy_score", "expected_value", "ticket_priority_score", "probability"]
+    sort_columns = [column for column in sort_columns if column in odds_frame.columns]
     if not buy_only.empty:
         return buy_only.sort_values(
-            ["expected_value", "ticket_priority_score", "probability"],
-            ascending=[False, False, False],
+            sort_columns,
+            ascending=[False] * len(sort_columns),
         ).head(top_n).reset_index(drop=True)
     return odds_frame.sort_values(
-        ["expected_value", "ticket_priority_score", "probability"],
-        ascending=[False, False, False],
+        sort_columns,
+        ascending=[False] * len(sort_columns),
     ).head(top_n).reset_index(drop=True)
 
 

@@ -71,6 +71,7 @@ RESULT_PARQUET_SCHEMA = pa.schema(
         ("wind_speed_m", pa.int64()),
         ("wave_cm", pa.int64()),
         ("winning_style", pa.string()),
+        ("trifecta_payout", pa.float64()),
     ]
 )
 
@@ -167,6 +168,9 @@ def iter_month_groups(
 
 
 def _build_base_chunk(entries_df: pd.DataFrame, results_df: pd.DataFrame) -> pd.DataFrame:
+    results_df = results_df.copy()
+    if "trifecta_payout" not in results_df.columns:
+        results_df["trifecta_payout"] = np.nan
     merged = entries_df.merge(
         results_df[
             [
@@ -181,6 +185,7 @@ def _build_base_chunk(entries_df: pd.DataFrame, results_df: pd.DataFrame) -> pd.
                 "wind_speed_m",
                 "wave_cm",
                 "winning_style",
+                "trifecta_payout",
             ]
         ],
         on=["race_id", "lane"],

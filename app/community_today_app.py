@@ -285,6 +285,8 @@ def _format_odds_frame(frame):
             ("probability", "予想確率"),
             ("odds", "現在オッズ"),
             ("expected_value", "期待値"),
+            ("buy_score", "買い判断スコア"),
+            ("buy_score_label", "スコア判定"),
             ("buy_decision", "判定"),
         ],
     )
@@ -298,6 +300,8 @@ def _format_buy_candidates_frame(frame):
             ("probability", "予想確率"),
             ("odds", "現在オッズ"),
             ("expected_value", "期待値"),
+            ("buy_score", "買い判断スコア"),
+            ("buy_score_label", "スコア判定"),
             ("buy_decision", "判定"),
         ],
     )
@@ -331,6 +335,8 @@ def _render_prediction_guide() -> None:
 
 - `期待値` は `現在オッズ × 予想確率` です。
 - `期待値` が 1.0 以上、かつ `現在オッズ` が 12.0 倍以上なら `買い`、それ以外は `見送り` です。
+- `買い判断スコア` は 0〜100 の総合指標です。期待値、オッズ条件、予想確率、買い目優先度、予想信頼度、荒れすぎペナルティを合成しています。
+- `スコア判定` は 80以上が強く買い候補、65以上が買い候補、50以上が抑え候補、50未満が見送りです。
 
 **予想信頼度**
 
