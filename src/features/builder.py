@@ -10,8 +10,13 @@ import pandas as pd
 RACE_RELATIVE_GENERATED_EXACT_COLUMNS = {
     "lane_is_inner",
     "lane_is_outer",
+    "entry_course_position",
+    "entry_course_is_inner",
+    "entry_course_is_outer",
+    "entry_course_lane_gap",
     "pre_race_attack_score",
     "pre_race_attack_candidate_lane",
+    "pre_race_attack_candidate_course",
     "pre_race_attack_candidate_score",
     "pre_race_attack_score_gap_candidate",
     "distance_from_attack_candidate",
@@ -269,6 +274,11 @@ def add_racer_history_features(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_race_relative_features(df: pd.DataFrame) -> pd.DataFrame:
     race_groups = df.groupby("race_id")
+    entry_position = _entry_position_series(df)
+    df["entry_course_position"] = entry_position.astype("float32")
+    df["entry_course_is_inner"] = (entry_position <= 3).astype("int8")
+    df["entry_course_is_outer"] = (entry_position >= 5).astype("int8")
+    df["entry_course_lane_gap"] = (entry_position - pd.to_numeric(df["lane"], errors="coerce")).astype("float32")
     relative_columns = [
         "national_win_rate",
         "national_place_rate",
@@ -439,7 +449,9 @@ def add_neighbor_gap_features(df: pd.DataFrame) -> pd.DataFrame:
         "venue_course_prev_top2_rate",
         "venue_course_prev_top3_rate",
     ]
-    ordered = df.sort_values(["race_id", "lane"]).copy()
+    ordered = df.copy()
+    ordered["_entry_position"] = _entry_position_series(ordered)
+    ordered = ordered.sort_values(["race_id", "_entry_position", "lane"]).copy()
     feature_frames: dict[str, pd.Series] = {}
     for column in gap_columns:
         if column not in ordered.columns:
@@ -451,7 +463,7 @@ def add_neighbor_gap_features(df: pd.DataFrame) -> pd.DataFrame:
         feature_frames[f"{column}_gap_outer"] = values - outer_values
     if feature_frames:
         ordered = pd.concat([ordered, pd.DataFrame(feature_frames, index=ordered.index)], axis=1)
-    return ordered.sort_index()
+    return ordered.drop(columns="_entry_position").sort_index()
 
 
 def add_inside_outside_mean_gap_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -474,7 +486,9 @@ def add_inside_outside_mean_gap_features(df: pd.DataFrame) -> pd.DataFrame:
         "venue_course_prev_top2_rate",
         "venue_course_prev_top3_rate",
     ]
-    ordered = df.sort_values(["race_id", "lane"]).copy()
+    ordered = df.copy()
+    ordered["_entry_position"] = _entry_position_series(ordered)
+    ordered = ordered.sort_values(["race_id", "_entry_position", "lane"]).copy()
     feature_frames: dict[str, pd.Series] = {}
     for column in gap_columns:
         if column not in ordered.columns:
@@ -493,19 +507,19 @@ def add_inside_outside_mean_gap_features(df: pd.DataFrame) -> pd.DataFrame:
         feature_frames[f"{column}_gap_outer_mean"] = values - outer_mean
     if feature_frames:
         ordered = pd.concat([ordered, pd.DataFrame(feature_frames, index=ordered.index)], axis=1)
-    return ordered.sort_index()
+    return ordered.drop(columns="_entry_position").sort_index()
 
 
 def add_proxy_st_structure_features(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty or "race_id" not in df.columns or "lane" not in df.columns:
         return df
     frame = df.copy()
-    lane = pd.to_numeric(frame["lane"], errors="coerce")
+    entry_position = _entry_position_series(frame)
     st = pd.to_numeric(frame.get("start_timing"), errors="coerce")
     race_keys = frame["race_id"]
 
-    inner_st = st.where(lane <= 3)
-    outer_st = st.where(lane >= 4)
+    inner_st = st.where(entry_position <= 3)
+    outer_st = st.where(entry_position >= 4)
     inner3_avg = inner_st.groupby(race_keys).transform("mean")
     outer3_avg = outer_st.groupby(race_keys).transform("mean")
     frame["race_inner3_avg_st"] = inner3_avg.astype("float32")
@@ -545,7 +559,7 @@ def add_pre_race_attack_candidate_features(df: pd.DataFrame) -> pd.DataFrame:
     if "lane" not in df.columns:
         return df
     frame = df.copy()
-    lane = pd.to_numeric(frame["lane"], errors="coerce")
+    entry_position = _entry_position_series(frame)
     st_score = _race_scale_feature(frame, "racer_prev_avg_st_5", lower_is_better=True).fillna(
         _race_scale_feature(frame, "racer_prev_avg_st", lower_is_better=True)
     )
@@ -555,7 +569,7 @@ def add_pre_race_attack_candidate_features(df: pd.DataFrame) -> pd.DataFrame:
     venue_score = _race_scale_feature(frame, "venue_course_prev_top3_rate", lower_is_better=False).fillna(
         _race_scale_feature(frame, "venue_lane_prev_top3_rate", lower_is_better=False)
     )
-    lane_bias = lane.map({2: 0.08, 3: 0.13, 4: 0.15, 5: 0.08, 6: 0.05}).fillna(0.0)
+    lane_bias = entry_position.map({2: 0.08, 3: 0.13, 4: 0.15, 5: 0.08, 6: 0.05}).fillna(0.0)
     attack_score = (
         0.30 * st_score.fillna(0.0)
         + 0.18 * exhibition_score.fillna(0.0)
@@ -564,14 +578,14 @@ def add_pre_race_attack_candidate_features(df: pd.DataFrame) -> pd.DataFrame:
         + 0.12 * venue_score.fillna(0.0)
         + lane_bias
     )
-    attack_score = attack_score.where(lane != 1, 0.0)
+    attack_score = attack_score.where(entry_position != 1, 0.0)
     frame["pre_race_attack_score"] = attack_score.astype("float32")
 
     candidate_score = frame.groupby("race_id")["pre_race_attack_score"].transform("max")
     candidate_lane_raw = (
         frame.assign(
-            _candidate_lane=lane.where(
-                (lane != 1)
+            _candidate_lane=entry_position.where(
+                (entry_position != 1)
                 & (frame["pre_race_attack_score"] == candidate_score)
                 & (candidate_score > 0)
             )
@@ -581,15 +595,16 @@ def add_pre_race_attack_candidate_features(df: pd.DataFrame) -> pd.DataFrame:
     )
     candidate_lane = candidate_lane_raw.fillna(0)
     has_candidate = candidate_lane > 0
+    frame["pre_race_attack_candidate_course"] = candidate_lane.astype("float32")
     frame["pre_race_attack_candidate_lane"] = candidate_lane.astype("float32")
     frame["pre_race_attack_candidate_score"] = candidate_score.astype("float32")
     frame["pre_race_attack_score_gap_candidate"] = (
         frame["pre_race_attack_score"] - frame["pre_race_attack_candidate_score"]
     ).astype("float32")
-    frame["distance_from_attack_candidate"] = (lane - candidate_lane).abs().where(has_candidate, 0).astype("float32")
-    frame["is_attack_candidate"] = ((lane == candidate_lane) & has_candidate).astype("int8")
-    frame["is_inside_of_attack_candidate"] = ((lane < candidate_lane) & has_candidate).astype("int8")
-    frame["is_outside_of_attack_candidate"] = ((lane > candidate_lane) & has_candidate).astype("int8")
+    frame["distance_from_attack_candidate"] = (entry_position - candidate_lane).abs().where(has_candidate, 0).astype("float32")
+    frame["is_attack_candidate"] = ((entry_position == candidate_lane) & has_candidate).astype("int8")
+    frame["is_inside_of_attack_candidate"] = ((entry_position < candidate_lane) & has_candidate).astype("int8")
+    frame["is_outside_of_attack_candidate"] = ((entry_position > candidate_lane) & has_candidate).astype("int8")
     frame["attack_candidate_inner_count"] = (candidate_lane - 1).clip(lower=0).where(has_candidate, 0).astype("float32")
     frame["attack_candidate_outer_count"] = (6 - candidate_lane).clip(lower=0).where(has_candidate, 0).astype("float32")
     return frame
@@ -600,6 +615,7 @@ def add_pre_race_flow_features(df: pd.DataFrame) -> pd.DataFrame:
         return df
     frame = df.copy()
     lane = pd.to_numeric(frame["lane"], errors="coerce")
+    entry_position = _entry_position_series(frame)
 
     win_score = _race_scale_feature(frame, "national_win_rate", lower_is_better=False).fillna(
         _race_scale_feature(frame, "racer_prev_win_rate", lower_is_better=False)
@@ -620,7 +636,7 @@ def add_pre_race_flow_features(df: pd.DataFrame) -> pd.DataFrame:
         _race_scale_feature(frame, "venue_lane_prev_top3_rate", lower_is_better=False)
     )
 
-    lane1_mask = lane == 1
+    lane1_mask = entry_position == 1
     lane1_base = (
         0.25 * win_score.fillna(0.0)
         + 0.12 * local_score.fillna(0.0)
@@ -637,12 +653,12 @@ def add_pre_race_flow_features(df: pd.DataFrame) -> pd.DataFrame:
         errors="coerce",
     ).fillna(0.0)
     attack_lane = pd.to_numeric(
-        frame.get("pre_race_attack_candidate_lane", pd.Series(0.0, index=frame.index)),
+        frame.get("pre_race_attack_candidate_course", frame.get("pre_race_attack_candidate_lane", pd.Series(0.0, index=frame.index))),
         errors="coerce",
     ).fillna(0.0)
     race_attack_pressure = attack_pressure.groupby(frame["race_id"]).transform("max").fillna(0.0)
 
-    outer_lane_bias = lane.map({4: 0.08, 5: 0.12, 6: 0.14}).fillna(0.0)
+    outer_lane_bias = entry_position.map({4: 0.08, 5: 0.12, 6: 0.14}).fillna(0.0)
     pre_race_attack_score = pd.to_numeric(
         frame.get("pre_race_attack_score", pd.Series(0.0, index=frame.index)),
         errors="coerce",
@@ -654,7 +670,7 @@ def add_pre_race_flow_features(df: pd.DataFrame) -> pd.DataFrame:
         + 0.16 * st_score.fillna(0.0)
         + 0.12 * exhibition_score.fillna(0.0)
         + outer_lane_bias
-    ).where(lane >= 4, 0.0)
+    ).where(entry_position >= 4, 0.0)
     race_outer_link_risk = outer_score.groupby(frame["race_id"]).transform("max").fillna(0.0).clip(0.0, 1.0)
     race_escape_reliability = (lane1_strength * (1.0 - 0.35 * race_attack_pressure)).clip(0.0, 1.0)
     race_inner_collapse_risk = (
@@ -667,17 +683,25 @@ def add_pre_race_flow_features(df: pd.DataFrame) -> pd.DataFrame:
     frame["race_inner_collapse_risk"] = race_inner_collapse_risk.astype("float32")
     frame["race_outer_link_risk"] = race_outer_link_risk.astype("float32")
     frame["lane_escape_support_score"] = (
-        race_escape_reliability * lane.map({1: 1.0, 2: 0.65, 3: 0.45, 4: 0.20, 5: 0.10, 6: 0.05}).fillna(0.0)
+        race_escape_reliability * entry_position.map({1: 1.0, 2: 0.65, 3: 0.45, 4: 0.20, 5: 0.10, 6: 0.05}).fillna(0.0)
     ).astype("float32")
     frame["lane_attack_pressure_gap"] = (
         pre_race_attack_score - race_attack_pressure
     ).astype("float32")
     frame["lane_outer_link_fit"] = (
         race_outer_link_risk
-        * lane.map({1: 0.05, 2: 0.12, 3: 0.24, 4: 0.55, 5: 0.75, 6: 0.65}).fillna(0.0)
-        * (1.0 + 0.15 * (lane == attack_lane).astype("float32"))
+        * entry_position.map({1: 0.05, 2: 0.12, 3: 0.24, 4: 0.55, 5: 0.75, 6: 0.65}).fillna(0.0)
+        * (1.0 + 0.15 * (entry_position == attack_lane).astype("float32"))
     ).clip(0.0, 1.0).astype("float32")
     return frame
+
+
+def _entry_position_series(df: pd.DataFrame) -> pd.Series:
+    fallback = pd.to_numeric(df.get("lane", pd.Series(np.nan, index=df.index)), errors="coerce")
+    if "course" not in df.columns:
+        return fallback
+    course = pd.to_numeric(df["course"], errors="coerce")
+    return course.fillna(fallback)
 
 
 def _race_scale_feature(df: pd.DataFrame, column: str, *, lower_is_better: bool) -> pd.Series:

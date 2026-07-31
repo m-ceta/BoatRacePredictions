@@ -304,6 +304,34 @@ def test_proxy_st_structure_features_are_rebuilt_from_prediction_time_st() -> No
     assert np.isclose(proxied.loc[0, "start_timing_gap_st_window_best"], 0.18 - 0.12)
 
 
+def test_entry_course_is_used_for_position_relative_features() -> None:
+    frame = pd.DataFrame(
+        {
+            "race_id": ["R1"] * 6,
+            "lane": [1, 2, 3, 4, 5, 6],
+            "course": [1, 4, 2, 3, 5, 6],
+            "start_timing": [0.10, 0.20, 0.30, 0.40, 0.50, 0.60],
+            "exhibition_time": [6.70, 6.71, 6.72, 6.73, 6.74, 6.75],
+            "racer_prev_avg_st": [0.10, 0.20, 0.30, 0.40, 0.50, 0.60],
+            "racer_prev_avg_st_5": [0.10, 0.20, 0.30, 0.40, 0.50, 0.60],
+            "racer_prev_top3_rate": [0.40, 0.60, 0.50, 0.55, 0.45, 0.35],
+            "motor_place_rate": [30, 45, 35, 40, 32, 31],
+        }
+    )
+
+    enriched = add_race_relative_features(frame)
+
+    assert enriched.loc[1, "entry_course_position"] == 4
+    assert enriched.loc[1, "entry_course_lane_gap"] == 2
+    assert np.isclose(enriched.loc[1, "start_timing_gap_inner"], 0.20 - 0.40)
+    assert np.isclose(enriched.loc[1, "start_timing_gap_outer"], 0.20 - 0.50)
+    assert np.isclose(enriched.loc[0, "race_inner3_avg_st"], (0.10 + 0.30 + 0.40) / 3)
+    assert np.isclose(enriched.loc[0, "race_outer3_avg_st"], (0.20 + 0.50 + 0.60) / 3)
+    assert enriched.loc[1, "is_outside_of_attack_candidate"] == int(
+        enriched.loc[1, "entry_course_position"] > enriched.loc[1, "pre_race_attack_candidate_course"]
+    )
+
+
 def test_select_rerank_candidate_mask_from_v1_does_not_force_actual_inclusion() -> None:
     v1_df = pd.DataFrame(
         {

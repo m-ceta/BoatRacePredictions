@@ -78,6 +78,7 @@ models:
     num_threads_per_variant: 2
     variants:
       - name: lightgbm_reg_finish_position
+        enabled: false
         target: finish_position
         score_transform: negative
         params:
@@ -113,6 +114,7 @@ models:
     num_threads_per_variant: 2
     variants:
       - name: xgboost_reg_finish_position
+        enabled: false
         target: finish_position
         score_transform: negative
         params:
@@ -132,6 +134,7 @@ models:
     num_threads_per_variant: 2
     variants:
       - name: random_forest_reg_finish_position
+        enabled: false
         target: finish_position
         score_transform: negative
         params:
