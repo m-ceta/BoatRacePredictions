@@ -94,6 +94,69 @@ def test_lightgbm_variant_config_validates_names() -> None:
     assert variants == [{"name": "lightgbm_top1", "feature_set": "full", "params": {"num_leaves": 15}}]
 
 
+def test_upset_variant_config_applies_defaults() -> None:
+    config = {
+        "models": {
+            "lightgbm_variants": {
+                "enabled": True,
+                "variants": [
+                    {
+                        "name": "lightgbm_upset_variant",
+                        "upset_training": {"enabled": True, "history_years": 8.0},
+                    }
+                ],
+            }
+        }
+    }
+
+    variant = ranker.get_enabled_lightgbm_variants(config)[0]
+
+    assert variant["upset_training"]["enabled"] is True
+    assert variant["upset_training"]["history_years"] == 8.0
+    assert variant["upset_training"]["recent_years"] == 3.5
+    assert variant["upset_training"]["control_ratio"] == 3
+
+
+def test_select_upset_history_races_adds_matched_controls_and_weights() -> None:
+    rows = []
+    race_specs = [
+        ("H10", "2020-01-10", 12000.0),
+        ("H50", "2020-01-11", 60000.0),
+        ("C1", "2020-01-12", 1000.0),
+        ("C2", "2020-01-13", 2000.0),
+        ("C3", "2020-01-14", 3000.0),
+        ("C4", "2020-01-15", 4000.0),
+        ("OLD", "2017-01-10", 120000.0),
+    ]
+    for race_id, race_date, payout in race_specs:
+        for lane in range(1, 7):
+            rows.append(
+                {
+                    "race_id": race_id,
+                    "race_date": pd.Timestamp(race_date),
+                    "venue": "01",
+                    "lane": lane,
+                    "trifecta_payout": payout,
+                }
+            )
+    historical_df = pd.DataFrame(rows)
+    settings = {
+        **ranker.DEFAULT_UPSET_TRAINING_SETTINGS,
+        "control_ratio": 1,
+        "random_seed": 7,
+    }
+
+    selected = ranker.select_upset_history_races(historical_df, pd.Timestamp("2026-07-28"), settings)
+    race_rows = selected.drop_duplicates("race_id").set_index("race_id")
+
+    assert {"H10", "H50", "OLD"}.issubset(race_rows.index)
+    assert len(race_rows.index.intersection({"C1", "C2", "C3", "C4"})) == 2
+    assert race_rows.loc["H10", ranker.UPSET_TRAINING_WEIGHT_COLUMN] == pytest.approx(1.4)
+    assert race_rows.loc["H50", ranker.UPSET_TRAINING_WEIGHT_COLUMN] == pytest.approx(2.1)
+    assert race_rows.loc["OLD", ranker.UPSET_TRAINING_WEIGHT_COLUMN] == pytest.approx(1.5)
+    assert selected.groupby("race_id")[ranker.UPSET_TRAINING_WEIGHT_COLUMN].nunique().eq(1).all()
+
+
 def test_legacy_feature_set_excludes_late_added_features() -> None:
     columns = [
         "lane",

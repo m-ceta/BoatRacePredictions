@@ -209,6 +209,23 @@ DEFAULT_LIGHTGBM_VARIANT_SETTINGS = {
     ],
 }
 
+DEFAULT_UPSET_TRAINING_SETTINGS = {
+    "enabled": False,
+    "history_years": 10.0,
+    "recent_years": 3.5,
+    "middle_cutoff_years": 7.0,
+    "payout_threshold": 10000.0,
+    "control_ratio": 3,
+    "recent_history_weight": 0.7,
+    "older_history_weight": 0.3,
+    "payout_weight_10000": 2.0,
+    "payout_weight_50000": 3.0,
+    "payout_weight_100000": 5.0,
+    "random_seed": 42,
+}
+
+UPSET_TRAINING_WEIGHT_COLUMN = "_upset_training_weight"
+
 
 DEFAULT_LIGHTGBM_SEED_ENSEMBLE_SETTINGS = {
     "enabled": False,
@@ -573,6 +590,27 @@ def get_enabled_lightgbm_variants(config: dict | None) -> list[dict[str, Any]]:
         variant["name"] = name
         variant["feature_set"] = str(variant.get("feature_set", "full")).strip() or "full"
         variant["params"] = dict(variant.get("params", {}) or {})
+        if "upset_training" in variant:
+            upset_training = {
+                **DEFAULT_UPSET_TRAINING_SETTINGS,
+                **dict(variant.get("upset_training", {}) or {}),
+            }
+            upset_training["enabled"] = bool(upset_training.get("enabled", False))
+            upset_training["history_years"] = float(upset_training.get("history_years", 10.0))
+            upset_training["recent_years"] = float(upset_training.get("recent_years", 3.5))
+            upset_training["middle_cutoff_years"] = float(upset_training.get("middle_cutoff_years", 7.0))
+            upset_training["payout_threshold"] = float(upset_training.get("payout_threshold", 10000.0))
+            upset_training["control_ratio"] = max(int(upset_training.get("control_ratio", 3)), 0)
+            if upset_training["history_years"] <= upset_training["recent_years"]:
+                raise ValueError("upset_training.history_years must be greater than recent_years.")
+            if not upset_training["recent_years"] < upset_training["middle_cutoff_years"] <= upset_training["history_years"]:
+                raise ValueError(
+                    "upset_training.middle_cutoff_years must be greater than recent_years "
+                    "and no greater than history_years."
+                )
+            if upset_training["payout_threshold"] <= 0:
+                raise ValueError("upset_training.payout_threshold must be positive.")
+            variant["upset_training"] = upset_training
     return variants
 
 
@@ -3488,6 +3526,7 @@ def train_lightgbm(
     *,
     param_overrides: dict[str, Any] | None = None,
     num_threads: int | None = None,
+    sample_weight_column: str | None = None,
 ) -> lgb.Booster:
     train_lgb = build_lightgbm_frame(train_df, feature_columns, categorical_columns)
     valid_lgb = build_lightgbm_frame(valid_df, feature_columns, categorical_columns)
@@ -3498,6 +3537,11 @@ def train_lightgbm(
     train_dataset = lgb.Dataset(
         train_lgb,
         label=sort_for_grouping(train_df)["target_rank"].astype(float),
+        weight=(
+            pd.to_numeric(sort_for_grouping(train_df)[sample_weight_column], errors="coerce").fillna(1.0)
+            if sample_weight_column and sample_weight_column in train_df.columns
+            else None
+        ),
         group=train_group,
         categorical_feature=[c for c in categorical_columns if c in train_lgb.columns],
         free_raw_data=False,
@@ -3574,15 +3618,30 @@ def train_lightgbm_variants(
             f"training lightgbm variant: {name}, feature_set={variant.get('feature_set', 'full')}, "
             f"features={len(variant_feature_columns)}",
         )
+        variant_train_df = train_df
+        sample_weight_column = None
+        upset_settings = dict(variant.get("upset_training", {}) or {})
+        if bool(upset_settings.get("enabled", False)):
+            variant_train_df = build_upset_variant_training_frame(
+                train_df,
+                config,
+                upset_settings,
+                progress_callback=progress_callback,
+            )
+            sample_weight_column = UPSET_TRAINING_WEIGHT_COLUMN
         model = train_lightgbm(
-            train_df,
+            variant_train_df,
             valid_df,
             variant_feature_columns,
             variant_categorical_columns,
             config,
             param_overrides=dict(variant.get("params", {}) or {}),
             num_threads=num_threads,
+            sample_weight_column=sample_weight_column,
         )
+        if variant_train_df is not train_df:
+            del variant_train_df
+            collect_garbage()
         _emit_progress(progress_callback, f"completed lightgbm variant: {name}")
         return name, model
 
@@ -3596,6 +3655,125 @@ def train_lightgbm_variants(
             name, model = future.result()
             trained[name] = model
     return trained
+
+
+def build_upset_variant_training_frame(
+    recent_train_df: pd.DataFrame,
+    config: dict,
+    settings: dict[str, Any],
+    progress_callback: Callable[[str], None] | None = None,
+) -> pd.DataFrame:
+    if recent_train_df.empty:
+        return recent_train_df.copy()
+    training_table_path = Path(config.get("data", {}).get("training_table", ""))
+    if not training_table_path.exists():
+        raise FileNotFoundError(f"Upset variant training table not found: {training_table_path}")
+
+    latest_date = pd.to_datetime(recent_train_df["race_date"], errors="coerce").max().normalize()
+    recent_years = float(settings.get("recent_years", 3.5))
+    history_years = float(settings.get("history_years", 10.0))
+    history_start = (latest_date - _years_to_date_offset(history_years) + pd.Timedelta(days=1)).normalize()
+    history_end = (latest_date - _years_to_date_offset(recent_years)).normalize()
+    historical_df = pd.read_parquet(
+        training_table_path,
+        filters=[("race_date", ">=", history_start), ("race_date", "<=", history_end)],
+    )
+    historical_config = json.loads(json.dumps(config))
+    historical_config.setdefault("data", {})["min_date"] = history_start.strftime("%Y-%m-%d")
+    historical_config["data"]["max_date"] = history_end.strftime("%Y-%m-%d")
+    historical_df = prepare_training_table(historical_df, historical_config)
+    historical_df = apply_prediction_time_measurement_proxies(historical_df)
+    sampled_history = select_upset_history_races(historical_df, latest_date, settings)
+    del historical_df
+    collect_garbage()
+
+    recent = recent_train_df.copy()
+    recent[UPSET_TRAINING_WEIGHT_COLUMN] = 1.0
+    combined = pd.concat([recent, sampled_history], ignore_index=True, sort=False)
+    _emit_progress(
+        progress_callback,
+        "upset variant training data: "
+        f"recent_races={recent['race_id'].nunique()}, historical_races={sampled_history['race_id'].nunique()}, "
+        f"high_payout_historical_races={sampled_history.loc[sampled_history['trifecta_payout'] >= float(settings.get('payout_threshold', 10000.0)), 'race_id'].nunique()}",
+    )
+    return combined
+
+
+def select_upset_history_races(
+    historical_df: pd.DataFrame,
+    latest_date: pd.Timestamp,
+    settings: dict[str, Any],
+) -> pd.DataFrame:
+    if historical_df.empty:
+        result = historical_df.copy()
+        result[UPSET_TRAINING_WEIGHT_COLUMN] = pd.Series(dtype=float)
+        return result
+    required = {"race_id", "race_date", "trifecta_payout"}
+    missing = required - set(historical_df.columns)
+    if missing:
+        raise ValueError(f"Upset training data is missing columns: {sorted(missing)}")
+
+    race_columns = ["race_id", "race_date", "trifecta_payout"]
+    if "venue" in historical_df.columns:
+        race_columns.append("venue")
+    races = historical_df[race_columns].drop_duplicates("race_id").copy()
+    races["race_date"] = pd.to_datetime(races["race_date"], errors="coerce")
+    races["trifecta_payout"] = pd.to_numeric(races["trifecta_payout"], errors="coerce")
+    races = races.dropna(subset=["race_date", "trifecta_payout"])
+    threshold = float(settings.get("payout_threshold", 10000.0))
+    high = races[races["trifecta_payout"] >= threshold].copy()
+    controls = races[races["trifecta_payout"] < threshold].copy()
+    if high.empty:
+        result = historical_df.iloc[0:0].copy()
+        result[UPSET_TRAINING_WEIGHT_COLUMN] = pd.Series(dtype=float)
+        return result
+
+    high["_month"] = high["race_date"].dt.to_period("M").astype(str)
+    controls["_month"] = controls["race_date"].dt.to_period("M").astype(str)
+    strata = ["_month"]
+    if "venue" in high.columns:
+        strata.append("venue")
+    ratio = int(settings.get("control_ratio", 3))
+    seed = int(settings.get("random_seed", 42))
+    selected_control_ids: list[str] = []
+    if ratio > 0:
+        high_counts = high.groupby(strata, dropna=False).size()
+        for key, high_count in high_counts.items():
+            key_tuple = key if isinstance(key, tuple) else (key,)
+            mask = pd.Series(True, index=controls.index)
+            for column, value in zip(strata, key_tuple):
+                mask &= controls[column].eq(value)
+            candidates = controls.loc[mask, "race_id"]
+            take = min(len(candidates), int(high_count) * ratio)
+            if take:
+                stratum_seed = (
+                    seed + int(hashlib.sha256(str(key_tuple).encode("utf-8")).hexdigest()[:8], 16)
+                ) % (2**32 - 1)
+                selected_control_ids.extend(candidates.sample(n=take, random_state=stratum_seed).astype(str).tolist())
+
+    selected_ids = set(high["race_id"].astype(str)) | set(selected_control_ids)
+    selected = historical_df[historical_df["race_id"].astype(str).isin(selected_ids)].copy()
+    payout = pd.to_numeric(selected["trifecta_payout"], errors="coerce").fillna(0.0)
+    race_date = pd.to_datetime(selected["race_date"], errors="coerce")
+    recent_history_cutoff = latest_date - _years_to_date_offset(float(settings.get("middle_cutoff_years", 7.0)))
+    time_weight = np.where(
+        race_date >= recent_history_cutoff,
+        float(settings.get("recent_history_weight", 0.7)),
+        float(settings.get("older_history_weight", 0.3)),
+    )
+    payout_weight = np.select(
+        [payout >= 100000.0, payout >= 50000.0, payout >= threshold],
+        [
+            float(settings.get("payout_weight_100000", 5.0)),
+            float(settings.get("payout_weight_50000", 3.0)),
+            float(settings.get("payout_weight_10000", 2.0)),
+        ],
+        default=1.0,
+    )
+    selected[UPSET_TRAINING_WEIGHT_COLUMN] = np.asarray(time_weight, dtype=float) * np.asarray(
+        payout_weight, dtype=float
+    )
+    return selected
 
 
 def train_lightgbm_seed_ensemble(
