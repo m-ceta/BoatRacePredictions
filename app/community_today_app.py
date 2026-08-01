@@ -264,47 +264,25 @@ def _format_ranking_frame(frame):
 
 
 def _format_trifecta_frame(frame):
-    return _select_and_rename_columns(
-        frame,
-        [
-            ("trifecta", "買い目"),
-            ("probability", "予想確率"),
-            ("probability_v1", "基本モデル確率"),
-            ("probability_v2", "最適化後確率"),
-            ("raw_probability_v1", "基本モデル生スコア"),
-            ("raw_probability_v2", "最適化後生スコア"),
-        ],
-    )
+    columns = [
+        ("trifecta", "買い目"),
+        ("probability", "予想確率"),
+        ("odds", "現在オッズ"),
+        ("expected_value", "期待値"),
+        ("trifecta_darkhorse_score", "穴度"),
+    ]
+    formatted = frame.copy()
+    for source, _label in columns:
+        if source not in formatted.columns:
+            formatted[source] = None
+    formatted = formatted[[source for source, _label in columns]]
+    return formatted.rename(columns={source: label for source, label in columns})
 
 
-def _format_odds_frame(frame):
-    return _select_and_rename_columns(
-        frame,
-        [
-            ("trifecta", "買い目"),
-            ("probability", "予想確率"),
-            ("odds", "現在オッズ"),
-            ("expected_value", "期待値"),
-            ("top12_confidence_score", "Top12信頼スコア"),
-            ("top12_confidence_label", "Top12信頼"),
-            ("buy_decision", "判定"),
-        ],
-    )
-
-
-def _format_buy_candidates_frame(frame):
-    return _select_and_rename_columns(
-        frame,
-        [
-            ("trifecta", "買い目"),
-            ("probability", "予想確率"),
-            ("odds", "現在オッズ"),
-            ("expected_value", "期待値"),
-            ("top12_confidence_score", "Top12信頼スコア"),
-            ("top12_confidence_label", "Top12信頼"),
-            ("buy_decision", "判定"),
-        ],
-    )
+def _trifecta_display_frame(prediction: Any):
+    if prediction.odds is not None and not prediction.odds.empty:
+        return prediction.odds.sort_values("probability", ascending=False).head(20)
+    return prediction.trifecta.sort_values("probability", ascending=False).head(20)
 
 
 def _format_percent(value: float) -> str:
@@ -379,7 +357,7 @@ def bootstrap_shared_data_from_secrets() -> None:
 
 def render_prediction_tab() -> None:
     st.subheader("当日レース予測")
-    st.caption("本日のレースの着順予想、3連単予想、オッズ評価を表示します。")
+    st.caption("本日のレースの着順予想と3連単予想を表示します。")
 
     schedule_fetch_error: Exception | None = None
     try:
@@ -484,22 +462,10 @@ def render_prediction_tab() -> None:
 
     st.markdown("**3連単予想**")
     st.dataframe(
-        _format_trifecta_frame(prediction.trifecta.head(20)),
+        _format_trifecta_frame(_trifecta_display_frame(prediction)),
         use_container_width=True,
         hide_index=True,
     )
-
-    if prediction.odds is not None and not prediction.odds.empty:
-        st.markdown("**オッズ評価**")
-        st.dataframe(_format_odds_frame(prediction.odds.head(20)), use_container_width=True, hide_index=True)
-
-    if prediction.buy_candidates is not None and not prediction.buy_candidates.empty:
-        st.markdown("**買い候補**")
-        st.dataframe(
-            _format_buy_candidates_frame(prediction.buy_candidates),
-            use_container_width=True,
-            hide_index=True,
-        )
 
 
 def main() -> None:
