@@ -43,7 +43,7 @@ models:
     parallel_workers: 8
     model_metrics_parallel_workers: 2
     max_eval_races: 10000
-    grid_step: 0.10
+    grid_step: 0.05
     objective: trifecta_top12_balanced
     objective_top12_weight: 0.35
     objective_top5_weight: 0.25
