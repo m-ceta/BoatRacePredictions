@@ -14,8 +14,11 @@ rm -rf "${STATE_DIR}"
 mkdir -p "${STATE_DIR}"
 
 train_args=(--config configs/train.yaml)
-if [[ "${SKIP_TRAIN_EVALUATION:-${BOATRACE_TRAIN_SKIP_EVALUATION:-0}}" == "1" ]]; then
+if [[ "${SKIP_TRAIN_EVALUATION:-0}" == "1" ]]; then
   train_args+=(--skip-evaluation)
+fi
+if [[ "${SKIP_VARIANT_EVALUATION:-${BOATRACE_TRAIN_SKIP_EVALUATION:-${BOATRACE_TRAIN_SKIP_VARIANT_EVALUATION:-0}}}" == "1" ]]; then
+  train_args+=(--skip-variant-evaluation)
 fi
 
 log_time() {

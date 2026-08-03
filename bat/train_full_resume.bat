@@ -11,7 +11,9 @@ if not exist "%PIPELINE_STATE_DIR%" mkdir "%PIPELINE_STATE_DIR%"
 
 set "TRAIN_ARGS=--config configs/train.yaml --resume"
 if "%SKIP_TRAIN_EVALUATION%"=="1" set "TRAIN_ARGS=%TRAIN_ARGS% --skip-evaluation"
-if "%BOATRACE_TRAIN_SKIP_EVALUATION%"=="1" set "TRAIN_ARGS=%TRAIN_ARGS% --skip-evaluation"
+if "%SKIP_VARIANT_EVALUATION%"=="1" set "TRAIN_ARGS=%TRAIN_ARGS% --skip-variant-evaluation"
+if "%BOATRACE_TRAIN_SKIP_EVALUATION%"=="1" set "TRAIN_ARGS=%TRAIN_ARGS% --skip-variant-evaluation"
+if "%BOATRACE_TRAIN_SKIP_VARIANT_EVALUATION%"=="1" set "TRAIN_ARGS=%TRAIN_ARGS% --skip-variant-evaluation"
 
 set "WAIT_FOR_DRIVE_PACKAGE=1"
 call "%~dp0_common.bat" :run_step "[1/5] drive_mount" call bat\drive_mount.bat

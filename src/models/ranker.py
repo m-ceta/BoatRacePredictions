@@ -2590,6 +2590,7 @@ def train_ranker_from_splits(
     resume: bool = False,
     reset_train_checkpoint: bool = False,
     skip_evaluation: bool = False,
+    skip_variant_evaluation: bool = False,
 ) -> tuple[
     dict[str, Any],
     list[str],
@@ -2612,6 +2613,9 @@ def train_ranker_from_splits(
         if skip_evaluation:
             progress(f"skipping {name} evaluation: --skip-evaluation")
             return skipped_metrics(name)
+        if skip_variant_evaluation:
+            progress(f"skipping {name} evaluation: --skip-variant-evaluation")
+            return {"status": "skipped_by_variant_evaluation_request", "model": name}
         return evaluate_model_bundle(
             model,
             name,
@@ -3123,6 +3127,7 @@ def train_ranker_from_splits(
             staged_models=staged_models,
             config=config,
             progress_callback=progress,
+            skip_individual_models=skip_variant_evaluation,
         )
         trifecta_v1_metrics = trifecta_v1_model_metrics["ensemble"]
         mark_train_stage_completed(
@@ -6291,6 +6296,7 @@ def evaluate_trifecta_v1_model_metrics(
     staged_models: dict[str, lgb.Booster] | None = None,
     config: dict | None = None,
     progress_callback: Callable[[str], None] | None = None,
+    skip_individual_models: bool = False,
 ) -> dict[str, Any]:
     settings = get_ensemble_settings(config)
     metrics: dict[str, Any] = {
@@ -6308,6 +6314,10 @@ def evaluate_trifecta_v1_model_metrics(
             staged_models=staged_models,
         )
     }
+    if skip_individual_models:
+        _emit_progress(progress_callback, "skipping individual trifecta v1 model metrics: --skip-variant-evaluation")
+        return metrics
+
     model_items = list(models.items())
     workers = min(int(settings.get("model_metrics_parallel_workers", 1)), len(model_items)) if model_items else 1
     _emit_progress(progress_callback, f"trifecta v1 model metrics workers: {workers}")
