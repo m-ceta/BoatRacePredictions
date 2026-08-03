@@ -34,6 +34,7 @@ bat\open_conda_shell.bat
 boatrace-backfill-rowdata --rowdata rowdata
 boatrace-build --rowdata rowdata --output data/processed
 boatrace-train --config configs/train.yaml
+boatrace-train --config configs/train.yaml --skip-evaluation
 boatrace-predict-today --config configs/train.yaml --venue 15 --race-no 1
 boatrace-predict-today --config configs/train.yaml --venue 15 --race-no 1 --courses 213456
 boatrace-predict-today --config configs/train.yaml --venue 15 --race-no 1 --course-overrides 1=2,2=1
@@ -55,6 +56,22 @@ Windows:
 ```bat
 bat\train_full.bat
 bat\train_full_resume.bat
+```
+
+Skip post-training metrics and run model training/artifact saving only:
+
+Linux:
+
+```bash
+SKIP_TRAIN_EVALUATION=1 bash sh/train_full.sh
+SKIP_TRAIN_EVALUATION=1 bash sh/train_full_resume.sh
+```
+
+Windows:
+
+```bat
+set SKIP_TRAIN_EVALUATION=1
+bat\train_full.bat
 ```
 
 ## Neural / GPU Setup

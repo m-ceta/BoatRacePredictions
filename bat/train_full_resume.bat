@@ -9,6 +9,11 @@ if not defined PIPELINE_STATE_DIR set "PIPELINE_STATE_DIR=%CD%\.gcloud_pipeline_
 
 if not exist "%PIPELINE_STATE_DIR%" mkdir "%PIPELINE_STATE_DIR%"
 
+set "TRAIN_ARGS=--config configs/train.yaml --resume"
+if "%SKIP_TRAIN_EVALUATION%"=="1" set "TRAIN_ARGS=%TRAIN_ARGS% --skip-evaluation"
+if "%BOATRACE_TRAIN_SKIP_EVALUATION%"=="1" set "TRAIN_ARGS=%TRAIN_ARGS% --skip-evaluation"
+
+set "WAIT_FOR_DRIVE_PACKAGE=1"
 call "%~dp0_common.bat" :run_step "[1/5] drive_mount" call bat\drive_mount.bat
 if errorlevel 1 exit /b %errorlevel%
 type nul > "%PIPELINE_STATE_DIR%\01_drive_mount.done"
@@ -32,7 +37,7 @@ if exist "%PIPELINE_STATE_DIR%\03_build.done" (
 if exist "%PIPELINE_STATE_DIR%\04_train.done" (
     echo [4/5] train skipped: 04_train.done exists
 ) else (
-    call "%~dp0_common.bat" :run_step "[4/5] train" boatrace-train --config configs/train.yaml --resume
+    call "%~dp0_common.bat" :run_step "[4/5] train" boatrace-train %TRAIN_ARGS%
     if errorlevel 1 exit /b %errorlevel%
     type nul > "%PIPELINE_STATE_DIR%\04_train.done"
 )

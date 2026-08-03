@@ -2589,6 +2589,7 @@ def train_ranker_from_splits(
     progress_callback: Callable[[str], None] | None = None,
     resume: bool = False,
     reset_train_checkpoint: bool = False,
+    skip_evaluation: bool = False,
 ) -> tuple[
     dict[str, Any],
     list[str],
@@ -2603,6 +2604,23 @@ def train_ranker_from_splits(
     def progress(message: str) -> None:
         if progress_callback is not None:
             progress_callback(message)
+
+    def skipped_metrics(name: str) -> dict[str, Any]:
+        return {"status": "skipped_by_request", "model": name}
+
+    def evaluate_model_or_skip(model: Any, name: str) -> dict[str, Any]:
+        if skip_evaluation:
+            progress(f"skipping {name} evaluation: --skip-evaluation")
+            return skipped_metrics(name)
+        return evaluate_model_bundle(
+            model,
+            name,
+            train_df,
+            valid_df,
+            test_df,
+            feature_columns,
+            categorical_columns,
+        )
 
     progress("applying prediction-time measurement proxies")
     train_df = apply_prediction_time_measurement_proxies(train_df)
@@ -2653,15 +2671,7 @@ def train_ranker_from_splits(
         artifacts["catboost_model_path"].parent.mkdir(parents=True, exist_ok=True)
         catboost_model.save_model(artifacts["catboost_model_path"])
         progress("evaluating catboost ranker")
-        catboost_metrics = evaluate_model_bundle(
-            catboost_model,
-            "catboost",
-            train_df,
-            valid_df,
-            test_df,
-            feature_columns,
-            categorical_columns,
-        )
+        catboost_metrics = evaluate_model_or_skip(catboost_model, "catboost")
         mark_train_stage_completed(checkpoint_path, checkpoint, "catboost", catboost_metrics)
     collect_garbage()
 
@@ -2675,15 +2685,7 @@ def train_ranker_from_splits(
         artifacts["lightgbm_model_path"].parent.mkdir(parents=True, exist_ok=True)
         lightgbm_model.save_model(str(artifacts["lightgbm_model_path"]))
         progress("evaluating lightgbm ranker")
-        lightgbm_metrics = evaluate_model_bundle(
-            lightgbm_model,
-            "lightgbm",
-            train_df,
-            valid_df,
-            test_df,
-            feature_columns,
-            categorical_columns,
-        )
+        lightgbm_metrics = evaluate_model_or_skip(lightgbm_model, "lightgbm")
         mark_train_stage_completed(checkpoint_path, checkpoint, "lightgbm", lightgbm_metrics)
     collect_garbage()
 
@@ -2718,15 +2720,7 @@ def train_ranker_from_splits(
                 artifacts["lightgbm_model_path"],
             )
             lightgbm_seed_ensemble_metrics = {
-                name: evaluate_model_bundle(
-                    model,
-                    name,
-                    train_df,
-                    valid_df,
-                    test_df,
-                    feature_columns,
-                    categorical_columns,
-                )
+                name: evaluate_model_or_skip(model, name)
                 for name, model in lightgbm_seed_ensemble_models.items()
             }
         else:
@@ -2760,15 +2754,7 @@ def train_ranker_from_splits(
         )
         save_lightgbm_variants(lightgbm_variant_models, artifacts["lightgbm_model_path"])
         lightgbm_variant_metrics = {
-            name: evaluate_model_bundle(
-                model,
-                name,
-                train_df,
-                valid_df,
-                test_df,
-                feature_columns,
-                categorical_columns,
-            )
+            name: evaluate_model_or_skip(model, name)
             for name, model in lightgbm_variant_models.items()
         }
         mark_train_stage_completed(checkpoint_path, checkpoint, "lightgbm_variants", lightgbm_variant_metrics)
@@ -2799,15 +2785,7 @@ def train_ranker_from_splits(
         )
         save_lightgbm_variants(lightgbm_regression_variant_models, artifacts["lightgbm_model_path"])
         lightgbm_regression_variant_metrics = {
-            name: evaluate_model_bundle(
-                model,
-                name,
-                train_df,
-                valid_df,
-                test_df,
-                feature_columns,
-                categorical_columns,
-            )
+            name: evaluate_model_or_skip(model, name)
             for name, model in lightgbm_regression_variant_models.items()
         }
         mark_train_stage_completed(
@@ -2844,15 +2822,7 @@ def train_ranker_from_splits(
         )
         save_xgboost_variants(xgboost_variant_models, artifacts["xgboost_model_path"])
         xgboost_variant_metrics = {
-            name: evaluate_model_bundle(
-                model,
-                name,
-                train_df,
-                valid_df,
-                test_df,
-                feature_columns,
-                categorical_columns,
-            )
+            name: evaluate_model_or_skip(model, name)
             for name, model in xgboost_variant_models.items()
         }
         mark_train_stage_completed(checkpoint_path, checkpoint, "xgboost_variants", xgboost_variant_metrics)
@@ -2884,15 +2854,7 @@ def train_ranker_from_splits(
         )
         save_xgboost_variants(xgboost_regression_variant_models, artifacts["xgboost_model_path"])
         xgboost_regression_variant_metrics = {
-            name: evaluate_model_bundle(
-                model,
-                name,
-                train_df,
-                valid_df,
-                test_df,
-                feature_columns,
-                categorical_columns,
-            )
+            name: evaluate_model_or_skip(model, name)
             for name, model in xgboost_regression_variant_models.items()
         }
         mark_train_stage_completed(
@@ -2935,15 +2897,7 @@ def train_ranker_from_splits(
         )
         save_random_forest_variants(random_forest_regression_variant_models, artifacts["random_forest_model_path"])
         random_forest_regression_variant_metrics = {
-            name: evaluate_model_bundle(
-                model,
-                name,
-                train_df,
-                valid_df,
-                test_df,
-                feature_columns,
-                categorical_columns,
-            )
+            name: evaluate_model_or_skip(model, name)
             for name, model in random_forest_regression_variant_models.items()
         }
         mark_train_stage_completed(
@@ -2982,15 +2936,7 @@ def train_ranker_from_splits(
         )
         save_ridge_variants(ridge_regression_variant_models, artifacts["ridge_model_path"])
         ridge_regression_variant_metrics = {
-            name: evaluate_model_bundle(
-                model,
-                name,
-                train_df,
-                valid_df,
-                test_df,
-                feature_columns,
-                categorical_columns,
-            )
+            name: evaluate_model_or_skip(model, name)
             for name, model in ridge_regression_variant_models.items()
         }
         mark_train_stage_completed(
@@ -3029,15 +2975,7 @@ def train_ranker_from_splits(
         )
         save_neural_variants(neural_regression_variant_models, artifacts["neural_model_path"])
         neural_regression_variant_metrics = {
-            name: evaluate_model_bundle(
-                model,
-                name,
-                train_df,
-                valid_df,
-                test_df,
-                feature_columns,
-                categorical_columns,
-            )
+            name: evaluate_model_or_skip(model, name)
             for name, model in neural_regression_variant_models.items()
         }
         mark_train_stage_completed(
@@ -3082,16 +3020,20 @@ def train_ranker_from_splits(
             json.dumps(ensemble_weights, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        progress("evaluating ensemble")
-        ensemble_metrics = evaluate_ensemble(
-            models,
-            ensemble_weights,
-            train_df,
-            valid_df,
-            test_df,
-            feature_columns,
-            categorical_columns,
-        )
+        if skip_evaluation:
+            progress("skipping ensemble evaluation: --skip-evaluation")
+            ensemble_metrics = skipped_metrics("ensemble")
+        else:
+            progress("evaluating ensemble")
+            ensemble_metrics = evaluate_ensemble(
+                models,
+                ensemble_weights,
+                train_df,
+                valid_df,
+                test_df,
+                feature_columns,
+                categorical_columns,
+            )
         mark_train_stage_completed(checkpoint_path, checkpoint, "ensemble", ensemble_metrics)
     collect_garbage()
 
@@ -3106,15 +3048,19 @@ def train_ranker_from_splits(
         progress("training classifier models")
         classifier_models = train_classifiers(train_df, valid_df, feature_columns, categorical_columns, config)
         save_classifier_models(classifier_models, artifacts["classifier_dir"])
-        progress("evaluating classifier models")
-        classifier_metrics = evaluate_classifier_models(
-            classifier_models,
-            train_eval_df,
-            valid_eval_df,
-            test_eval_df,
-            feature_columns,
-            categorical_columns,
-        )
+        if skip_evaluation:
+            progress("skipping classifier evaluation: --skip-evaluation")
+            classifier_metrics = {"status": "skipped_by_request"}
+        else:
+            progress("evaluating classifier models")
+            classifier_metrics = evaluate_classifier_models(
+                classifier_models,
+                train_eval_df,
+                valid_eval_df,
+                test_eval_df,
+                feature_columns,
+                categorical_columns,
+            )
         mark_train_stage_completed(checkpoint_path, checkpoint, "classifiers", classifier_metrics)
     collect_garbage()
 
@@ -3142,7 +3088,18 @@ def train_ranker_from_splits(
         mark_train_stage_completed(checkpoint_path, checkpoint, "trifecta_v1_calibrator", {"status": "completed"})
     collect_garbage()
 
-    if (
+    if skip_evaluation:
+        progress("skipping trifecta v1 metrics by model: --skip-evaluation")
+        trifecta_v1_metrics = {"status": "skipped_by_request"}
+        trifecta_v1_model_metrics = {"ensemble": trifecta_v1_metrics}
+        mark_train_stage_completed(
+            checkpoint_path,
+            checkpoint,
+            "trifecta_v1_model_metrics",
+            trifecta_v1_model_metrics,
+        )
+        mark_train_stage_completed(checkpoint_path, checkpoint, "trifecta_v1_metrics", trifecta_v1_metrics)
+    elif (
         resume
         and train_stage_completed(checkpoint, "trifecta_v1_model_metrics")
         and "trifecta_v1_model_metrics" in checkpoint_metrics

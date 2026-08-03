@@ -25,7 +25,8 @@ call set "COMMAND_LINE=%%COMMAND_LINE:%STEP_LABEL_RAW% =%%"
 for /f "delims=" %%T in ('powershell -NoProfile -Command "Get-Date -Format 'yyyy-MM-dd HH:mm:ss JST'"') do set "NOW=%%T"
 echo [%NOW%] %STEP_LABEL% %COMMAND_LINE%
 call %COMMAND_LINE%
-exit /b %errorlevel%
+set "RUN_STEP_ERRORLEVEL=%ERRORLEVEL%"
+exit /b %RUN_STEP_ERRORLEVEL%
 
 :find_conda
 set "CONDA_BAT="

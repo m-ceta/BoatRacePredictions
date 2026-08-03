@@ -326,6 +326,7 @@ def train_main() -> None:
     parser.add_argument("--ensemble-max-eval-races", type=int, default=None)
     parser.add_argument("--resume", action="store_true", help="resume completed boatrace-train stages from artifacts/train_checkpoint.json")
     parser.add_argument("--reset-train-checkpoint", action="store_true", help="clear boatrace-train checkpoint before training")
+    parser.add_argument("--skip-evaluation", action="store_true", help="train and save model artifacts without running post-training metrics")
     args = parser.parse_args()
     if args.enable_lightgbm_variants and args.disable_lightgbm_variants:
         parser.error("--enable-lightgbm-variants and --disable-lightgbm-variants cannot be used together")
@@ -375,6 +376,7 @@ def train_main() -> None:
         progress_callback=progress,
         resume=args.resume,
         reset_train_checkpoint=args.reset_train_checkpoint,
+        skip_evaluation=args.skip_evaluation,
     )
     del train_df, valid_df, test_df
     collect_garbage()

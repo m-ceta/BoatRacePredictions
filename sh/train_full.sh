@@ -13,6 +13,11 @@ cd "${PROJECT_ROOT}"
 rm -rf "${STATE_DIR}"
 mkdir -p "${STATE_DIR}"
 
+train_args=(--config configs/train.yaml)
+if [[ "${SKIP_TRAIN_EVALUATION:-${BOATRACE_TRAIN_SKIP_EVALUATION:-0}}" == "1" ]]; then
+  train_args+=(--skip-evaluation)
+fi
+
 log_time() {
   TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M:%S JST'
 }
@@ -40,7 +45,7 @@ run_pipeline_step "[3/5] build" \
 
 run_pipeline_step "[4/5] train" \
   "04_train.done" \
-  boatrace-train --config configs/train.yaml
+  boatrace-train "${train_args[@]}"
 
 run_pipeline_step "[5/5] zip_upload" \
   "05_zip_upload.done" \
