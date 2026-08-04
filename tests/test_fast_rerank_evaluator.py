@@ -105,6 +105,33 @@ def test_fast_v1_trifecta_metrics_match_dataframe_metrics() -> None:
     assert subset_metrics["lane_course_mismatch"]["race_count"] == 1.0
 
 
+def test_fast_confidence_strategy_recovery_metrics_include_all_ticket_styles() -> None:
+    high_confidence_probs = np.asarray([0.30] + [0.04] * 11 + [0.002] * 108, dtype=float)
+    middle_confidence_probs = np.asarray([0.08] + [0.025] * 11 + [0.005] * 108, dtype=float)
+    low_confidence_probs = np.asarray([1.0 / 120.0] * 120, dtype=float)
+    prob_matrix = np.vstack(
+        [
+            high_confidence_probs / high_confidence_probs.sum(),
+            middle_confidence_probs / middle_confidence_probs.sum(),
+            low_confidence_probs / low_confidence_probs.sum(),
+        ]
+    )
+
+    metrics = ranker._fast_top12_confidence_strategy_recovery_metrics(
+        prob_matrix,
+        actual_indices=np.asarray([4, 7, 0], dtype=int),
+        trifecta_payouts=np.asarray([1000.0, 3000.0, 10000.0], dtype=float),
+    )
+
+    assert set(metrics["high"]) == {"top3", "top5", "top8", "top12", "bottom8", "bottom6"}
+    assert metrics["high"]["top3"]["hit_rate"] == 0.0
+    assert metrics["high"]["top5"]["hit_rate"] == 1.0
+    assert metrics["middle"]["top5"]["hit_rate"] == 0.0
+    assert metrics["middle"]["top8"]["hit_rate"] == 1.0
+    assert metrics["low"]["top3"]["hit_rate"] == 1.0
+    assert metrics["low"]["bottom6"]["hit_rate"] == 0.0
+
+
 def test_fast_v1_calibrator_matches_dataframe_training_payload() -> None:
     ranked = pd.DataFrame(
         {

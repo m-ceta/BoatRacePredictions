@@ -70,9 +70,12 @@ def calculate_top12_confidence_for_race(
         - 0.10 * upset_penalty
     )
     score = round(_clip01(raw_score) * 100.0, 1)
+    recommended_ticket_count = recommended_ticket_count_from_top12_confidence(score)
     return {
         "top12_confidence_score": score,
         "top12_confidence_label": label_top12_confidence(score),
+        "recommended_ticket_count": recommended_ticket_count,
+        "recommended_ticket_label": recommended_ticket_label_from_count(recommended_ticket_count),
         "top12_probability_mass": round(top12_mass, 6),
         "top5_probability_mass": round(top5_mass, 6),
         "top1_top2_probability_gap": round(top1_top2_gap, 6),
@@ -99,6 +102,31 @@ def top12_confidence_label_key(value: object) -> str:
     return "low"
 
 
+def recommended_ticket_count_from_top12_confidence(value: object) -> int:
+    if isinstance(value, str):
+        label = top12_confidence_label_key(value)
+    else:
+        score = float(value)
+        if score >= TOP12_CONFIDENCE_HIGH_THRESHOLD:
+            label = "high"
+        elif score >= TOP12_CONFIDENCE_MIDDLE_THRESHOLD:
+            label = "middle"
+        else:
+            label = "low"
+    if label == "high":
+        return 5
+    if label == "middle":
+        return 8
+    return 0
+
+
+def recommended_ticket_label_from_count(ticket_count: int) -> str:
+    count = int(ticket_count)
+    if count > 0:
+        return f"Top{count}"
+    return "\u898b\u9001\u308a"
+
+
 def _normalized_entropy(probs: np.ndarray) -> float:
     if len(probs) <= 1:
         return 0.0
@@ -122,6 +150,8 @@ def _empty_top12_confidence() -> dict[str, float | str]:
     return {
         "top12_confidence_score": 0.0,
         "top12_confidence_label": _LABEL_LOW,
+        "recommended_ticket_count": 0,
+        "recommended_ticket_label": "\u898b\u9001\u308a",
         "top12_probability_mass": 0.0,
         "top5_probability_mass": 0.0,
         "top1_top2_probability_gap": 0.0,

@@ -6,7 +6,11 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import brier_score_loss, log_loss
 
-from src.top12_confidence import attach_top12_confidence_columns, top12_confidence_label_key
+from src.top12_confidence import (
+    attach_top12_confidence_columns,
+    recommended_ticket_count_from_top12_confidence,
+    top12_confidence_label_key,
+)
 
 
 PAYOUT_BANDS: tuple[tuple[str, float | None, float | None, str], ...] = (
@@ -104,6 +108,20 @@ def compute_trifecta_metrics(
     if confidence_recovery_metrics:
         metrics["top12_confidence_recovery_metrics"] = confidence_recovery_metrics
 
+    confidence_strategy_recovery_metrics = compute_top12_confidence_strategy_recovery_metrics(
+        trifecta_df,
+        probability_col=probability_col,
+    )
+    if confidence_strategy_recovery_metrics:
+        metrics["top12_confidence_strategy_recovery_metrics"] = confidence_strategy_recovery_metrics
+
+    variable_ticket_recovery_metrics = compute_variable_ticket_recovery_metrics(
+        trifecta_df,
+        probability_col=probability_col,
+    )
+    if variable_ticket_recovery_metrics:
+        metrics["variable_ticket_recovery_metrics"] = variable_ticket_recovery_metrics
+
     return metrics
 
 
@@ -112,12 +130,16 @@ def compute_uniform_ticket_recovery_metrics(
     probability_col: str = "probability",
     payout_col: str = "trifecta_payout",
     top_ns: Iterable[int] = (3, 5, 8, 12),
+    bottom_ns: Iterable[int] = (8, 6),
     stake_per_ticket: float = 100.0,
 ) -> dict[str, dict[str, float]]:
     if trifecta_df.empty or payout_col not in trifecta_df.columns:
         return {}
 
-    records_by_top_n: dict[int, list[dict[str, float]]] = {int(top_n): [] for top_n in top_ns}
+    strategy_records: dict[str, list[dict[str, float]]] = {
+        **{f"top{int(top_n)}": [] for top_n in top_ns},
+        **{f"bottom{int(bottom_n)}": [] for bottom_n in bottom_ns},
+    }
     for _, race_df in trifecta_df.groupby("race_id", sort=False):
         payout_values = pd.to_numeric(race_df[payout_col], errors="coerce").dropna()
         if payout_values.empty:
@@ -130,22 +152,36 @@ def compute_uniform_ticket_recovery_metrics(
         if len(actual_positions) != 1:
             continue
         actual_idx = int(actual_positions[0])
-        for top_n in records_by_top_n:
+        for top_n in top_ns:
             ticket_count = min(int(top_n), len(ordered))
             stake = float(ticket_count) * float(stake_per_ticket)
             hit = float(actual_idx < ticket_count)
-            records_by_top_n[top_n].append(
+            strategy_records[f"top{int(top_n)}"].append(
                 {
                     "hit": hit,
                     "stake": stake,
                     "return": payout * hit,
                     "payout": payout,
+                    "ticket_count": float(ticket_count),
+                }
+            )
+        for bottom_n in bottom_ns:
+            ticket_count = min(int(bottom_n), len(ordered))
+            stake = float(ticket_count) * float(stake_per_ticket)
+            hit = float(actual_idx >= len(ordered) - ticket_count)
+            strategy_records[f"bottom{int(bottom_n)}"].append(
+                {
+                    "hit": hit,
+                    "stake": stake,
+                    "return": payout * hit,
+                    "payout": payout,
+                    "ticket_count": float(ticket_count),
                 }
             )
 
     return {
-        f"top{top_n}": _summarize_ticket_recovery_records(records)
-        for top_n, records in records_by_top_n.items()
+        strategy: _summarize_ticket_recovery_records(records)
+        for strategy, records in strategy_records.items()
         if records
     }
 
@@ -195,6 +231,171 @@ def compute_top12_confidence_recovery_metrics(
     }
 
 
+def compute_top12_confidence_strategy_recovery_metrics(
+    trifecta_df: pd.DataFrame,
+    probability_col: str = "probability",
+    payout_col: str = "trifecta_payout",
+    top_ns: Iterable[int] = (3, 5, 8, 12),
+    bottom_ns: Iterable[int] = (8, 6),
+    stake_per_ticket: float = 100.0,
+) -> dict[str, dict[str, dict[str, float]]]:
+    if trifecta_df.empty or payout_col not in trifecta_df.columns:
+        return {}
+
+    frame = attach_top12_confidence_columns(trifecta_df, probability_col=probability_col)
+    strategy_names = [f"top{int(top_n)}" for top_n in top_ns] + [
+        f"bottom{int(bottom_n)}" for bottom_n in bottom_ns
+    ]
+    records_by_label: dict[str, dict[str, list[dict[str, float]]]] = {
+        label: {strategy: [] for strategy in strategy_names}
+        for label in ("high", "middle", "low")
+    }
+
+    total_races = 0
+    for _, race_df in frame.groupby("race_id", sort=False):
+        payout_values = pd.to_numeric(race_df[payout_col], errors="coerce").dropna()
+        if payout_values.empty:
+            continue
+        payout = float(payout_values.iloc[0])
+        if payout <= 0.0:
+            continue
+        ordered = race_df.sort_values(probability_col, ascending=False).reset_index(drop=True)
+        actual_positions = np.flatnonzero(ordered["is_actual"].to_numpy(dtype=bool))
+        if len(actual_positions) != 1:
+            continue
+
+        total_races += 1
+        actual_idx = int(actual_positions[0])
+        top_row = ordered.iloc[0]
+        label = top12_confidence_label_key(top_row.get("top12_confidence_label"))
+        score = float(top_row.get("top12_confidence_score", 0.0) or 0.0)
+        for top_n in top_ns:
+            ticket_count = min(int(top_n), len(ordered))
+            hit = float(actual_idx < ticket_count)
+            records_by_label[label][f"top{int(top_n)}"].append(
+                _ticket_recovery_record(
+                    hit=hit,
+                    ticket_count=ticket_count,
+                    payout=payout,
+                    score=score,
+                    stake_per_ticket=stake_per_ticket,
+                )
+            )
+        for bottom_n in bottom_ns:
+            ticket_count = min(int(bottom_n), len(ordered))
+            hit = float(actual_idx >= len(ordered) - ticket_count)
+            records_by_label[label][f"bottom{int(bottom_n)}"].append(
+                _ticket_recovery_record(
+                    hit=hit,
+                    ticket_count=ticket_count,
+                    payout=payout,
+                    score=score,
+                    stake_per_ticket=stake_per_ticket,
+                )
+            )
+
+    if total_races <= 0:
+        return {}
+
+    result: dict[str, dict[str, dict[str, float]]] = {}
+    for label in ("high", "middle", "low"):
+        label_records = {
+            strategy: _summarize_ticket_recovery_records(records, total_races=total_races)
+            for strategy, records in records_by_label[label].items()
+            if records
+        }
+        if label_records:
+            result[label] = label_records
+    return result
+
+
+def compute_variable_ticket_recovery_metrics(
+    trifecta_df: pd.DataFrame,
+    probability_col: str = "probability",
+    payout_col: str = "trifecta_payout",
+    stake_per_ticket: float = 100.0,
+) -> dict[str, object]:
+    if trifecta_df.empty or payout_col not in trifecta_df.columns:
+        return {}
+
+    frame = attach_top12_confidence_columns(trifecta_df, probability_col=probability_col)
+    records: list[dict[str, float | str]] = []
+    records_by_decision: dict[str, list[dict[str, float | str]]] = {}
+    for _, race_df in frame.groupby("race_id", sort=False):
+        payout_values = pd.to_numeric(race_df[payout_col], errors="coerce").dropna()
+        if payout_values.empty:
+            continue
+        payout = float(payout_values.iloc[0])
+        if payout <= 0.0:
+            continue
+        ordered = race_df.sort_values(probability_col, ascending=False).reset_index(drop=True)
+        actual_positions = np.flatnonzero(ordered["is_actual"].to_numpy(dtype=bool))
+        if len(actual_positions) != 1:
+            continue
+
+        top_row = ordered.iloc[0]
+        requested_tickets = recommended_ticket_count_from_top12_confidence(top_row.get("top12_confidence_label"))
+        decision = _variable_ticket_decision(requested_tickets)
+        ticket_count = min(requested_tickets, len(ordered))
+        actual_idx = int(actual_positions[0])
+        hit = float(ticket_count > 0 and actual_idx < ticket_count)
+        record = {
+            "decision": decision,
+            "hit": hit,
+            "stake": float(ticket_count) * float(stake_per_ticket),
+            "return": payout * hit,
+            "payout": payout,
+            "score": float(top_row.get("top12_confidence_score", 0.0) or 0.0),
+            "ticket_count": float(ticket_count),
+        }
+        records.append(record)
+        records_by_decision.setdefault(decision, []).append(record)
+
+    if not records:
+        return {}
+
+    return {
+        "summary": _summarize_variable_ticket_records(records),
+        "by_decision": {
+            decision: _summarize_variable_ticket_records(decision_records, total_races=len(records))
+            for decision, decision_records in sorted(records_by_decision.items())
+        },
+        "rule": {
+            "high": "top5",
+            "middle": "top8",
+            "low": "skip",
+        },
+    }
+
+
+def _variable_ticket_decision(ticket_count: int) -> str:
+    count = int(ticket_count)
+    if count == 5:
+        return "top5"
+    if count == 8:
+        return "top8"
+    return "skip"
+
+
+def _ticket_recovery_record(
+    hit: float,
+    ticket_count: int,
+    payout: float,
+    score: float | None = None,
+    stake_per_ticket: float = 100.0,
+) -> dict[str, float]:
+    record = {
+        "hit": float(hit),
+        "stake": float(ticket_count) * float(stake_per_ticket),
+        "return": float(payout) * float(hit),
+        "payout": float(payout),
+        "ticket_count": float(ticket_count),
+    }
+    if score is not None:
+        record["score"] = float(score)
+    return record
+
+
 def _summarize_ticket_recovery_records(
     records: list[dict[str, float]],
     total_races: int | None = None,
@@ -218,6 +419,7 @@ def _summarize_ticket_recovery_records(
     payouts = [record["payout"] for record in records]
     hit_payouts = [record["payout"] for record in records if record["hit"] > 0.0]
     scores = [record["score"] for record in records if "score" in record]
+    ticket_counts = [record["ticket_count"] for record in records if "ticket_count" in record]
     summary = {
         "race_count": float(race_count),
         "race_rate": float(race_count / total_races) if total_races else 1.0,
@@ -230,7 +432,61 @@ def _summarize_ticket_recovery_records(
     }
     if scores:
         summary["mean_score"] = float(np.mean(scores))
+    if ticket_counts:
+        summary["ticket_count"] = float(np.mean(ticket_counts))
     return summary
+
+
+def _summarize_variable_ticket_records(
+    records: list[dict[str, float | str]],
+    total_races: int | None = None,
+) -> dict[str, float]:
+    if not records:
+        return {
+            "race_count": 0.0,
+            "race_rate": 0.0,
+            "purchased_race_count": 0.0,
+            "purchase_rate": 0.0,
+            "average_ticket_count": 0.0,
+            "average_ticket_count_purchased": 0.0,
+            "hit_rate": 0.0,
+            "overall_hit_rate": 0.0,
+            "total_stake": 0.0,
+            "total_return": 0.0,
+            "recovery_rate": 0.0,
+            "mean_payout_all": 0.0,
+            "mean_payout_hit": 0.0,
+            "mean_score": 0.0,
+        }
+
+    race_count = len(records)
+    ticket_counts = np.asarray([float(record["ticket_count"]) for record in records], dtype=float)
+    purchase_mask = ticket_counts > 0.0
+    hits = np.asarray([float(record["hit"]) for record in records], dtype=float)
+    stakes = np.asarray([float(record["stake"]) for record in records], dtype=float)
+    returns = np.asarray([float(record["return"]) for record in records], dtype=float)
+    payouts = np.asarray([float(record["payout"]) for record in records], dtype=float)
+    scores = np.asarray([float(record["score"]) for record in records], dtype=float)
+    purchased_race_count = int(purchase_mask.sum())
+    hit_payouts = payouts[hits > 0.0]
+    total_stake = float(stakes.sum())
+    total_return = float(returns.sum())
+    return {
+        "race_count": float(race_count),
+        "race_rate": float(race_count / total_races) if total_races else 1.0,
+        "purchased_race_count": float(purchased_race_count),
+        "purchase_rate": float(purchased_race_count / race_count) if race_count else 0.0,
+        "average_ticket_count": float(np.mean(ticket_counts)) if race_count else 0.0,
+        "average_ticket_count_purchased": float(np.mean(ticket_counts[purchase_mask])) if purchased_race_count else 0.0,
+        "hit_rate": float(hits[purchase_mask].mean()) if purchased_race_count else 0.0,
+        "overall_hit_rate": float(hits.mean()) if race_count else 0.0,
+        "total_stake": total_stake,
+        "total_return": total_return,
+        "recovery_rate": total_return / total_stake if total_stake else 0.0,
+        "mean_payout_all": float(np.mean(payouts)) if race_count else 0.0,
+        "mean_payout_hit": float(np.mean(hit_payouts)) if len(hit_payouts) else 0.0,
+        "mean_score": float(np.mean(scores)) if race_count else 0.0,
+    }
 
 
 def compute_payout_band_metrics(

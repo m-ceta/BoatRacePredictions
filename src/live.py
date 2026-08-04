@@ -123,6 +123,7 @@ class TodayRacePrediction:
             f"予想着順: 1着: {first}, 2着: {second}, 3着: {third}\n"
             f"予想確立：1着: {format_percent(first_prob)}, 2着: {format_percent(second_prob)}, 3着: {format_percent(third_prob)}",
             f"予想信頼度: {self.confidence_label} ({format_percent(self.confidence_score)})",
+            f"推奨買い点数: {top.get('recommended_ticket_label', '-')} ({int(float(top.get('recommended_ticket_count', 0) or 0))}点)",
             f"3連単予想本命: {top_trifecta}",
             f"3連単予想確率: {format_percent(float(top['probability']))}",
         ]
@@ -140,6 +141,7 @@ class TodayRacePrediction:
                     f"現在オッズ: {float(top_odds['odds']):.1f}倍",
                     f"期待値: {float(top_odds['expected_value']):.2f}",
                     f"Top12信頼スコア: {float(top_odds.get('top12_confidence_score', 0.0)):.1f} ({top_odds.get('top12_confidence_label', '-')})",
+                    f"推奨買い点数: {top_odds.get('recommended_ticket_label', '-')} ({int(float(top_odds.get('recommended_ticket_count', 0) or 0))}点)",
                     f"判定: {top_odds['buy_decision']}",
                 ]
             )

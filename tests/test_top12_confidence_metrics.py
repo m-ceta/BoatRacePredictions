@@ -94,6 +94,37 @@ def test_compute_trifecta_metrics_includes_uniform_ticket_recovery_metrics() -> 
     assert recovery["top8"]["hit_rate"] == 1.0
     assert recovery["top8"]["total_stake"] == 1600.0
     assert recovery["top8"]["total_return"] == 5900.0
+    assert recovery["bottom8"]["hit_rate"] == 0.0
+    assert recovery["bottom8"]["total_stake"] == 1600.0
+    assert recovery["bottom8"]["total_return"] == 0.0
+    assert recovery["bottom6"]["hit_rate"] == 0.0
+    assert recovery["bottom6"]["total_stake"] == 1200.0
+    assert recovery["bottom6"]["total_return"] == 0.0
+
+
+def test_compute_trifecta_metrics_bottom_ticket_recovery_hits_tail_predictions() -> None:
+    rows = []
+    for race_id, actual_index, payout in [
+        ("R1", 115, 12000.0),
+        ("R2", 114, 6000.0),
+        ("R3", 113, 3000.0),
+    ]:
+        probabilities = [float(120 - index) for index in range(120)]
+        total = sum(probabilities)
+        probabilities = [probability / total for probability in probabilities]
+        for row in _race_rows(race_id, actual_index, probabilities):
+            row["trifecta_payout"] = payout
+            rows.append(row)
+
+    metrics = compute_trifecta_metrics(pd.DataFrame(rows))
+
+    recovery = metrics["uniform_ticket_recovery_metrics"]
+    assert recovery["bottom8"]["hit_rate"] == 1.0
+    assert recovery["bottom8"]["total_stake"] == 2400.0
+    assert recovery["bottom8"]["total_return"] == 21000.0
+    assert recovery["bottom6"]["hit_rate"] == 2.0 / 3.0
+    assert recovery["bottom6"]["total_stake"] == 1800.0
+    assert recovery["bottom6"]["total_return"] == 18000.0
 
 
 def test_compute_trifecta_metrics_includes_confidence_recovery_metrics() -> None:
@@ -118,3 +149,50 @@ def test_compute_trifecta_metrics_includes_confidence_recovery_metrics() -> None
     assert recovery["low"]["race_count"] == 1.0
     assert recovery["low"]["hit_rate"] == 0.0
     assert recovery["low"]["total_return"] == 0.0
+
+
+def test_compute_trifecta_metrics_includes_variable_ticket_recovery_metrics() -> None:
+    high_confidence_probs = [0.30] + [0.04] * 11 + [0.002] * 108
+    middle_confidence_probs = [0.08] + [0.025] * 11 + [0.005] * 108
+    low_confidence_probs = [1.0 / 120.0] * 120
+    rows = []
+    for row in _race_rows("R1", 4, high_confidence_probs):
+        row["trifecta_payout"] = 1000.0
+        rows.append(row)
+    for row in _race_rows("R2", 7, middle_confidence_probs):
+        row["trifecta_payout"] = 3000.0
+        rows.append(row)
+    for row in _race_rows("R3", 0, low_confidence_probs):
+        row["trifecta_payout"] = 10000.0
+        rows.append(row)
+
+    metrics = compute_trifecta_metrics(pd.DataFrame(rows))
+
+    variable = metrics["variable_ticket_recovery_metrics"]
+    assert variable["rule"] == {"high": "top5", "middle": "top8", "low": "skip"}
+    summary = variable["summary"]
+    assert summary["race_count"] == 3.0
+    assert summary["purchased_race_count"] == 2.0
+    assert summary["purchase_rate"] == 2.0 / 3.0
+    assert summary["average_ticket_count"] == (5.0 + 8.0) / 3.0
+    assert summary["hit_rate"] == 1.0
+    assert summary["overall_hit_rate"] == 2.0 / 3.0
+    assert summary["total_stake"] == 1300.0
+    assert summary["total_return"] == 4000.0
+    assert summary["recovery_rate"] == 4000.0 / 1300.0
+    assert variable["by_decision"]["skip"]["purchased_race_count"] == 0.0
+    assert variable["by_decision"]["top5"]["hit_rate"] == 1.0
+    assert variable["by_decision"]["top8"]["hit_rate"] == 1.0
+
+    confidence_strategy = metrics["top12_confidence_strategy_recovery_metrics"]
+    assert set(confidence_strategy["high"]) == {"top3", "top5", "top8", "top12", "bottom8", "bottom6"}
+    assert confidence_strategy["high"]["top3"]["hit_rate"] == 0.0
+    assert confidence_strategy["high"]["top5"]["hit_rate"] == 1.0
+    assert confidence_strategy["high"]["top5"]["total_stake"] == 500.0
+    assert confidence_strategy["high"]["top5"]["total_return"] == 1000.0
+    assert confidence_strategy["middle"]["top5"]["hit_rate"] == 0.0
+    assert confidence_strategy["middle"]["top8"]["hit_rate"] == 1.0
+    assert confidence_strategy["middle"]["top8"]["total_stake"] == 800.0
+    assert confidence_strategy["middle"]["top8"]["total_return"] == 3000.0
+    assert confidence_strategy["low"]["top3"]["hit_rate"] == 1.0
+    assert confidence_strategy["low"]["bottom8"]["hit_rate"] == 0.0

@@ -269,6 +269,9 @@ def _format_trifecta_frame(frame):
         ("probability", "予想確率"),
         ("odds", "現在オッズ"),
         ("expected_value", "期待値"),
+        ("top12_confidence_score", "Top12信頼スコア"),
+        ("top12_confidence_label", "Top12信頼"),
+        ("recommended_ticket_label", "推奨点数"),
         ("trifecta_darkhorse_score", "穴度"),
     ]
     formatted = frame.copy()
