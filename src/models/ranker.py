@@ -399,6 +399,8 @@ DEFAULT_ENSEMBLE_SETTINGS = {
     "model_metrics_parallel_workers": 1,
     "max_eval_races": 0,
     "grid_step": 0.10,
+    "max_model_weight": 1.0,
+    "min_nonzero_weight": 0.0,
     "objective": "trifecta_top12_balanced",
     "objective_top12_weight": 0.35,
     "objective_top5_weight": 0.25,
@@ -406,6 +408,11 @@ DEFAULT_ENSEMBLE_SETTINGS = {
     "objective_top1_weight": 0.10,
     "objective_top3_overlap_weight": 0.10,
     "objective_log_loss_weight": 0.05,
+    "cross_validation": {
+        "enabled": False,
+        "folds": 1,
+        "method": "race_id_hash",
+    },
 }
 
 
@@ -564,9 +571,26 @@ def get_ensemble_settings(config: dict | None) -> dict[str, Any]:
     settings["grid_step"] = float(settings.get("grid_step", 0.10))
     if settings["grid_step"] <= 0 or settings["grid_step"] > 1:
         raise ValueError("models.ensemble.grid_step must be in the range (0, 1].")
+    settings["max_model_weight"] = float(settings.get("max_model_weight", 1.0))
+    if settings["max_model_weight"] <= 0 or settings["max_model_weight"] > 1:
+        raise ValueError("models.ensemble.max_model_weight must be in the range (0, 1].")
+    settings["min_nonzero_weight"] = float(settings.get("min_nonzero_weight", 0.0))
+    if settings["min_nonzero_weight"] < 0 or settings["min_nonzero_weight"] > 1:
+        raise ValueError("models.ensemble.min_nonzero_weight must be in the range [0, 1].")
     settings["objective"] = str(settings.get("objective", "trifecta_fast")).strip()
     if settings["objective"] not in ENSEMBLE_OBJECTIVES:
         raise ValueError(f"models.ensemble.objective must be one of {sorted(ENSEMBLE_OBJECTIVES)}.")
+    cv_configured = dict((configured or {}).get("cross_validation", {}) or {})
+    cv_default = DEFAULT_ENSEMBLE_SETTINGS["cross_validation"]
+    cross_validation = {**cv_default, **cv_configured}
+    cross_validation["enabled"] = bool(cross_validation.get("enabled", False))
+    cross_validation["folds"] = max(int(cross_validation.get("folds", 1)), 1)
+    cross_validation["method"] = str(cross_validation.get("method", "race_id_hash")).strip()
+    if cross_validation["method"] != "race_id_hash":
+        raise ValueError("models.ensemble.cross_validation.method must be race_id_hash.")
+    if not cross_validation["enabled"]:
+        cross_validation["folds"] = 1
+    settings["cross_validation"] = cross_validation
     return settings
 
 
@@ -5854,22 +5878,70 @@ def enabled_neural_regression_variant_paths(config: dict, neural_model_path: Pat
     ]
 
 
-def simplex_weight_vectors(model_count: int, steps: int = 20) -> list[tuple[float, ...]]:
+def simplex_weight_vectors(
+    model_count: int,
+    steps: int = 20,
+    max_model_weight: float = 1.0,
+    min_nonzero_weight: float = 0.0,
+) -> list[tuple[float, ...]]:
     if model_count <= 0:
         return []
     if model_count == 1:
         return [(1.0,)]
+    max_weight_step = int(np.floor(float(max_model_weight) * float(steps) + 1e-9))
+    min_nonzero_step = int(np.ceil(float(min_nonzero_weight) * float(steps) - 1e-9))
+    if max_weight_step <= 0:
+        return []
     vectors: list[tuple[float, ...]] = []
 
     def build(prefix: list[int], remaining: int, slots: int) -> None:
         if slots == 1:
-            vectors.append(tuple([*prefix, remaining]))
+            if remaining <= max_weight_step and (remaining == 0 or remaining >= min_nonzero_step):
+                vectors.append(tuple([*prefix, remaining]))
             return
-        for value in range(remaining + 1):
+        for value in range(min(remaining, max_weight_step) + 1):
+            if value > 0 and value < min_nonzero_step:
+                continue
             build([*prefix, value], remaining - value, slots - 1)
 
     build([], int(steps), model_count)
     return [tuple(float(value) / float(steps) for value in vector) for vector in vectors]
+
+
+def _stable_race_fold(race_id: Any, folds: int) -> int:
+    digest = hashlib.blake2b(str(race_id).encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, byteorder="big", signed=False) % max(int(folds), 1)
+
+
+def _split_base_by_race_hash(base: pd.DataFrame, folds: int) -> list[pd.DataFrame]:
+    if folds <= 1 or base.empty or "race_id" not in base.columns:
+        return [base]
+    race_ids = base["race_id"].drop_duplicates().tolist()
+    fold_ids = {race_id: _stable_race_fold(race_id, folds) for race_id in race_ids}
+    parts: list[pd.DataFrame] = []
+    for fold in range(folds):
+        selected = {race_id for race_id, fold_id in fold_ids.items() if fold_id == fold}
+        if not selected:
+            continue
+        parts.append(base[base["race_id"].isin(selected)].copy())
+    return parts or [base]
+
+
+def _weighted_average_metrics(metrics_by_fold: list[dict[str, float]]) -> dict[str, float]:
+    if not metrics_by_fold:
+        return {}
+    total_races = sum(float(metrics.get("race_count", 0.0)) for metrics in metrics_by_fold)
+    averaged: dict[str, float] = {"race_count": float(total_races)}
+    keys = set().union(*(metrics.keys() for metrics in metrics_by_fold))
+    for key in keys:
+        if key == "race_count":
+            continue
+        numerator = sum(
+            float(metrics.get(key, 0.0)) * float(metrics.get("race_count", 0.0))
+            for metrics in metrics_by_fold
+        )
+        averaged[key] = numerator / total_races if total_races > 0 else 0.0
+    return averaged
 
 
 TRIFECTA_FAST_PERMUTATIONS = np.asarray(list(itertools.permutations(range(6), 3)), dtype=np.int16)
@@ -6027,13 +6099,29 @@ def optimize_ensemble_weights(
     objective_name = str(settings.get("objective", "trifecta_fast"))
     grid_step = float(settings.get("grid_step", 0.10))
     grid_steps = max(int(round(1.0 / grid_step)), 1)
-    candidate_vectors = simplex_weight_vectors(len(model_names), steps=grid_steps)
+    max_model_weight = float(settings.get("max_model_weight", 1.0))
+    min_nonzero_weight = float(settings.get("min_nonzero_weight", 0.0))
+    candidate_vectors = simplex_weight_vectors(
+        len(model_names),
+        steps=grid_steps,
+        max_model_weight=max_model_weight,
+        min_nonzero_weight=min_nonzero_weight,
+    )
+    if not candidate_vectors:
+        raise ValueError(
+            "No ensemble weight candidates generated. "
+            "Relax models.ensemble.max_model_weight or models.ensemble.min_nonzero_weight."
+        )
+    cross_validation = dict(settings.get("cross_validation", {}) or {})
+    cv_folds_requested = int(cross_validation.get("folds", 1)) if bool(cross_validation.get("enabled", False)) else 1
     workers = min(int(settings.get("parallel_workers", 1)), len(candidate_vectors))
     _emit_progress(
         progress_callback,
         "ensemble weight search: "
         f"models={len(model_names)}, races={eval_races}, candidates={len(candidate_vectors)}, "
-        f"workers={workers}, objective={objective_name}, grid_step={grid_step:.4g}",
+        f"workers={workers}, objective={objective_name}, grid_step={grid_step:.4g}, "
+        f"max_model_weight={max_model_weight:.4g}, min_nonzero_weight={min_nonzero_weight:.4g}, "
+        f"cv_folds={cv_folds_requested}",
     )
     score_by_model = {
         model_name: score_frame(model, model_name, valid_df, feature_columns, categorical_columns)
@@ -6048,30 +6136,46 @@ def optimize_ensemble_weights(
     best_metrics: dict[str, float] | None = None
     best_objective = float("-inf")
     base = score_by_model[model_names[0]][["race_id", "lane", "finish_position"]].copy()
-    fast_context = build_fast_trifecta_eval_context(base)
+    fold_bases = _split_base_by_race_hash(base, cv_folds_requested)
+    fast_contexts = [build_fast_trifecta_eval_context(fold_base) for fold_base in fold_bases]
     use_fast_trifecta = (
         objective_name in {"trifecta_fast", "trifecta_top12_balanced", "trifecta_top12_simple"}
-        and int(fast_context.get("race_count", 0)) > 0
+        and all(int(fast_context.get("race_count", 0)) > 0 for fast_context in fast_contexts)
     )
+    cv_folds_used = len(fold_bases)
+    fast_eval_races = sum(int(fast_context.get("race_count", 0)) for fast_context in fast_contexts)
 
     def evaluate_weight_values(weight_values: tuple[float, ...]) -> tuple[float, dict[str, float], dict[str, float]]:
+        objectives: list[float] = []
+        metrics_by_fold: list[dict[str, float]] = []
         if use_fast_trifecta:
-            return evaluate_fast_trifecta_ensemble_candidate(
-                score_arrays,
-                model_names,
-                weight_values,
-                fast_context,
-                settings,
-            )
-        candidate_weights = dict(zip(model_names, weight_values, strict=True))
-        scored = base.copy()
-        scored["score"] = np.zeros(len(base), dtype=float)
-        for model_name, model_weight in candidate_weights.items():
-            scored["score"] += float(model_weight) * score_arrays[model_name]
-        scored["pred_rank"] = scored.groupby("race_id")["score"].rank(ascending=False, method="first")
-        metrics = summarize_rank_metrics(scored)
-        objective = metrics["top1_accuracy"] + 0.1 * metrics["avg_top3_overlap"]
-        return float(objective), {name: float(weight) for name, weight in candidate_weights.items()}, metrics
+            for fast_context in fast_contexts:
+                objective, candidate_weights, metrics = evaluate_fast_trifecta_ensemble_candidate(
+                    score_arrays,
+                    model_names,
+                    weight_values,
+                    fast_context,
+                    settings,
+                )
+                objectives.append(float(objective))
+                metrics_by_fold.append(metrics)
+        else:
+            candidate_weights = dict(zip(model_names, weight_values, strict=True))
+            for fold_base in fold_bases:
+                row_indices = fold_base.index.to_numpy(dtype=np.int64)
+                scored = fold_base.copy()
+                scored["score"] = np.zeros(len(fold_base), dtype=float)
+                for model_name, model_weight in candidate_weights.items():
+                    scored["score"] += float(model_weight) * score_arrays[model_name][row_indices]
+                scored["pred_rank"] = scored.groupby("race_id")["score"].rank(ascending=False, method="first")
+                metrics = summarize_rank_metrics(scored)
+                objective = metrics["top1_accuracy"] + 0.1 * metrics["avg_top3_overlap"]
+                objectives.append(float(objective))
+                metrics_by_fold.append(metrics)
+        averaged_metrics = _weighted_average_metrics(metrics_by_fold)
+        averaged_objective = float(np.mean(objectives)) if objectives else float("-inf")
+        averaged_metrics["cv_fold_count"] = float(cv_folds_used)
+        return averaged_objective, {name: float(weight) for name, weight in zip(model_names, weight_values, strict=True)}, averaged_metrics
 
     if workers <= 1 or len(candidate_vectors) <= 1:
         evaluated = (evaluate_weight_values(weight_values) for weight_values in candidate_vectors)
@@ -6111,8 +6215,11 @@ def optimize_ensemble_weights(
         "validation_candidate_count": float(len(candidate_vectors)),
         "validation_parallel_workers": float(workers),
         "validation_grid_step": float(grid_step),
+        "validation_max_model_weight": float(max_model_weight),
+        "validation_min_nonzero_weight": float(min_nonzero_weight),
+        "validation_cv_folds": float(cv_folds_used),
         "validation_objective_name": objective_name,
-        "validation_fast_trifecta_races": float(fast_context.get("race_count", 0)),
+        "validation_fast_trifecta_races": float(fast_eval_races),
     }
 
 
