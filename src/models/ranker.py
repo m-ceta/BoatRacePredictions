@@ -3244,7 +3244,7 @@ def apply_prediction_time_measurement_proxies(df: pd.DataFrame) -> pd.DataFrame:
         ],
     )
     if "race_id" in frame.columns and "lane" in frame.columns:
-        frame = add_race_relative_features(drop_race_relative_features(frame))
+        frame = add_race_relative_features(drop_race_relative_features(frame, preserve_missing_sources=True))
     return frame
 
 

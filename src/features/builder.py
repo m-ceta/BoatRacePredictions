@@ -352,17 +352,35 @@ def add_race_relative_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def drop_race_relative_features(df: pd.DataFrame) -> pd.DataFrame:
+def drop_race_relative_features(df: pd.DataFrame, preserve_missing_sources: bool = False) -> pd.DataFrame:
     """Remove derived race-relative columns before rebuilding them from proxy values."""
     drop_columns = [
         column
         for column in df.columns
-        if column in RACE_RELATIVE_GENERATED_EXACT_COLUMNS
-        or any(column.endswith(suffix) for suffix in RACE_RELATIVE_GENERATED_SUFFIXES)
+        if _should_drop_race_relative_feature(column, df.columns, preserve_missing_sources)
     ]
     if not drop_columns:
         return df
     return df.drop(columns=drop_columns)
+
+
+def _should_drop_race_relative_feature(
+    column: str,
+    available_columns: pd.Index | list[str],
+    preserve_missing_sources: bool,
+) -> bool:
+    if column in RACE_RELATIVE_GENERATED_EXACT_COLUMNS:
+        return True
+    matched_suffix = next(
+        (suffix for suffix in sorted(RACE_RELATIVE_GENERATED_SUFFIXES, key=len, reverse=True) if column.endswith(suffix)),
+        None,
+    )
+    if matched_suffix is None:
+        return False
+    if not preserve_missing_sources:
+        return True
+    source_column = column[: -len(matched_suffix)]
+    return source_column in available_columns
 
 
 def add_measurement_relative_features(df: pd.DataFrame, race_groups: pd.core.groupby.DataFrameGroupBy) -> pd.DataFrame:
