@@ -71,3 +71,50 @@ def test_compute_trifecta_metrics_includes_payout_band_metrics() -> None:
     assert payout_metrics["gte_10000_lt_50000"]["top12_hit_rate"] == 0.0
     assert payout_metrics["gte_50000_lt_100000"]["top12_hit_rate"] == 1.0
     assert payout_metrics["gte_100000"]["top12_hit_rate"] == 0.0
+
+
+def test_compute_trifecta_metrics_includes_uniform_ticket_recovery_metrics() -> None:
+    rows = []
+    for race_id, actual_index, payout in [
+        ("R1", 2, 900.0),
+        ("R2", 6, 5000.0),
+    ]:
+        probabilities = [1.0 / 120.0] * 120
+        for row in _race_rows(race_id, actual_index, probabilities):
+            row["trifecta_payout"] = payout
+            rows.append(row)
+
+    metrics = compute_trifecta_metrics(pd.DataFrame(rows))
+
+    recovery = metrics["uniform_ticket_recovery_metrics"]
+    assert recovery["top3"]["hit_rate"] == 0.5
+    assert recovery["top3"]["total_stake"] == 600.0
+    assert recovery["top3"]["total_return"] == 900.0
+    assert recovery["top3"]["recovery_rate"] == 1.5
+    assert recovery["top8"]["hit_rate"] == 1.0
+    assert recovery["top8"]["total_stake"] == 1600.0
+    assert recovery["top8"]["total_return"] == 5900.0
+
+
+def test_compute_trifecta_metrics_includes_confidence_recovery_metrics() -> None:
+    high_confidence_probs = [0.30] + [0.04] * 11 + [0.002] * 108
+    low_confidence_probs = [1.0 / 120.0] * 120
+    rows = []
+    for row in _race_rows("R1", 3, high_confidence_probs):
+        row["trifecta_payout"] = 1200.0
+        rows.append(row)
+    for row in _race_rows("R2", 30, low_confidence_probs):
+        row["trifecta_payout"] = 5000.0
+        rows.append(row)
+
+    metrics = compute_trifecta_metrics(pd.DataFrame(rows))
+
+    recovery = metrics["top12_confidence_recovery_metrics"]
+    assert recovery["high"]["race_count"] == 1.0
+    assert recovery["high"]["hit_rate"] == 1.0
+    assert recovery["high"]["total_stake"] == 1200.0
+    assert recovery["high"]["total_return"] == 1200.0
+    assert recovery["high"]["recovery_rate"] == 1.0
+    assert recovery["low"]["race_count"] == 1.0
+    assert recovery["low"]["hit_rate"] == 0.0
+    assert recovery["low"]["total_return"] == 0.0

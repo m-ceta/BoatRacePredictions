@@ -1723,6 +1723,20 @@ def _evaluate_fast_v1_trifecta_metrics_from_ranked(
     )
     if payout_band_metrics:
         metrics["payout_band_metrics"] = payout_band_metrics
+    uniform_recovery_metrics = _fast_uniform_ticket_recovery_metrics(
+        prob_matrix,
+        actual_array,
+        np.asarray(trifecta_payouts, dtype=float),
+    )
+    if uniform_recovery_metrics:
+        metrics["uniform_ticket_recovery_metrics"] = uniform_recovery_metrics
+    confidence_recovery_metrics = _fast_top12_confidence_recovery_metrics(
+        prob_matrix,
+        actual_array,
+        np.asarray(trifecta_payouts, dtype=float),
+    )
+    if confidence_recovery_metrics:
+        metrics["top12_confidence_recovery_metrics"] = confidence_recovery_metrics
 
     scenario_min_races = int(weights.get("scenario_metric_min_races", DEFAULT_PHASE3_SETTINGS["evaluation"]["scenario_min_races"]))
     scenario_metrics: dict[str, Any] = {}
@@ -1886,6 +1900,122 @@ def _fast_payout_band_metrics(
             "top12_hit_rate": float(np.mean(actual_ranks[mask] < 12)),
             "log_loss": float(np.mean(-np.log(actual_probabilities[mask]))),
             "mean_payout": float(np.mean(valid_payouts[mask])),
+        }
+    return metrics
+
+
+def _fast_uniform_ticket_recovery_metrics(
+    prob_matrix: np.ndarray,
+    actual_indices: np.ndarray,
+    trifecta_payouts: np.ndarray,
+    top_ns: tuple[int, ...] = (3, 5, 8, 12),
+    stake_per_ticket: float = 100.0,
+) -> dict[str, Any]:
+    if prob_matrix.size == 0 or len(actual_indices) == 0 or len(trifecta_payouts) != len(actual_indices):
+        return {}
+    valid_mask = (
+        (actual_indices >= 0)
+        & (actual_indices < prob_matrix.shape[1])
+        & np.isfinite(trifecta_payouts)
+        & (trifecta_payouts > 0.0)
+    )
+    if not bool(valid_mask.any()):
+        return {}
+
+    valid_probs = prob_matrix[valid_mask]
+    valid_actual = actual_indices[valid_mask].astype(int)
+    valid_payouts = trifecta_payouts[valid_mask].astype(float)
+    order = np.argsort(-valid_probs, axis=1, kind="mergesort")
+    positions = np.empty_like(order)
+    positions[np.arange(len(order))[:, None], order] = np.arange(order.shape[1], dtype=int)
+    actual_ranks = positions[np.arange(len(valid_actual)), valid_actual]
+
+    metrics: dict[str, Any] = {}
+    for top_n in top_ns:
+        ticket_count = min(int(top_n), valid_probs.shape[1])
+        hits = actual_ranks < ticket_count
+        total_stake = float(len(valid_actual) * ticket_count * float(stake_per_ticket))
+        total_return = float(np.sum(np.where(hits, valid_payouts, 0.0)))
+        hit_payouts = valid_payouts[hits]
+        metrics[f"top{top_n}"] = {
+            "race_count": float(len(valid_actual)),
+            "race_rate": 1.0,
+            "ticket_count": float(ticket_count),
+            "hit_rate": float(np.mean(hits)),
+            "total_stake": total_stake,
+            "total_return": total_return,
+            "recovery_rate": total_return / total_stake if total_stake else 0.0,
+            "mean_payout_all": float(np.mean(valid_payouts)),
+            "mean_payout_hit": float(np.mean(hit_payouts)) if len(hit_payouts) else 0.0,
+        }
+    return metrics
+
+
+def _fast_top12_confidence_recovery_metrics(
+    prob_matrix: np.ndarray,
+    actual_indices: np.ndarray,
+    trifecta_payouts: np.ndarray,
+    stake_per_ticket: float = 100.0,
+) -> dict[str, Any]:
+    if prob_matrix.size == 0 or len(actual_indices) == 0 or len(trifecta_payouts) != len(actual_indices):
+        return {}
+    valid_mask = (
+        (actual_indices >= 0)
+        & (actual_indices < prob_matrix.shape[1])
+        & np.isfinite(trifecta_payouts)
+        & (trifecta_payouts > 0.0)
+    )
+    if not bool(valid_mask.any()):
+        return {}
+
+    valid_probs = prob_matrix[valid_mask]
+    valid_actual = actual_indices[valid_mask].astype(int)
+    valid_payouts = trifecta_payouts[valid_mask].astype(float)
+    order = np.argsort(-valid_probs, axis=1, kind="mergesort")
+    positions = np.empty_like(order)
+    positions[np.arange(len(order))[:, None], order] = np.arange(order.shape[1], dtype=int)
+    actual_ranks = positions[np.arange(len(valid_actual)), valid_actual]
+    sorted_probs = np.take_along_axis(valid_probs, order, axis=1)
+    top12_mass = sorted_probs[:, :12].sum(axis=1)
+    top5_mass = sorted_probs[:, :5].sum(axis=1)
+    top1_top2_gap = sorted_probs[:, 0] - sorted_probs[:, 1]
+    top12_margin = sorted_probs[:, 11] - sorted_probs[:, 12]
+    clipped = np.clip(sorted_probs, 1e-12, 1.0)
+    entropy = -np.sum(clipped * np.log(clipped), axis=1)
+    max_entropy = float(np.log(sorted_probs.shape[1])) if sorted_probs.shape[1] > 1 else 1.0
+    concentration = 1.0 - np.clip(entropy / max_entropy, 0.0, 1.0)
+    scores = (
+        0.45 * np.clip((top12_mass - 0.10) / 0.45, 0.0, 1.0)
+        + 0.20 * np.clip((top5_mass - 0.04) / 0.25, 0.0, 1.0)
+        + 0.15 * np.clip(top1_top2_gap / 0.06, 0.0, 1.0)
+        + 0.10 * np.clip(top12_margin / 0.01, 0.0, 1.0)
+        + 0.10 * np.clip(concentration / 0.25, 0.0, 1.0)
+    ) * 100.0
+    labels = np.where(scores >= 75.0, "high", np.where(scores >= 60.0, "middle", "low"))
+    top12_hits = actual_ranks < 12
+    ticket_count = min(12, valid_probs.shape[1])
+    stake_per_race = float(ticket_count) * float(stake_per_ticket)
+
+    metrics: dict[str, Any] = {}
+    for label in ("high", "middle", "low"):
+        mask = labels == label
+        if not bool(mask.any()):
+            continue
+        hit_payouts = valid_payouts[mask & top12_hits]
+        total_stake = float(mask.sum()) * stake_per_race
+        total_return = float(np.sum(np.where(top12_hits[mask], valid_payouts[mask], 0.0)))
+        metrics[label] = {
+            "race_count": float(mask.sum()),
+            "race_rate": float(mask.sum() / len(valid_actual)) if len(valid_actual) else 0.0,
+            "ticket_count": float(ticket_count),
+            "top12_hit_rate": float(np.mean(top12_hits[mask])),
+            "hit_rate": float(np.mean(top12_hits[mask])),
+            "total_stake": total_stake,
+            "total_return": total_return,
+            "recovery_rate": total_return / total_stake if total_stake else 0.0,
+            "mean_score": float(np.mean(scores[mask])),
+            "mean_payout_all": float(np.mean(valid_payouts[mask])),
+            "mean_payout_hit": float(np.mean(hit_payouts)) if len(hit_payouts) else 0.0,
         }
     return metrics
 
