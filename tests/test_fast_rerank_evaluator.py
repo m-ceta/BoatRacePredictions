@@ -126,8 +126,11 @@ def test_fast_confidence_strategy_recovery_metrics_include_all_ticket_styles() -
     assert set(metrics["high"]) == {"top3", "top5", "top8", "top12", "bottom8", "bottom6"}
     assert metrics["high"]["top3"]["hit_rate"] == 0.0
     assert metrics["high"]["top5"]["hit_rate"] == 1.0
+    assert metrics["high"]["bottom8"]["hit_rate"] == 1.0
+    assert metrics["high"]["bottom6"]["hit_rate"] == 0.0
     assert metrics["middle"]["top5"]["hit_rate"] == 0.0
     assert metrics["middle"]["top8"]["hit_rate"] == 1.0
+    assert metrics["middle"]["bottom6"]["hit_rate"] == 1.0
     assert metrics["low"]["top3"]["hit_rate"] == 1.0
     assert metrics["low"]["bottom6"]["hit_rate"] == 0.0
 

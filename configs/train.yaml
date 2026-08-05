@@ -49,13 +49,22 @@ models:
       enabled: true
       folds: 3
       method: race_id_hash
-    objective: trifecta_top12_balanced
-    objective_top12_weight: 0.35
-    objective_top5_weight: 0.25
-    objective_top3_weight: 0.15
+    objective: trifecta_value_balanced
+    objective_top12_weight: 0.25
+    objective_top5_weight: 0.20
+    objective_top3_weight: 0.25
     objective_top1_weight: 0.10
-    objective_top3_overlap_weight: 0.10
+    objective_top3_overlap_weight: 0.00
+    objective_recovery_weight: 0.20
+    objective_value_hit_weight: 0.05
     objective_log_loss_weight: 0.05
+    recovery_score_cap: 0.80
+    min_purchase_rate: 0.10
+    purchase_rate_penalty_weight: 0.20
+    value_rule:
+      high: top3
+      middle: top3
+      low: skip
   lightgbm_variants:
     enabled: true
     parallel_workers: 2
@@ -91,6 +100,24 @@ models:
           payout_weight_50000: 3.0
           payout_weight_100000: 5.0
           random_seed: 42
+      - name: lightgbm_value_recovery_variant
+        params:
+          num_leaves: 31
+          min_data_in_leaf: 120
+          learning_rate: 0.025
+          feature_fraction: 0.65
+          bagging_fraction: 0.75
+          bagging_freq: 1
+          lambda_l1: 1.0
+          lambda_l2: 12.0
+        value_recovery_training:
+          enabled: true
+          payout_weight_under_1000: 0.7
+          payout_weight_1000_5000: 1.0
+          payout_weight_5000_10000: 1.3
+          payout_weight_10000_30000: 1.8
+          payout_weight_30000_50000: 1.2
+          payout_weight_50000_over: 0.6
   lightgbm_seed_ensemble:
     enabled: false
     seeds: [42, 202, 777]

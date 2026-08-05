@@ -117,6 +117,64 @@ def test_upset_variant_config_applies_defaults() -> None:
     assert variant["upset_training"]["control_ratio"] == 3
 
 
+def test_value_recovery_variant_config_applies_defaults() -> None:
+    config = {
+        "models": {
+            "lightgbm_variants": {
+                "enabled": True,
+                "variants": [
+                    {
+                        "name": "lightgbm_value_recovery_variant",
+                        "value_recovery_training": {
+                            "enabled": True,
+                            "payout_weight_10000_30000": 2.0,
+                        },
+                    }
+                ],
+            }
+        }
+    }
+
+    variant = ranker.get_enabled_lightgbm_variants(config)[0]
+
+    assert variant["value_recovery_training"]["enabled"] is True
+    assert variant["value_recovery_training"]["payout_weight_10000_30000"] == 2.0
+    assert variant["value_recovery_training"]["payout_weight_under_1000"] == 0.7
+    assert variant["value_recovery_training"]["payout_weight_50000_over"] == 0.6
+
+
+def test_value_recovery_variant_training_frame_weights_payout_bands() -> None:
+    rows = []
+    payouts = {
+        "P0": 800.0,
+        "P1": 3000.0,
+        "P2": 8000.0,
+        "P3": 20000.0,
+        "P4": 40000.0,
+        "P5": 60000.0,
+    }
+    for race_id, payout in payouts.items():
+        for lane in range(1, 7):
+            rows.append({"race_id": race_id, "lane": lane, "trifecta_payout": payout})
+    train_df = pd.DataFrame(rows)
+
+    weighted = ranker.build_value_recovery_variant_training_frame(
+        train_df,
+        ranker.DEFAULT_VALUE_RECOVERY_TRAINING_SETTINGS,
+    )
+    race_weights = weighted.drop_duplicates("race_id").set_index("race_id")[
+        ranker.VALUE_RECOVERY_TRAINING_WEIGHT_COLUMN
+    ]
+
+    assert race_weights.loc["P0"] == pytest.approx(0.7)
+    assert race_weights.loc["P1"] == pytest.approx(1.0)
+    assert race_weights.loc["P2"] == pytest.approx(1.3)
+    assert race_weights.loc["P3"] == pytest.approx(1.8)
+    assert race_weights.loc["P4"] == pytest.approx(1.2)
+    assert race_weights.loc["P5"] == pytest.approx(0.6)
+    assert weighted.groupby("race_id")[ranker.VALUE_RECOVERY_TRAINING_WEIGHT_COLUMN].nunique().eq(1).all()
+
+
 def test_select_upset_history_races_adds_matched_controls_and_weights() -> None:
     rows = []
     race_specs = [
@@ -619,6 +677,52 @@ def test_ensemble_weight_optimization_uses_fast_trifecta_objective(monkeypatch) 
     assert weights["validation_top12_hit_rate"] == 1.0
     assert weights["validation_top5_hit_rate"] == 1.0
     assert weights["validation_log_loss"] > 0.0
+
+
+def test_ensemble_weight_optimization_uses_value_balanced_objective(monkeypatch) -> None:
+    valid_df = pd.DataFrame(
+        {
+            "race_id": ["R1"] * 6,
+            "lane": [1, 2, 3, 4, 5, 6],
+            "finish_position": [1, 2, 3, 4, 5, 6],
+            "trifecta_payout": [12000.0] * 6,
+        }
+    )
+
+    def fake_score_frame(model, model_type, df, feature_columns, categorical_columns):
+        frame = valid_df.copy()
+        frame["score_probability_like"] = [10.0, 5.0, 4.0, 0.0, -1.0, -2.0]
+        return frame
+
+    monkeypatch.setattr(ranker, "score_frame", fake_score_frame)
+    config = {
+        "models": {
+            "ensemble": {
+                "grid_step": 0.50,
+                "objective": "trifecta_value_balanced",
+                "parallel_workers": 1,
+                "value_rule": {"high": "top3", "middle": "top3", "low": "skip"},
+            }
+        }
+    }
+
+    weights = ranker.optimize_ensemble_weights(
+        {
+            "lightgbm": object(),
+            "lightgbm_value_recovery_variant": object(),
+        },
+        valid_df,
+        feature_columns=[],
+        categorical_columns=[],
+        config=config,
+    )
+
+    assert weights["validation_objective_name"] == "trifecta_value_balanced"
+    assert weights["validation_fast_trifecta_races"] == 1.0
+    assert weights["validation_value_rule_purchase_rate"] == 1.0
+    assert weights["validation_value_rule_hit_rate"] == 1.0
+    assert weights["validation_value_rule_recovery_rate"] == pytest.approx(40.0)
+    assert weights["validation_normalized_recovery_score"] == 1.0
 
 
 def test_trifecta_v1_model_metrics_include_ensemble_and_individual_models(monkeypatch) -> None:

@@ -167,8 +167,10 @@ def compute_uniform_ticket_recovery_metrics(
             )
         for bottom_n in bottom_ns:
             ticket_count = min(int(bottom_n), len(ordered))
+            candidate_pool = min(12, len(ordered))
+            bottom_start = max(candidate_pool - ticket_count, 0)
             stake = float(ticket_count) * float(stake_per_ticket)
-            hit = float(actual_idx >= len(ordered) - ticket_count)
+            hit = float(bottom_start <= actual_idx < candidate_pool)
             strategy_records[f"bottom{int(bottom_n)}"].append(
                 {
                     "hit": hit,
@@ -283,7 +285,9 @@ def compute_top12_confidence_strategy_recovery_metrics(
             )
         for bottom_n in bottom_ns:
             ticket_count = min(int(bottom_n), len(ordered))
-            hit = float(actual_idx >= len(ordered) - ticket_count)
+            candidate_pool = min(12, len(ordered))
+            bottom_start = max(candidate_pool - ticket_count, 0)
+            hit = float(bottom_start <= actual_idx < candidate_pool)
             records_by_label[label][f"bottom{int(bottom_n)}"].append(
                 _ticket_recovery_record(
                     hit=hit,
