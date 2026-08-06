@@ -40,7 +40,7 @@ models:
       od_type: Iter
       od_wait: 30
   ensemble:
-    parallel_workers: 8
+    parallel_workers: 4
     model_metrics_parallel_workers: 2
     grid_step: 0.10
     max_model_weight: 0.50
@@ -274,7 +274,7 @@ models:
           patience: 5
           device: auto
           predict_device: cpu
-  
+
   artifacts:
     catboost_model_path: artifacts/catboost_ranker.cbm
     lightgbm_model_path: artifacts/lightgbm_ranker.txt
