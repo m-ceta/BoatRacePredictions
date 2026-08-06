@@ -210,6 +210,7 @@ def _format_trifecta_frame(frame: pd.DataFrame) -> pd.DataFrame:
         ("probability", "予想確率"),
         ("odds", "現在オッズ"),
         ("expected_value", "期待値"),
+        ("recommended_bet_amount", "推奨購入金額"),
         ("top12_confidence_score", "Top12信頼スコア"),
         ("top12_confidence_label", "Top12信頼"),
         ("recommended_ticket_label", "推奨点数"),

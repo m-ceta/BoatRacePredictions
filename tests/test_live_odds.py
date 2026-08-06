@@ -35,10 +35,14 @@ def test_attach_odds_and_value_marks_buy_when_ev_and_odds_thresholds_pass() -> N
     assert "top12_confidence_label" in enriched.columns
     assert enriched.loc[enriched["trifecta"] == "1-2-3", "expected_value"].iloc[0] == pytest.approx(1.44)
     assert enriched.loc[enriched["trifecta"] == "1-2-3", "top12_confidence_score"].iloc[0] == pytest.approx(72.0)
+    assert enriched.loc[enriched["trifecta"] == "1-2-3", "recommended_bet_amount"].iloc[0] == 200
     assert enriched.loc[enriched["trifecta"] == "1-2-3", "buy_decision"].iloc[0] == "買い"
     assert enriched.loc[enriched["trifecta"] == "1-3-2", "buy_decision"].iloc[0] == "見送り"
+    assert enriched.loc[enriched["trifecta"] == "1-3-2", "recommended_bet_amount"].iloc[0] == 0
     assert enriched.loc[enriched["trifecta"] == "2-1-3", "buy_decision"].iloc[0] == "見送り"
+    assert enriched.loc[enriched["trifecta"] == "2-1-3", "recommended_bet_amount"].iloc[0] == 0
     assert enriched.loc[enriched["trifecta"] == "2-3-1", "buy_decision"].iloc[0] == "買い"
+    assert enriched.loc[enriched["trifecta"] == "2-3-1", "recommended_bet_amount"].iloc[0] == 100
 
 
 def test_select_buy_candidates_returns_only_buy_rows_when_available() -> None:
@@ -63,3 +67,45 @@ def test_select_buy_candidates_returns_only_buy_rows_when_available() -> None:
     candidates = select_buy_candidates(attach_odds_and_value(trifecta, odds))
 
     assert candidates["trifecta"].tolist() == ["1-2-3", "2-3-1"]
+
+
+def test_attach_odds_and_value_keeps_top12_outside_ticket_at_zero_yen() -> None:
+    rows = []
+    odds = {}
+    trifectas = [
+        "1-2-3",
+        "1-2-4",
+        "1-2-5",
+        "1-2-6",
+        "1-3-2",
+        "1-3-4",
+        "1-3-5",
+        "1-3-6",
+        "1-4-2",
+        "1-4-3",
+        "1-4-5",
+        "1-4-6",
+        "2-1-3",
+    ]
+    for index, trifecta in enumerate(trifectas):
+        probability = 0.20 - (index * 0.01)
+        rows.append(
+            {
+                "race_id": "R1",
+                "trifecta": trifecta,
+                "probability": probability,
+                "trifecta_darkhorse_score": 0.1,
+                "scenario_line_fit_score": 0.1,
+                "top12_confidence_score": 70.0,
+                "top12_confidence_label": "中",
+            }
+        )
+        odds[trifecta] = 30.0
+
+    enriched = attach_odds_and_value(pd.DataFrame(rows), odds)
+    last_trifecta = rows[-1]["trifecta"]
+
+    assert enriched.loc[enriched["trifecta"] == last_trifecta, "prediction_rank"].iloc[0] == 13
+    assert enriched.loc[enriched["trifecta"] == last_trifecta, "expected_value"].iloc[0] > 1.0
+    assert enriched.loc[enriched["trifecta"] == last_trifecta, "recommended_bet_amount"].iloc[0] == 0
+    assert enriched.loc[enriched["trifecta"] == last_trifecta, "buy_decision"].iloc[0] == "見送り"
