@@ -3,7 +3,11 @@ from __future__ import annotations
 import pandas as pd
 
 from src.evaluation.metrics import compute_trifecta_metrics
-from src.top12_confidence import attach_top12_confidence_columns
+from src.top12_confidence import (
+    apply_top12_probability_adjustment_table,
+    attach_top12_confidence_columns,
+    fit_top12_probability_adjustment_table,
+)
 
 
 def _race_rows(race_id: str, actual_index: int, probabilities: list[float]) -> list[dict[str, object]]:
@@ -28,6 +32,28 @@ def test_attach_top12_confidence_columns_adds_race_level_score() -> None:
     assert "top12_confidence_label" in scored.columns
     assert scored["top12_confidence_score"].nunique() == 1
     assert scored["top12_confidence_label"].iloc[0] == "高"
+
+
+def test_probability_adjustment_table_adjusts_by_confidence_and_rank_band() -> None:
+    rows = []
+    for race_index in range(20):
+        probabilities = [0.10] + [0.03] * 11 + [0.005] * 108
+        rows.extend(_race_rows(f"R{race_index}", 0 if race_index < 4 else 30, probabilities))
+
+    table = fit_top12_probability_adjustment_table(
+        pd.DataFrame(rows),
+        min_samples=1,
+        factor_min=0.1,
+        factor_max=3.0,
+    )
+    scored = attach_top12_confidence_columns(pd.DataFrame(_race_rows("PX", 0, [0.10] + [0.03] * 11 + [0.005] * 108)))
+    adjusted = apply_top12_probability_adjustment_table(scored, table)
+
+    assert "adjusted_probability" in adjusted.columns
+    assert "probability_adjustment_factor" in adjusted.columns
+    top_row = adjusted.sort_values("probability", ascending=False).iloc[0]
+    assert top_row["probability_adjustment_factor"] > 1.0
+    assert top_row["adjusted_probability"] > top_row["probability"]
 
 
 def test_compute_trifecta_metrics_includes_top12_confidence_metrics() -> None:

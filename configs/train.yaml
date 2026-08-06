@@ -285,4 +285,5 @@ models:
     features_path: artifacts/feature_columns.json
     ensemble_weights_path: artifacts/ensemble_weights.json
     trifecta_calibrator_path: artifacts/trifecta_isotonic.joblib
+    probability_adjustment_path: artifacts/probability_adjustment.json
   metrics_path: artifacts/metrics.json

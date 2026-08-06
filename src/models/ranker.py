@@ -70,6 +70,7 @@ from src.odds.expected_value import (
     BUY_MIN_ODDS,
     attach_expected_value_columns,
 )
+from src.top12_confidence import fit_top12_probability_adjustment_table
 
 
 DEFAULT_DROP_COLUMNS = {
@@ -98,6 +99,7 @@ DEFAULT_ARTIFACT_PATHS = {
     "features_path": "artifacts/feature_columns.json",
     "ensemble_weights_path": "artifacts/ensemble_weights.json",
     "trifecta_calibrator_path": "artifacts/trifecta_isotonic.joblib",
+    "probability_adjustment_path": "artifacts/probability_adjustment.json",
     "metrics_path": "artifacts/metrics.json",
     "classifier_dir": "artifacts/classifiers",
     "train_checkpoint_path": "artifacts/train_checkpoint.json",
@@ -962,10 +964,22 @@ def neural_variant_model_path(base_path: Path, variant_name: str) -> Path:
 
 def get_artifact_paths(config: dict) -> dict[str, Path]:
     artifacts = config.get("artifacts", {})
-    return {
+    if not artifacts:
+        artifacts = (config.get("models", {}) or {}).get("artifacts", {})
+    if not artifacts:
+        artifacts = (config.get("model", {}) or {}).get("artifacts", {})
+    paths = {
         name: Path(artifacts.get(name, default_path))
         for name, default_path in DEFAULT_ARTIFACT_PATHS.items()
     }
+    metrics_path = (
+        config.get("metrics_path")
+        or (config.get("models", {}) or {}).get("metrics_path")
+        or (config.get("model", {}) or {}).get("metrics_path")
+    )
+    if metrics_path:
+        paths["metrics_path"] = Path(metrics_path)
+    return paths
 
 
 def cleanup_processed_intermediate_dirs(config: dict) -> list[Path]:
@@ -3595,6 +3609,57 @@ def train_ranker_from_splits(
         mark_train_stage_completed(checkpoint_path, checkpoint, "trifecta_v1_calibrator", {"status": "completed"})
     collect_garbage()
 
+    probability_adjustment_table: dict[str, Any] | None = None
+    if skip_evaluation:
+        progress("skipping probability adjustment table: --skip-evaluation")
+        probability_adjustment_table = fit_top12_probability_adjustment_table(pd.DataFrame())
+        artifacts["probability_adjustment_path"].parent.mkdir(parents=True, exist_ok=True)
+        artifacts["probability_adjustment_path"].write_text(
+            json.dumps(probability_adjustment_table, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        mark_train_stage_completed(
+            checkpoint_path,
+            checkpoint,
+            "probability_adjustment",
+            {"status": "skipped_by_request", "rule_count": 0.0},
+        )
+    elif resume and train_stage_completed(
+        checkpoint,
+        "probability_adjustment",
+        [artifacts["probability_adjustment_path"]],
+    ):
+        progress("skipping probability adjustment table: train checkpoint completed")
+        probability_adjustment_table = json.loads(
+            artifacts["probability_adjustment_path"].read_text(encoding="utf-8")
+        )
+    else:
+        progress("fitting probability adjustment table")
+        probability_adjustment_table = fit_probability_adjustment_table(
+            models,
+            ensemble_weights,
+            trifecta_calibrator,
+            valid_df,
+            feature_columns,
+            categorical_columns,
+            classifier_models=classifier_models,
+        )
+        artifacts["probability_adjustment_path"].parent.mkdir(parents=True, exist_ok=True)
+        artifacts["probability_adjustment_path"].write_text(
+            json.dumps(probability_adjustment_table, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        mark_train_stage_completed(
+            checkpoint_path,
+            checkpoint,
+            "probability_adjustment",
+            {
+                "status": "completed",
+                "rule_count": float(len(probability_adjustment_table.get("rules", []))),
+            },
+        )
+    collect_garbage()
+
     if skip_evaluation:
         progress("skipping trifecta v1 metrics by model: --skip-evaluation")
         trifecta_v1_metrics = {"status": "skipped_by_request"}
@@ -3662,6 +3727,7 @@ def train_ranker_from_splits(
         "ranker_metrics": ranker_metrics,
         "trifecta_v1_metrics": trifecta_v1_metrics,
         "trifecta_v1_model_metrics": trifecta_v1_model_metrics,
+        "probability_adjustment": probability_adjustment_table or {"status": "skipped"},
         "classifier_metrics": classifier_metrics,
         "flow_model_metrics": flow_metrics,
         "staged_model_metrics": staged_metrics,
@@ -6221,6 +6287,12 @@ def load_ensemble_weights(path: Path) -> dict[str, float]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def load_probability_adjustment_table(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def load_trifecta_calibrator(path: Path) -> IsotonicRegression:
     return joblib.load(path)
 
@@ -7097,6 +7169,34 @@ def fit_trifecta_calibrator(
         trifecta["is_actual"].astype(int).to_numpy(dtype=float),
     )
     return calibrator
+
+
+def fit_probability_adjustment_table(
+    models: dict[str, Any],
+    weights: dict[str, float],
+    trifecta_calibrator: IsotonicRegression | None,
+    valid_df: pd.DataFrame,
+    feature_columns: list[str],
+    categorical_columns: list[str],
+    classifier_models: dict[str, lgb.Booster] | None = None,
+) -> dict[str, Any]:
+    calibration_df = apply_prediction_time_measurement_proxies(valid_df)
+    if calibration_df.empty:
+        return fit_top12_probability_adjustment_table(pd.DataFrame())
+    race_probs = build_weighted_lane_probabilities(
+        models,
+        weights,
+        calibration_df,
+        feature_columns,
+        categorical_columns,
+        classifier_models=classifier_models,
+    )
+    trifecta = build_trifecta_prediction_frame(
+        race_probs,
+        trifecta_calibrator=trifecta_calibrator,
+        use_v2=False,
+    )
+    return fit_top12_probability_adjustment_table(trifecta, probability_col="probability", actual_col="is_actual")
 
 
 def fit_model_trifecta_calibrator(

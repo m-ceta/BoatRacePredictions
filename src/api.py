@@ -17,6 +17,7 @@ from src.models.ranker import (
     load_ensemble_weights,
     load_feature_columns,
     load_models,
+    load_probability_adjustment_table,
     load_trifecta_calibrator,
     predict_race_order,
     predict_trifecta_probabilities,
@@ -27,6 +28,7 @@ from src.models.ranker import (
 )
 from src.parsers.bk_parser import parse_entry_file, parse_result_file
 from src.rowdata_sync import RowdataBackfillReport, backfill_rowdata
+from src.top12_confidence import apply_top12_probability_adjustment_table, attach_top12_confidence_columns
 
 if TYPE_CHECKING:
     from src.live import TodayRacePrediction
@@ -39,6 +41,7 @@ class BoatRaceModelBundle:
     feature_columns: list[str]
     ensemble_weights: dict[str, float]
     trifecta_calibrator: Any
+    probability_adjustment_table: dict[str, Any] | None
     classifier_models: dict[str, Any]
 
 
@@ -152,6 +155,7 @@ def load_bundle(config_path: str | Path = Path("configs/train.yaml")) -> BoatRac
         feature_columns=load_feature_columns(artifacts["features_path"]),
         ensemble_weights=load_ensemble_weights(artifacts["ensemble_weights_path"]),
         trifecta_calibrator=load_trifecta_calibrator(artifacts["trifecta_calibrator_path"]),
+        probability_adjustment_table=load_probability_adjustment_table(artifacts["probability_adjustment_path"]),
         classifier_models=load_classifier_artifacts(config),
     )
 
@@ -185,6 +189,21 @@ def predict_trifecta(
         use_v2=False,
         rerank_top_n=None,
     )
+    trifecta = attach_top12_confidence_columns(trifecta)
+    trifecta = apply_top12_probability_adjustment_table(
+        trifecta,
+        bundle.probability_adjustment_table,
+        probability_col="probability",
+        output_col="adjusted_probability",
+    )
+    if "odds" in trifecta.columns and "adjusted_probability" in trifecta.columns:
+        trifecta["expected_value_probability"] = pd.to_numeric(
+            trifecta["adjusted_probability"],
+            errors="coerce",
+        )
+        trifecta["expected_value"] = pd.to_numeric(trifecta["odds"], errors="coerce") * trifecta[
+            "expected_value_probability"
+        ]
     if top_n is None:
         return trifecta
     return (

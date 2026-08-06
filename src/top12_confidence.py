@@ -11,6 +11,11 @@ _LABEL_HIGH = "\u9ad8"
 _LABEL_MIDDLE = "\u4e2d"
 _LABEL_LOW = "\u4f4e"
 
+PROBABILITY_ADJUSTMENT_VERSION = 1
+PROBABILITY_ADJUSTMENT_DEFAULT_MIN_SAMPLES = 300
+PROBABILITY_ADJUSTMENT_DEFAULT_FACTOR_MIN = 0.25
+PROBABILITY_ADJUSTMENT_DEFAULT_FACTOR_MAX = 2.0
+
 
 def attach_top12_confidence_columns(
     trifecta_df: pd.DataFrame,
@@ -127,6 +132,103 @@ def recommended_ticket_label_from_count(ticket_count: int) -> str:
     return "\u898b\u9001\u308a"
 
 
+def fit_top12_probability_adjustment_table(
+    trifecta_df: pd.DataFrame,
+    probability_col: str = "probability",
+    actual_col: str = "is_actual",
+    min_samples: int = PROBABILITY_ADJUSTMENT_DEFAULT_MIN_SAMPLES,
+    factor_min: float = PROBABILITY_ADJUSTMENT_DEFAULT_FACTOR_MIN,
+    factor_max: float = PROBABILITY_ADJUSTMENT_DEFAULT_FACTOR_MAX,
+) -> dict[str, object]:
+    """Fit a conservative table that maps displayed probabilities closer to observed hit rates."""
+    if trifecta_df.empty or probability_col not in trifecta_df.columns or actual_col not in trifecta_df.columns:
+        return _empty_probability_adjustment_table(min_samples, factor_min, factor_max)
+
+    frame = attach_top12_confidence_columns(trifecta_df, probability_col=probability_col)
+    frame = frame.copy()
+    frame["_probability"] = pd.to_numeric(frame[probability_col], errors="coerce").fillna(0.0).clip(lower=0.0)
+    frame["_is_actual"] = pd.to_numeric(frame[actual_col], errors="coerce").fillna(0.0).clip(lower=0.0, upper=1.0)
+    frame["_prediction_rank"] = frame.groupby("race_id")["_probability"].rank(ascending=False, method="first")
+    frame["_rank_band"] = frame["_prediction_rank"].map(_rank_band_from_rank)
+    frame["_confidence_key"] = frame["top12_confidence_label"].map(top12_confidence_label_key)
+
+    rules: list[dict[str, object]] = []
+    for (confidence_key, rank_band), bucket in frame.groupby(["_confidence_key", "_rank_band"], sort=True):
+        sample_count = int(len(bucket))
+        mean_probability = float(bucket["_probability"].mean()) if sample_count else 0.0
+        observed_hit_rate = float(bucket["_is_actual"].mean()) if sample_count else 0.0
+        raw_factor = observed_hit_rate / mean_probability if mean_probability > 0.0 else 1.0
+        shrink = sample_count / (sample_count + max(int(min_samples), 1))
+        factor = 1.0 + (raw_factor - 1.0) * shrink
+        factor = float(np.clip(factor, float(factor_min), float(factor_max)))
+        rules.append(
+            {
+                "confidence_key": str(confidence_key),
+                "rank_band": str(rank_band),
+                "sample_count": float(sample_count),
+                "race_count": float(bucket["race_id"].nunique()) if "race_id" in bucket.columns else 0.0,
+                "mean_predicted_probability": mean_probability,
+                "observed_hit_rate": observed_hit_rate,
+                "raw_factor": float(raw_factor),
+                "factor": factor,
+            }
+        )
+
+    return {
+        "version": PROBABILITY_ADJUSTMENT_VERSION,
+        "probability_col": probability_col,
+        "actual_col": actual_col,
+        "min_samples": int(min_samples),
+        "factor_min": float(factor_min),
+        "factor_max": float(factor_max),
+        "default_factor": 1.0,
+        "rules": rules,
+    }
+
+
+def apply_top12_probability_adjustment_table(
+    trifecta_df: pd.DataFrame,
+    adjustment_table: dict[str, object] | None,
+    probability_col: str = "probability",
+    output_col: str = "adjusted_probability",
+) -> pd.DataFrame:
+    frame = trifecta_df.copy()
+    if frame.empty or probability_col not in frame.columns:
+        return frame
+
+    probability = pd.to_numeric(frame[probability_col], errors="coerce").fillna(0.0).clip(lower=0.0)
+    if not adjustment_table:
+        frame[output_col] = probability
+        frame["probability_adjustment_factor"] = 1.0
+        frame["probability_adjustment_rank_band"] = pd.NA
+        return frame
+
+    if "top12_confidence_label" not in frame.columns:
+        frame = attach_top12_confidence_columns(frame, probability_col=probability_col)
+
+    rank = frame.groupby("race_id")[probability_col].rank(ascending=False, method="first") if "race_id" in frame.columns else probability.rank(ascending=False, method="first")
+    rank_band = rank.map(_rank_band_from_rank)
+    confidence_key = frame.get("top12_confidence_label", pd.Series(_LABEL_LOW, index=frame.index)).map(
+        top12_confidence_label_key
+    )
+
+    factor_lookup = {
+        (str(rule.get("confidence_key")), str(rule.get("rank_band"))): float(rule.get("factor", 1.0))
+        for rule in adjustment_table.get("rules", [])  # type: ignore[union-attr]
+        if isinstance(rule, dict)
+    }
+    default_factor = float(adjustment_table.get("default_factor", 1.0))
+    factors = [
+        factor_lookup.get((str(confidence), str(band)), default_factor)
+        for confidence, band in zip(confidence_key, rank_band, strict=False)
+    ]
+    factor_series = pd.Series(factors, index=frame.index, dtype=float)
+    frame[output_col] = (probability * factor_series).clip(lower=0.0, upper=1.0)
+    frame["probability_adjustment_factor"] = factor_series
+    frame["probability_adjustment_rank_band"] = rank_band
+    return frame
+
+
 def _normalized_entropy(probs: np.ndarray) -> float:
     if len(probs) <= 1:
         return 0.0
@@ -146,6 +248,22 @@ def _clip01(value: float) -> float:
     return float(np.clip(float(value), 0.0, 1.0))
 
 
+def _rank_band_from_rank(rank: object) -> str:
+    try:
+        value = int(float(rank))
+    except (TypeError, ValueError):
+        return "unknown"
+    if value <= 1:
+        return "top1"
+    if value <= 3:
+        return "top2_3"
+    if value <= 6:
+        return "top4_6"
+    if value <= 12:
+        return "top7_12"
+    return "outside_top12"
+
+
 def _empty_top12_confidence() -> dict[str, float | str]:
     return {
         "top12_confidence_score": 0.0,
@@ -157,4 +275,21 @@ def _empty_top12_confidence() -> dict[str, float | str]:
         "top1_top2_probability_gap": 0.0,
         "top12_probability_margin": 0.0,
         "probability_concentration": 0.0,
+    }
+
+
+def _empty_probability_adjustment_table(
+    min_samples: int,
+    factor_min: float,
+    factor_max: float,
+) -> dict[str, object]:
+    return {
+        "version": PROBABILITY_ADJUSTMENT_VERSION,
+        "probability_col": "probability",
+        "actual_col": "is_actual",
+        "min_samples": int(min_samples),
+        "factor_min": float(factor_min),
+        "factor_max": float(factor_max),
+        "default_factor": 1.0,
+        "rules": [],
     }

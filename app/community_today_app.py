@@ -267,6 +267,7 @@ def _format_trifecta_frame(frame):
     columns = [
         ("trifecta", "買い目"),
         ("probability", "予想確率"),
+        ("adjusted_probability", "補正後確率"),
         ("odds", "現在オッズ"),
         ("expected_value", "期待値"),
         ("recommended_bet_amount", "推奨購入金額"),

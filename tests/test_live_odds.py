@@ -69,6 +69,26 @@ def test_select_buy_candidates_returns_only_buy_rows_when_available() -> None:
     assert candidates["trifecta"].tolist() == ["1-2-3", "2-3-1"]
 
 
+def test_attach_odds_and_value_uses_adjusted_probability_for_expected_value() -> None:
+    trifecta = pd.DataFrame(
+        {
+            "race_id": ["R1"],
+            "trifecta": ["1-2-3"],
+            "probability": [0.12],
+            "adjusted_probability": [0.06],
+            "trifecta_darkhorse_score": [0.20],
+            "scenario_line_fit_score": [0.10],
+            "top12_confidence_score": [72.0],
+            "top12_confidence_label": ["中"],
+        }
+    )
+
+    enriched = attach_odds_and_value(trifecta, {"1-2-3": 20.0})
+
+    assert enriched["expected_value_probability"].iloc[0] == pytest.approx(0.06)
+    assert enriched["expected_value"].iloc[0] == pytest.approx(1.2)
+
+
 def test_attach_odds_and_value_keeps_top12_outside_ticket_at_zero_yen() -> None:
     rows = []
     odds = {}

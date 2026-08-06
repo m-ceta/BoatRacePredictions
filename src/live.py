@@ -29,7 +29,7 @@ from src.odds.expected_value import (
     attach_recommended_bet_amount_columns,
 )
 from src.parsers.bk_parser import parse_entry_text
-from src.top12_confidence import attach_top12_confidence_columns
+from src.top12_confidence import apply_top12_probability_adjustment_table, attach_top12_confidence_columns
 from src.today_schedule import (
     choose_default_today_race_no as _choose_default_today_race_no,
     choose_default_today_venue as _choose_default_today_venue,
@@ -141,6 +141,7 @@ class TodayRacePrediction:
                 [
                     f"オッズ評価上位: {top_odds['trifecta']}",
                     f"現在オッズ: {float(top_odds['odds']):.1f}倍",
+                    f"補正後確率: {format_percent(float(top_odds.get('expected_value_probability', top_odds.get('probability', 0.0)) or 0.0))}",
                     f"期待値: {float(top_odds['expected_value']):.2f}",
                     f"推奨購入金額: {int(float(top_odds.get('recommended_bet_amount', 0) or 0))}円",
                     f"Top12信頼スコア: {float(top_odds.get('top12_confidence_score', 0.0)):.1f} ({top_odds.get('top12_confidence_label', '-')})",
@@ -153,6 +154,7 @@ class TodayRacePrediction:
             for row in self.buy_candidates.head(5).itertuples(index=False):
                 lines.append(
                     f"{row.trifecta} | 確率 {format_percent(float(row.probability))} | オッズ {float(row.odds):.1f}倍 | "
+                    f"補正後確率 {format_percent(float(getattr(row, 'expected_value_probability', getattr(row, 'probability', 0.0)) or 0.0))} | "
                     f"期待値 {float(row.expected_value):.2f} | "
                     f"推奨 {int(float(getattr(row, 'recommended_bet_amount', 0) or 0))}円 | "
                     f"Top12信頼 {float(getattr(row, 'top12_confidence_score', 0.0)):.1f} ({getattr(row, 'top12_confidence_label', '-')}) | "
@@ -229,6 +231,12 @@ def predict_today_race(
         rerank_top_n=None,
     )
     trifecta = attach_top12_confidence_columns(trifecta)
+    trifecta = apply_top12_probability_adjustment_table(
+        trifecta,
+        bundle.probability_adjustment_table,
+        probability_col="probability",
+        output_col="adjusted_probability",
+    )
     confidence_score = calculate_prediction_confidence(ranking, trifecta)
     odds = fetch_boatrace_trifecta_odds(target_date, venue_code, int(race_no))
     odds_frame = None
@@ -999,16 +1007,20 @@ def attach_odds_and_value(
         return frame
 
     frame["probability"] = pd.to_numeric(frame["probability"], errors="coerce")
+    value_probability_col = "adjusted_probability" if "adjusted_probability" in frame.columns else "probability"
+    frame[value_probability_col] = pd.to_numeric(frame[value_probability_col], errors="coerce")
     frame["odds"] = pd.to_numeric(frame["odds"], errors="coerce")
     if "race_id" in frame.columns:
         frame["prediction_rank"] = frame.groupby("race_id")["probability"].rank(ascending=False, method="first")
     else:
         frame["prediction_rank"] = frame["probability"].rank(ascending=False, method="first")
     frame["prediction_rank"] = frame["prediction_rank"].astype("Int64")
-    frame["expected_value"] = frame["odds"] * frame["probability"]
+    frame["expected_value_probability"] = frame[value_probability_col]
+    frame["expected_value"] = frame["odds"] * frame["expected_value_probability"]
     frame = attach_darkhorse_odds_context(frame)
     frame = attach_recommended_bet_amount_columns(
         frame,
+        probability_col="expected_value_probability",
         expected_value_threshold=expected_value_threshold,
         min_odds=min_odds,
         top_n=RECOMMENDED_BET_TOP_N,
