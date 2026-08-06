@@ -60,7 +60,7 @@ models:
     objective_top12_payout_weight: 0.08
     objective_log_loss_weight: 0.05
     recovery_score_cap: 0.80
-    top12_payout_score_cap: 5000
+    top12_payout_score_cap: 8000
     min_purchase_rate: 0.10
     purchase_rate_penalty_weight: 0.20
     value_confidence_calibration:
