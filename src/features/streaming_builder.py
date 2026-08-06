@@ -13,7 +13,14 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from src.features.builder import add_current_meet_features, add_race_relative_features
+from src.features.builder import (
+    DECISION_STYLE_FLAG_COLUMNS,
+    DECISION_STYLE_KEYS,
+    add_current_meet_features,
+    add_decision_style_flag_columns,
+    add_flow_probability_features,
+    add_race_relative_features,
+)
 from src.parsers.bk_parser import parse_entry_file, parse_result_file
 
 
@@ -226,6 +233,7 @@ class HistoryCarryovers:
             "finish_position",
             "start_timing",
             "exhibition_time",
+            *DECISION_STYLE_FLAG_COLUMNS,
         ]
         self.racer = _empty_like(base_columns)
         self.venue = _empty_like(base_columns)
@@ -263,18 +271,37 @@ def _apply_group_history_features(
     max_tail: int,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     source_columns = list(
-        {
-            *group_cols,
-            "race_date",
-            "race_no",
-            "is_win",
-            "is_top2",
-            "is_top3",
-            "finish_position",
-            "start_timing",
-            "exhibition_time",
-            "__row_id",
-        }
+        dict.fromkeys(
+            [
+                *group_cols,
+                *(source_col for source_col, _window, _min_periods, _agg in feature_builders.values()),
+                "race_date",
+                "race_no",
+                "is_win",
+                "is_top2",
+                "is_top3",
+                "finish_position",
+                "start_timing",
+                "exhibition_time",
+                "__row_id",
+            ]
+        )
+    )
+    carryover_columns = list(
+        dict.fromkeys(
+            [
+                *group_cols,
+                "race_date",
+                "race_no",
+                "is_win",
+                "is_top2",
+                "is_top3",
+                "finish_position",
+                "start_timing",
+                "exhibition_time",
+                *(source_col for source_col, _window, _min_periods, _agg in feature_builders.values()),
+            ]
+        )
     )
     combined = pd.concat(
         [
@@ -314,19 +341,7 @@ def _apply_group_history_features(
     )
 
     new_carryover = (
-        combined[
-            group_cols
-            + [
-                "race_date",
-                "race_no",
-                "is_win",
-                "is_top2",
-                "is_top3",
-                "finish_position",
-                "start_timing",
-                "exhibition_time",
-            ]
-        ]
+        combined[carryover_columns]
         .groupby(group_cols, group_keys=False, dropna=True)
         .tail(max_tail)
         .reset_index(drop=True)
@@ -339,6 +354,7 @@ def add_racer_history_features_streaming(base_chunk: pd.DataFrame, carryovers: H
         return base_chunk
 
     current = base_chunk.sort_values(["racer_id", "race_date", "race_no"]).copy()
+    current = add_decision_style_flag_columns(current)
     current["__row_id"] = range(len(current))
 
     current["racer_prev_count"] = (
@@ -371,6 +387,10 @@ def add_racer_history_features_streaming(base_chunk: pd.DataFrame, carryovers: H
             "racer_prev_worst_st_30": ("start_timing", 30, 3, "max"),
             "racer_prev_best_finish_5": ("finish_position", 5, 2, "min"),
             "racer_prev_worst_finish_5": ("finish_position", 5, 2, "max"),
+            **{
+                f"racer_prev_{style_key}_rate": (f"decision_style_{style_key}_win", 30, 3, "mean")
+                for style_key in DECISION_STYLE_KEYS
+            },
         },
         max_tail=30,
     )
@@ -422,6 +442,10 @@ def add_racer_history_features_streaming(base_chunk: pd.DataFrame, carryovers: H
                 "venue_course_prev_top2_rate": ("is_top2", 200, 30, "mean"),
                 "venue_course_prev_top3_rate": ("is_top3", 200, 30, "mean"),
                 "venue_course_prev_avg_finish": ("finish_position", 200, 30, "mean"),
+                **{
+                    f"venue_course_prev_{style_key}_rate": (f"decision_style_{style_key}_win", 200, 30, "mean")
+                    for style_key in DECISION_STYLE_KEYS
+                },
             },
             max_tail=200,
         )
@@ -450,8 +474,12 @@ def add_racer_history_features_streaming(base_chunk: pd.DataFrame, carryovers: H
             {
                 "racer_course_prev_top3_rate": ("is_top3", 10, 2, "mean"),
                 "racer_course_prev_avg_finish": ("finish_position", 10, 2, "mean"),
+                **{
+                    f"racer_course_prev_{style_key}_rate": (f"decision_style_{style_key}_win", 15, 2, "mean")
+                    for style_key in DECISION_STYLE_KEYS
+                },
             },
-            max_tail=10,
+            max_tail=15,
         )
         course_features = computed
 
@@ -505,6 +533,7 @@ def add_racer_history_features_streaming(base_chunk: pd.DataFrame, carryovers: H
 
     current["st_momentum_diff"] = current["racer_prev_avg_st_5"] - current["racer_prev_avg_st_10"]
     current["finish_momentum_diff"] = current["racer_prev_avg_finish_10"] - current["racer_prev_avg_finish_5"]
+    current = add_flow_probability_features(current)
     chunk_counts = current.groupby("racer_id").size().to_dict()
     for racer_id, count in chunk_counts.items():
         carryovers.racer_counts[int(racer_id)] = carryovers.racer_counts.get(int(racer_id), 0) + int(count)

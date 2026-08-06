@@ -43,6 +43,9 @@ RACE_RELATIVE_GENERATED_EXACT_COLUMNS = {
     "lane_outer_link_fit",
 }
 
+DECISION_STYLE_KEYS = ("nige", "sashi", "makuri", "makurizashi", "nuki")
+DECISION_STYLE_FLAG_COLUMNS = tuple(f"decision_style_{key}_win" for key in DECISION_STYLE_KEYS)
+
 RACE_RELATIVE_GENERATED_SUFFIXES = (
     "_race_rank",
     "_race_rank_low",
@@ -100,6 +103,7 @@ def build_training_table(entries: pd.DataFrame, results: pd.DataFrame) -> pd.Dat
 
 def add_racer_history_features(df: pd.DataFrame) -> pd.DataFrame:
     racer_sorted = df.sort_values(["racer_id", "race_date", "race_no"]).copy()
+    racer_sorted = add_decision_style_flag_columns(racer_sorted)
     grouped = racer_sorted.groupby("racer_id", group_keys=False)
 
     racer_sorted["racer_prev_count"] = grouped.cumcount()
@@ -163,6 +167,11 @@ def add_racer_history_features(df: pd.DataFrame) -> pd.DataFrame:
     racer_sorted["racer_prev_worst_finish_5"] = grouped["finish_position"].transform(
         lambda s: s.shift(1).rolling(5, min_periods=2).max()
     )
+    for style_key in DECISION_STYLE_KEYS:
+        source = f"decision_style_{style_key}_win"
+        racer_sorted[f"racer_prev_{style_key}_rate"] = grouped[source].transform(
+            lambda s: s.shift(1).rolling(30, min_periods=3).mean()
+        )
 
     venue_grouped = racer_sorted.groupby(["racer_id", "venue"], group_keys=False)
     racer_sorted["racer_venue_prev_win_rate"] = venue_grouped["is_win"].transform(
@@ -208,11 +217,17 @@ def add_racer_history_features(df: pd.DataFrame) -> pd.DataFrame:
     venue_course_sorted["venue_course_prev_avg_finish"] = venue_course_grouped["finish_position"].transform(
         lambda s: s.shift(1).rolling(200, min_periods=30).mean()
     )
+    for style_key in DECISION_STYLE_KEYS:
+        source = f"decision_style_{style_key}_win"
+        venue_course_sorted[f"venue_course_prev_{style_key}_rate"] = venue_course_grouped[source].transform(
+            lambda s: s.shift(1).rolling(200, min_periods=30).mean()
+        )
     venue_course_columns = [
         "venue_course_prev_win_rate",
         "venue_course_prev_top2_rate",
         "venue_course_prev_top3_rate",
         "venue_course_prev_avg_finish",
+        *[f"venue_course_prev_{style_key}_rate" for style_key in DECISION_STYLE_KEYS],
     ]
     racer_sorted[venue_course_columns] = venue_course_sorted[venue_course_columns].reindex(racer_sorted.index)
 
@@ -245,6 +260,11 @@ def add_racer_history_features(df: pd.DataFrame) -> pd.DataFrame:
     racer_sorted["racer_course_prev_avg_finish"] = course_grouped["finish_position"].transform(
         lambda s: s.shift(1).rolling(10, min_periods=2).mean()
     )
+    for style_key in DECISION_STYLE_KEYS:
+        source = f"decision_style_{style_key}_win"
+        racer_sorted[f"racer_course_prev_{style_key}_rate"] = course_grouped[source].transform(
+            lambda s: s.shift(1).rolling(15, min_periods=2).mean()
+        )
 
     motor_grouped = racer_sorted.groupby("motor_no", group_keys=False)
     racer_sorted["motor_prev_top3_rate"] = motor_grouped["is_top3"].transform(
@@ -273,7 +293,39 @@ def add_racer_history_features(df: pd.DataFrame) -> pd.DataFrame:
     racer_sorted["finish_momentum_diff"] = (
         racer_sorted["racer_prev_avg_finish_10"] - racer_sorted["racer_prev_avg_finish_5"]
     )
+    racer_sorted = add_flow_probability_features(racer_sorted)
     return racer_sorted
+
+
+def add_decision_style_flag_columns(df: pd.DataFrame) -> pd.DataFrame:
+    frame = df.copy()
+    style = frame.get("winning_style", pd.Series(pd.NA, index=frame.index)).map(_decision_style_key)
+    is_winner = pd.to_numeric(frame.get("finish_position"), errors="coerce") == 1
+    for style_key in DECISION_STYLE_KEYS:
+        frame[f"decision_style_{style_key}_win"] = ((style == style_key) & is_winner).astype("int8")
+    return frame
+
+
+def add_flow_probability_features(df: pd.DataFrame) -> pd.DataFrame:
+    frame = df.copy()
+    for style_key in ("nige", "sashi", "makuri", "makurizashi"):
+        frame[f"flow_prob_{style_key}"] = _weighted_feature_blend(
+            frame,
+            [
+                (f"racer_course_prev_{style_key}_rate", 0.45),
+                (f"racer_prev_{style_key}_rate", 0.25),
+                (f"venue_course_prev_{style_key}_rate", 0.30),
+            ],
+        ).astype("float32")
+    frame["racer_attack_style_score"] = (
+        pd.to_numeric(frame.get("flow_prob_makuri", 0.0), errors="coerce").fillna(0.0)
+        + pd.to_numeric(frame.get("flow_prob_makurizashi", 0.0), errors="coerce").fillna(0.0)
+    ).clip(0.0, 1.0).astype("float32")
+    frame["racer_sashi_style_score"] = pd.to_numeric(
+        frame.get("flow_prob_sashi", 0.0),
+        errors="coerce",
+    ).fillna(0.0).clip(0.0, 1.0).astype("float32")
+    return frame
 
 
 def add_race_relative_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -330,6 +382,24 @@ def add_race_relative_features(df: pd.DataFrame) -> pd.DataFrame:
         "boat_prev_avg_st",
         "st_momentum_diff",
         "finish_momentum_diff",
+        "racer_prev_nige_rate",
+        "racer_prev_sashi_rate",
+        "racer_prev_makuri_rate",
+        "racer_prev_makurizashi_rate",
+        "racer_course_prev_nige_rate",
+        "racer_course_prev_sashi_rate",
+        "racer_course_prev_makuri_rate",
+        "racer_course_prev_makurizashi_rate",
+        "venue_course_prev_nige_rate",
+        "venue_course_prev_sashi_rate",
+        "venue_course_prev_makuri_rate",
+        "venue_course_prev_makurizashi_rate",
+        "flow_prob_nige",
+        "flow_prob_sashi",
+        "flow_prob_makuri",
+        "flow_prob_makurizashi",
+        "racer_attack_style_score",
+        "racer_sashi_style_score",
     ]
 
     for column in relative_columns:
@@ -411,6 +481,24 @@ def add_measurement_relative_features(df: pd.DataFrame, race_groups: pd.core.gro
         "venue_lane_prev_win_rate",
         "venue_lane_prev_top2_rate",
         "venue_lane_prev_top3_rate",
+        "racer_prev_nige_rate",
+        "racer_prev_sashi_rate",
+        "racer_prev_makuri_rate",
+        "racer_prev_makurizashi_rate",
+        "racer_course_prev_nige_rate",
+        "racer_course_prev_sashi_rate",
+        "racer_course_prev_makuri_rate",
+        "racer_course_prev_makurizashi_rate",
+        "venue_course_prev_nige_rate",
+        "venue_course_prev_sashi_rate",
+        "venue_course_prev_makuri_rate",
+        "venue_course_prev_makurizashi_rate",
+        "flow_prob_nige",
+        "flow_prob_sashi",
+        "flow_prob_makuri",
+        "flow_prob_makurizashi",
+        "racer_attack_style_score",
+        "racer_sashi_style_score",
     ]
 
     feature_frames: dict[str, pd.Series] = {}
@@ -470,6 +558,12 @@ def add_neighbor_gap_features(df: pd.DataFrame) -> pd.DataFrame:
         "venue_course_prev_win_rate",
         "venue_course_prev_top2_rate",
         "venue_course_prev_top3_rate",
+        "flow_prob_nige",
+        "flow_prob_sashi",
+        "flow_prob_makuri",
+        "flow_prob_makurizashi",
+        "racer_attack_style_score",
+        "racer_sashi_style_score",
     ]
     ordered = df.copy()
     ordered["_entry_position"] = _entry_position_series(ordered)
@@ -507,6 +601,12 @@ def add_inside_outside_mean_gap_features(df: pd.DataFrame) -> pd.DataFrame:
         "venue_course_prev_win_rate",
         "venue_course_prev_top2_rate",
         "venue_course_prev_top3_rate",
+        "flow_prob_nige",
+        "flow_prob_sashi",
+        "flow_prob_makuri",
+        "flow_prob_makurizashi",
+        "racer_attack_style_score",
+        "racer_sashi_style_score",
     ]
     ordered = df.copy()
     ordered["_entry_position"] = _entry_position_series(ordered)
@@ -591,13 +691,15 @@ def add_pre_race_attack_candidate_features(df: pd.DataFrame) -> pd.DataFrame:
     venue_score = _race_scale_feature(frame, "venue_course_prev_top3_rate", lower_is_better=False).fillna(
         _race_scale_feature(frame, "venue_lane_prev_top3_rate", lower_is_better=False)
     )
+    attack_style_score = _race_scale_feature(frame, "racer_attack_style_score", lower_is_better=False)
     lane_bias = entry_position.map({2: 0.08, 3: 0.13, 4: 0.15, 5: 0.08, 6: 0.05}).fillna(0.0)
     attack_score = (
-        0.30 * st_score.fillna(0.0)
-        + 0.18 * exhibition_score.fillna(0.0)
-        + 0.18 * top3_score.fillna(0.0)
-        + 0.14 * motor_score.fillna(0.0)
-        + 0.12 * venue_score.fillna(0.0)
+        0.27 * st_score.fillna(0.0)
+        + 0.16 * exhibition_score.fillna(0.0)
+        + 0.16 * top3_score.fillna(0.0)
+        + 0.13 * motor_score.fillna(0.0)
+        + 0.11 * venue_score.fillna(0.0)
+        + 0.09 * attack_style_score.fillna(0.0)
         + lane_bias
     )
     attack_score = attack_score.where(entry_position != 1, 0.0)
@@ -739,6 +841,35 @@ def _race_scale_feature(df: pd.DataFrame, column: str, *, lower_is_better: bool)
     else:
         scaled = (values - race_min) / denom
     return scaled.clip(lower=0.0, upper=1.0).astype("float32")
+
+
+def _decision_style_key(value: object) -> str:
+    text = "" if value is None or pd.isna(value) else str(value)
+    if "逃" in text:
+        return "nige"
+    if "まくり差" in text:
+        return "makurizashi"
+    if "まくり" in text:
+        return "makuri"
+    if "差" in text:
+        return "sashi"
+    if "抜" in text:
+        return "nuki"
+    return "unknown"
+
+
+def _weighted_feature_blend(df: pd.DataFrame, weighted_columns: list[tuple[str, float]]) -> pd.Series:
+    total = pd.Series(0.0, index=df.index, dtype="float64")
+    weight_total = pd.Series(0.0, index=df.index, dtype="float64")
+    for column, weight in weighted_columns:
+        if column not in df.columns:
+            continue
+        values = pd.to_numeric(df[column], errors="coerce")
+        mask = values.notna()
+        total = total + values.fillna(0.0) * float(weight)
+        weight_total = weight_total + mask.astype("float64") * float(weight)
+    blended = total / weight_total.replace(0.0, np.nan)
+    return blended.fillna(0.0).clip(lower=0.0, upper=1.0)
 
 
 def add_current_meet_features(df: pd.DataFrame) -> pd.DataFrame:

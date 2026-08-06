@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from src.features.builder import add_race_relative_features
+from src.features.builder import add_racer_history_features, add_race_relative_features
 from src.models.ranker import (
     _build_trifecta_feature_frame_legacy,
     apply_prediction_time_measurement_proxies,
@@ -143,6 +143,39 @@ def test_expected_value_calculation_is_correct() -> None:
     assert first["expected_value"] == 1.5
     assert first["is_value_bet"]
     assert 0.0 <= first["stake_fraction"] <= 0.02
+
+
+def test_decision_style_history_features_use_previous_winner_styles_only() -> None:
+    frame = pd.DataFrame(
+        {
+            "race_id": [f"R{i}" for i in range(1, 7)],
+            "race_date": pd.date_range("2026-01-01", periods=6, freq="D"),
+            "race_no": [1, 1, 1, 1, 1, 1],
+            "venue": ["01"] * 6,
+            "lane": [1] * 6,
+            "course": [1] * 6,
+            "racer_id": [1001] * 6,
+            "motor_no": [10] * 6,
+            "boat_no": [20] * 6,
+            "finish_position": [1, 1, 1, 1, 2, 1],
+            "is_win": [1, 1, 1, 1, 0, 1],
+            "is_top2": [1, 1, 1, 1, 1, 1],
+            "is_top3": [1, 1, 1, 1, 1, 1],
+            "start_timing": [0.12, 0.13, 0.14, 0.15, 0.16, 0.17],
+            "exhibition_time": [6.70, 6.71, 6.72, 6.73, 6.74, 6.75],
+            "winning_style": ["逃げ", "逃げ", "差し", "まくり", "逃げ", "まくり差し"],
+        }
+    )
+
+    enriched = add_racer_history_features(frame)
+    last = enriched[enriched["race_id"] == "R6"].iloc[0]
+
+    assert np.isclose(last["racer_prev_nige_rate"], 0.4)
+    assert np.isclose(last["racer_prev_sashi_rate"], 0.2)
+    assert np.isclose(last["racer_prev_makuri_rate"], 0.2)
+    assert np.isclose(last["racer_prev_makurizashi_rate"], 0.0)
+    assert np.isclose(last["flow_prob_nige"], 0.4)
+    assert np.isclose(last["racer_attack_style_score"], 0.2)
 
 
 def test_future_information_columns_do_not_enter_features() -> None:

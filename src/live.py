@@ -19,7 +19,13 @@ try:
 except ImportError:  # pragma: no cover - optional runtime dependency
     lhafile = None
 
-from src.features.builder import add_current_meet_features, add_race_relative_features
+from src.features.builder import (
+    DECISION_STYLE_KEYS,
+    add_current_meet_features,
+    add_decision_style_flag_columns,
+    add_flow_probability_features,
+    add_race_relative_features,
+)
 from src.features.scenario import scenario_description, scenario_display_name
 from src.models.ranker import attach_darkhorse_odds_context, predict_race_order, predict_trifecta_probabilities
 from src.odds.expected_value import (
@@ -391,6 +397,7 @@ def load_live_history_frame(config: dict[str, Any], target_date: date) -> pd.Dat
             "finish_position",
             "start_timing",
             "exhibition_time",
+            "winning_style",
         ]
         history = pd.read_parquet(
             race_results_path,
@@ -425,6 +432,7 @@ def load_live_history_frame(config: dict[str, Any], target_date: date) -> pd.Dat
         "finish_position",
         "start_timing",
         "exhibition_time",
+        "winning_style",
     ]
     try:
         history = pd.read_parquet(
@@ -535,6 +543,7 @@ def merge_recent_group_features(frame: pd.DataFrame, hist: pd.DataFrame) -> pd.D
         hist = hist.copy()
         finish = pd.to_numeric(hist.get("finish_position"), errors="coerce")
         hist["is_top2"] = (finish.fillna(999).astype(int) <= 2).astype(int)
+    hist = add_decision_style_flag_columns(hist)
 
     racer_ids = set(frame["racer_id"].dropna().tolist())
     motor_nos = set(frame["motor_no"].dropna().tolist())
@@ -573,6 +582,10 @@ def merge_recent_group_features(frame: pd.DataFrame, hist: pd.DataFrame) -> pd.D
             ],
             "exhibition_time": [("racer_prev_avg_exhibition", 30, "mean")],
             "course": [("racer_prev_avg_course", 30, "mean")],
+            **{
+                f"decision_style_{style_key}_win": [(f"racer_prev_{style_key}_rate", 30, "mean")]
+                for style_key in DECISION_STYLE_KEYS
+            },
         },
     )
     frame = frame.merge(racer_recent, on=["racer_id"], how="left")
@@ -626,13 +639,17 @@ def merge_recent_group_features(frame: pd.DataFrame, hist: pd.DataFrame) -> pd.D
         frame = frame.merge(
             recent_group_agg(
                 hist_racer.dropna(subset=["course"]).assign(course=lambda d: d["course"].astype(int)),
-                ["racer_id", "lane"],
+                ["racer_id", "course"],
                 {
                     "is_top3": [("racer_course_prev_top3_rate", 10, "mean")],
                     "finish_position": [("racer_course_prev_avg_finish", 10, "mean")],
+                    **{
+                        f"decision_style_{style_key}_win": [(f"racer_course_prev_{style_key}_rate", 15, "mean")]
+                        for style_key in DECISION_STYLE_KEYS
+                    },
                 },
             ),
-            on=["racer_id", "lane"],
+            on=["racer_id", "course"],
             how="left",
         )
 
@@ -647,6 +664,10 @@ def merge_recent_group_features(frame: pd.DataFrame, hist: pd.DataFrame) -> pd.D
                     "is_top2": [("venue_course_prev_top2_rate", 200, "mean")],
                     "is_top3": [("venue_course_prev_top3_rate", 200, "mean")],
                     "finish_position": [("venue_course_prev_avg_finish", 200, "mean")],
+                    **{
+                        f"decision_style_{style_key}_win": [(f"venue_course_prev_{style_key}_rate", 200, "mean")]
+                        for style_key in DECISION_STYLE_KEYS
+                    },
                 },
             ),
             on=["venue", "course"],
@@ -744,6 +765,9 @@ def merge_recent_group_features(frame: pd.DataFrame, hist: pd.DataFrame) -> pd.D
         "boat_prev_top3_rate",
         "boat_prev_win_rate",
         "boat_prev_avg_st",
+        *[f"racer_prev_{style_key}_rate" for style_key in DECISION_STYLE_KEYS],
+        *[f"racer_course_prev_{style_key}_rate" for style_key in DECISION_STYLE_KEYS],
+        *[f"venue_course_prev_{style_key}_rate" for style_key in DECISION_STYLE_KEYS],
     ]
     for column in required_recent_columns:
         if column not in frame.columns:
@@ -755,6 +779,7 @@ def merge_recent_group_features(frame: pd.DataFrame, hist: pd.DataFrame) -> pd.D
     finish_10 = pd.to_numeric(frame.get("racer_prev_avg_finish_10"), errors="coerce")
     frame["st_momentum_diff"] = st_5 - st_10
     frame["finish_momentum_diff"] = finish_10 - finish_5
+    frame = add_flow_probability_features(frame)
     frame["lane_is_inner"] = (frame["lane"] <= 3).astype(int)
     frame["lane_is_outer"] = (frame["lane"] >= 5).astype(int)
     return frame

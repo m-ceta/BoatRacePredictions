@@ -87,6 +87,11 @@ DEFAULT_DROP_COLUMNS = {
     "is_top3",
     "winning_style",
     "trifecta_payout",
+    "decision_style_nige_win",
+    "decision_style_sashi_win",
+    "decision_style_makuri_win",
+    "decision_style_makurizashi_win",
+    "decision_style_nuki_win",
 }
 
 DEFAULT_ARTIFACT_PATHS = {
