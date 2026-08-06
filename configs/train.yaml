@@ -40,7 +40,7 @@ models:
       od_type: Iter
       od_wait: 30
   ensemble:
-    parallel_workers: 2
+    parallel_workers: 1
     model_metrics_parallel_workers: 1
     grid_step: 0.10
     max_model_weight: 0.50
@@ -71,8 +71,8 @@ models:
       low: skip
   lightgbm_variants:
     enabled: true
-    parallel_workers: 2
-    num_threads_per_variant: 2
+    parallel_workers: 1
+    num_threads_per_variant: 1
     variants:
       - name: lightgbm_legacy_features
         feature_set: legacy_20260712
