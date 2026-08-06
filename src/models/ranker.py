@@ -421,10 +421,15 @@ DEFAULT_ENSEMBLE_SETTINGS = {
     "objective_top3_overlap_weight": 0.10,
     "objective_recovery_weight": 0.20,
     "objective_value_hit_weight": 0.05,
+    "objective_top12_payout_weight": 0.08,
     "objective_log_loss_weight": 0.05,
     "recovery_score_cap": 0.80,
+    "top12_payout_score_cap": 5000.0,
     "min_purchase_rate": 0.10,
     "purchase_rate_penalty_weight": 0.20,
+    "value_confidence_calibration": {
+        "enabled": True,
+    },
     "value_rule": {
         "high": "top3",
         "middle": "top3",
@@ -607,6 +612,13 @@ def get_ensemble_settings(config: dict | None) -> dict[str, Any]:
         **DEFAULT_ENSEMBLE_SETTINGS["value_rule"],
         **dict(settings.get("value_rule", {}) or {}),
     }
+    settings["value_confidence_calibration"] = {
+        **DEFAULT_ENSEMBLE_SETTINGS["value_confidence_calibration"],
+        **dict(settings.get("value_confidence_calibration", {}) or {}),
+    }
+    settings["value_confidence_calibration"]["enabled"] = bool(
+        settings["value_confidence_calibration"].get("enabled", True)
+    )
     cv_configured = dict((configured or {}).get("cross_validation", {}) or {})
     cv_default = DEFAULT_ENSEMBLE_SETTINGS["cross_validation"]
     cross_validation = {**cv_default, **cv_configured}
@@ -856,6 +868,19 @@ def get_enabled_neural_regression_variants(config: dict | None) -> list[dict[str
         variant["target"] = target
         variant["score_transform"] = score_transform
         variant["params"] = dict(variant.get("params", {}) or {})
+        if "value_recovery_training" in variant:
+            value_recovery_training = {
+                **DEFAULT_VALUE_RECOVERY_TRAINING_SETTINGS,
+                **dict(variant.get("value_recovery_training", {}) or {}),
+            }
+            value_recovery_training["enabled"] = bool(value_recovery_training.get("enabled", False))
+            for key in DEFAULT_VALUE_RECOVERY_TRAINING_SETTINGS:
+                if key == "enabled":
+                    continue
+                value_recovery_training[key] = float(value_recovery_training.get(key, 1.0))
+                if value_recovery_training[key] < 0:
+                    raise ValueError(f"value_recovery_training.{key} must be non-negative.")
+            variant["value_recovery_training"] = value_recovery_training
     return variants
 
 
@@ -4657,6 +4682,7 @@ class TorchEmbeddingMLPRegressor:
         feature_columns: list[str],
         valid_frame: pd.DataFrame,
         y_valid: pd.Series,
+        sample_weight: pd.Series | np.ndarray | None = None,
     ) -> "TorchEmbeddingMLPRegressor":
         torch = require_torch()
         torch.manual_seed(self.random_seed)
@@ -4677,6 +4703,12 @@ class TorchEmbeddingMLPRegressor:
             dtype=torch.float32,
             device=device,
         )
+        train_weight = None
+        if sample_weight is not None:
+            weight_values = pd.to_numeric(pd.Series(sample_weight), errors="coerce").fillna(1.0).to_numpy(dtype=np.float32)
+            if len(weight_values) != len(train_frame):
+                raise ValueError("Neural regression sample_weight length does not match train_frame.")
+            train_weight = torch.tensor(weight_values, dtype=torch.float32, device=device)
 
         self._module = self._build_module().to(device)
         optimizer = torch.optim.AdamW(
@@ -4684,7 +4716,8 @@ class TorchEmbeddingMLPRegressor:
             lr=float(self.params.get("learning_rate", 0.001)),
             weight_decay=float(self.params.get("weight_decay", 0.0001)),
         )
-        loss_fn = torch.nn.MSELoss()
+        train_loss_fn = torch.nn.MSELoss(reduction="none")
+        valid_loss_fn = torch.nn.MSELoss()
         batch_size = max(int(self.params.get("batch_size", 4096)), 1)
         epochs = max(int(self.params.get("epochs", 20)), 1)
         patience = max(int(self.params.get("patience", 5)), 1)
@@ -4699,14 +4732,20 @@ class TorchEmbeddingMLPRegressor:
                 batch = permutation[start : start + batch_size]
                 optimizer.zero_grad()
                 prediction = self._module(train_numeric[batch], train_categorical[batch])
-                loss = loss_fn(prediction, train_target[batch])
+                loss_values = train_loss_fn(prediction, train_target[batch])
+                if train_weight is not None:
+                    batch_weight = train_weight[batch]
+                    weight_sum = torch.clamp(batch_weight.sum(), min=1e-6)
+                    loss = (loss_values * batch_weight).sum() / weight_sum
+                else:
+                    loss = loss_values.mean()
                 loss.backward()
                 optimizer.step()
 
             self._module.eval()
             with torch.no_grad():
                 valid_prediction = self._module(valid_numeric, valid_categorical)
-                valid_loss = float(loss_fn(valid_prediction, valid_target).item())
+                valid_loss = float(valid_loss_fn(valid_prediction, valid_target).item())
             if valid_loss < best_loss:
                 best_loss = valid_loss
                 best_state = {key: value.detach().cpu().clone() for key, value in self._module.state_dict().items()}
@@ -4763,6 +4802,7 @@ class TabNetFinishPositionRegressor:
         feature_columns: list[str],
         valid_frame: pd.DataFrame,
         y_valid: pd.Series,
+        sample_weight: pd.Series | np.ndarray | None = None,
     ) -> "TabNetFinishPositionRegressor":
         TabNetRegressor = require_tabnet_regressor()
         self.preprocessor.fit(train_frame, feature_columns)
@@ -5212,6 +5252,7 @@ def train_neural_regression(
     model_type: str,
     target: str = "finish_position",
     param_overrides: dict[str, Any] | None = None,
+    sample_weight_column: str | None = None,
 ) -> Any:
     if target not in train_df.columns or target not in valid_df.columns:
         raise ValueError(f"Neural regression target column is missing: {target}")
@@ -5235,12 +5276,18 @@ def train_neural_regression(
     else:
         raise ValueError(f"Unsupported neural regression model_type: {model_type}")
     try:
+        sample_weight = (
+            pd.to_numeric(train_sorted[sample_weight_column], errors="coerce").fillna(1.0)
+            if sample_weight_column and sample_weight_column in train_sorted.columns
+            else None
+        )
         model.fit(
             train_sorted[feature_columns],
             train_sorted[target],
             feature_columns,
             valid_sorted[feature_columns],
             valid_sorted[target],
+            sample_weight=sample_weight,
         )
         return model
     finally:
@@ -5270,8 +5317,20 @@ def train_neural_regression_variants(
         name = str(variant["name"])
         model_type = str(variant.get("model_type", "mlp"))
         _emit_progress(progress_callback, f"training neural regression variant: {name}, model_type={model_type}")
+        variant_train_df = train_df
+        sample_weight_column = None
+        value_recovery_settings = dict(variant.get("value_recovery_training", {}) or {})
+        if bool(value_recovery_settings.get("enabled", False)):
+            if model_type != "mlp":
+                raise ValueError("value_recovery_training is supported only for neural model_type=mlp.")
+            variant_train_df = build_value_recovery_variant_training_frame(
+                train_df,
+                value_recovery_settings,
+                progress_callback=progress_callback,
+            )
+            sample_weight_column = VALUE_RECOVERY_TRAINING_WEIGHT_COLUMN
         model = train_neural_regression(
-            train_df,
+            variant_train_df,
             valid_df,
             feature_columns,
             categorical_columns,
@@ -5279,7 +5338,11 @@ def train_neural_regression_variants(
             model_type=model_type,
             target=str(variant.get("target", "finish_position")),
             param_overrides=dict(variant.get("params", {}) or {}),
+            sample_weight_column=sample_weight_column,
         )
+        if variant_train_df is not train_df:
+            del variant_train_df
+            collect_garbage()
         _emit_progress(progress_callback, f"completed neural regression variant: {name}")
         return name, model
 
@@ -5425,6 +5488,8 @@ def score_frame(
     scored = df[["race_id", "lane"]].copy()
     if "finish_position" in df.columns:
         scored["finish_position"] = df["finish_position"].to_numpy()
+    if "trifecta_payout" in df.columns:
+        scored["trifecta_payout"] = df["trifecta_payout"].to_numpy()
     scored["score_raw"] = raw_scores
     scored["score_probability_like"] = scored.groupby("race_id")["score_raw"].transform(_softmax)
     scored["pred_rank"] = scored.groupby("race_id")["score_probability_like"].rank(
@@ -6505,6 +6570,61 @@ def _softmax_rows(values: np.ndarray) -> np.ndarray:
     return np.divide(exps, denom, out=np.full_like(exps, 1.0 / values.shape[1]), where=denom > 0)
 
 
+def _fast_trifecta_probs_from_lane_scores(lane_scores: np.ndarray) -> np.ndarray:
+    lane_probs = _softmax_rows(lane_scores)
+    first = TRIFECTA_FAST_PERMUTATIONS[:, 0]
+    second = TRIFECTA_FAST_PERMUTATIONS[:, 1]
+    third = TRIFECTA_FAST_PERMUTATIONS[:, 2]
+    p1 = lane_probs[:, first]
+    p2_base = lane_probs[:, second]
+    p3_base = lane_probs[:, third]
+    denom2 = np.clip(1.0 - p1, 1e-12, None)
+    denom3 = np.clip(1.0 - p1 - p2_base, 1e-12, None)
+    return p1 * (p2_base / denom2) * (p3_base / denom3)
+
+
+def _fit_fast_confidence_calibration(
+    raw_probs: np.ndarray,
+    actual_indices: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    if raw_probs.size == 0 or len(actual_indices) == 0:
+        return None
+    labels = np.zeros(raw_probs.shape, dtype=float)
+    valid_mask = (actual_indices >= 0) & (actual_indices < raw_probs.shape[1])
+    if not bool(valid_mask.any()):
+        return None
+    labels[np.flatnonzero(valid_mask), actual_indices[valid_mask].astype(int)] = 1.0
+    calibrator = IsotonicRegression(y_min=0.0, y_max=1.0, out_of_bounds="clip")
+    calibrator.fit(raw_probs.reshape(-1), labels.reshape(-1))
+    return (
+        np.asarray(calibrator.X_thresholds_, dtype=float),
+        np.asarray(calibrator.y_thresholds_, dtype=float),
+    )
+
+
+def _apply_fast_confidence_calibration(
+    raw_probs: np.ndarray,
+    calibration: tuple[np.ndarray, np.ndarray] | None,
+) -> np.ndarray:
+    if calibration is None:
+        row_sums = raw_probs.sum(axis=1, keepdims=True)
+        return np.divide(
+            raw_probs,
+            row_sums,
+            out=np.full_like(raw_probs, 1.0 / raw_probs.shape[1]),
+            where=row_sums > 0,
+        )
+    x_thresholds, y_thresholds = calibration
+    calibrated = np.interp(raw_probs.reshape(-1), x_thresholds, y_thresholds).reshape(raw_probs.shape)
+    row_sums = calibrated.sum(axis=1, keepdims=True)
+    return np.divide(
+        calibrated,
+        row_sums,
+        out=np.full_like(calibrated, 1.0 / calibrated.shape[1]),
+        where=row_sums > 0,
+    )
+
+
 def _top12_confidence_scores_from_sorted_probs(sorted_probs: np.ndarray) -> np.ndarray:
     if sorted_probs.size == 0:
         return np.asarray([], dtype=float)
@@ -6539,6 +6659,8 @@ def _fast_value_rule_metrics(
     stake_per_ticket: float = 100.0,
 ) -> dict[str, float]:
     if trifecta_payouts is None or len(trifecta_payouts) != len(actual_rank):
+        min_purchase_rate = float(settings.get("min_purchase_rate", 0.10))
+        purchase_penalty_weight = float(settings.get("purchase_rate_penalty_weight", 0.20))
         return {
             "value_rule_recovery_rate": 0.0,
             "value_rule_hit_rate": 0.0,
@@ -6547,11 +6669,13 @@ def _fast_value_rule_metrics(
             "value_rule_total_stake": 0.0,
             "value_rule_total_return": 0.0,
             "normalized_recovery_score": 0.0,
-            "purchase_rate_penalty": float(settings.get("min_purchase_rate", 0.10))
-            * float(settings.get("purchase_rate_penalty_weight", 0.20)),
+            "value_rule_coverage_factor": 0.0,
+            "purchase_rate_penalty": min_purchase_rate * purchase_penalty_weight,
         }
     valid_payout_mask = np.isfinite(trifecta_payouts) & (trifecta_payouts > 0.0)
     if not bool(valid_payout_mask.any()):
+        min_purchase_rate = float(settings.get("min_purchase_rate", 0.10))
+        purchase_penalty_weight = float(settings.get("purchase_rate_penalty_weight", 0.20))
         return {
             "value_rule_recovery_rate": 0.0,
             "value_rule_hit_rate": 0.0,
@@ -6560,8 +6684,8 @@ def _fast_value_rule_metrics(
             "value_rule_total_stake": 0.0,
             "value_rule_total_return": 0.0,
             "normalized_recovery_score": 0.0,
-            "purchase_rate_penalty": float(settings.get("min_purchase_rate", 0.10))
-            * float(settings.get("purchase_rate_penalty_weight", 0.20)),
+            "value_rule_coverage_factor": 0.0,
+            "purchase_rate_penalty": min_purchase_rate * purchase_penalty_weight,
         }
 
     valid_actual_rank = actual_rank[valid_payout_mask]
@@ -6596,19 +6720,56 @@ def _fast_value_rule_metrics(
         hit_rate = float(np.mean(hits[bought_mask]))
 
     recovery_score_cap = max(float(settings.get("recovery_score_cap", 0.80)), 1e-9)
-    normalized_recovery_score = float(np.clip(recovery_rate / recovery_score_cap, 0.0, 1.0))
     min_purchase_rate = float(settings.get("min_purchase_rate", 0.10))
     purchase_penalty_weight = float(settings.get("purchase_rate_penalty_weight", 0.20))
+    coverage_factor = float(np.clip(purchase_rate / max(min_purchase_rate, 1e-9), 0.0, 1.0))
+    normalized_recovery_score = float(np.clip(recovery_rate / recovery_score_cap, 0.0, 1.0) * coverage_factor)
     purchase_rate_penalty = max(min_purchase_rate - purchase_rate, 0.0) * purchase_penalty_weight
     return {
         "value_rule_recovery_rate": float(recovery_rate),
-        "value_rule_hit_rate": float(hit_rate),
+        "value_rule_hit_rate": float(hit_rate * coverage_factor),
+        "value_rule_raw_hit_rate": float(hit_rate),
         "value_rule_purchase_rate": purchase_rate,
         "value_rule_bought_races": float(bought_count),
         "value_rule_total_stake": float(total_stake),
         "value_rule_total_return": float(total_return),
         "normalized_recovery_score": normalized_recovery_score,
+        "value_rule_coverage_factor": coverage_factor,
         "purchase_rate_penalty": float(purchase_rate_penalty),
+    }
+
+
+def _fast_top12_payout_capture_metrics(
+    actual_rank: np.ndarray,
+    trifecta_payouts: np.ndarray | None,
+    settings: dict[str, Any],
+) -> dict[str, float]:
+    if trifecta_payouts is None or len(trifecta_payouts) != len(actual_rank):
+        return {
+            "top12_payout_capture_mean": 0.0,
+            "top12_payout_capture_hit_mean": 0.0,
+            "top12_payout_capture_total": 0.0,
+            "normalized_top12_payout_capture_score": 0.0,
+        }
+    valid_mask = np.isfinite(trifecta_payouts) & (trifecta_payouts > 0.0)
+    if not bool(valid_mask.any()):
+        return {
+            "top12_payout_capture_mean": 0.0,
+            "top12_payout_capture_hit_mean": 0.0,
+            "top12_payout_capture_total": 0.0,
+            "normalized_top12_payout_capture_score": 0.0,
+        }
+    valid_ranks = actual_rank[valid_mask]
+    valid_payouts = trifecta_payouts[valid_mask].astype(float)
+    top12_hits = valid_ranks < 12
+    captured = np.where(top12_hits, valid_payouts, 0.0)
+    mean_capture = float(np.mean(captured))
+    score_cap = max(float(settings.get("top12_payout_score_cap", 5000.0)), 1e-9)
+    return {
+        "top12_payout_capture_mean": mean_capture,
+        "top12_payout_capture_hit_mean": float(np.mean(valid_payouts[top12_hits])) if bool(top12_hits.any()) else 0.0,
+        "top12_payout_capture_total": float(np.sum(captured)),
+        "normalized_top12_payout_capture_score": float(np.clip(mean_capture / score_cap, 0.0, 1.0)),
     }
 
 
@@ -6627,20 +6788,18 @@ def evaluate_fast_trifecta_ensemble_candidate(
         if model_weight == 0:
             continue
         combined += float(model_weight) * score_arrays[model_name][row_indices]
-    lane_probs = _softmax_rows(combined)
+    raw_trifecta_probs = _fast_trifecta_probs_from_lane_scores(combined)
+    calibrated_trifecta_probs = _apply_fast_confidence_calibration(
+        raw_trifecta_probs,
+        context.get("confidence_calibration"),
+    )
+    actual_probs = np.clip(
+        calibrated_trifecta_probs[np.arange(len(actual_indices)), actual_indices],
+        1e-12,
+        1.0,
+    )
 
-    first = TRIFECTA_FAST_PERMUTATIONS[:, 0]
-    second = TRIFECTA_FAST_PERMUTATIONS[:, 1]
-    third = TRIFECTA_FAST_PERMUTATIONS[:, 2]
-    p1 = lane_probs[:, first]
-    p2_base = lane_probs[:, second]
-    p3_base = lane_probs[:, third]
-    denom2 = np.clip(1.0 - p1, 1e-12, None)
-    denom3 = np.clip(1.0 - p1 - p2_base, 1e-12, None)
-    trifecta_probs = p1 * (p2_base / denom2) * (p3_base / denom3)
-    actual_probs = np.clip(trifecta_probs[np.arange(len(actual_indices)), actual_indices], 1e-12, 1.0)
-
-    ranked_indices = np.argsort(-trifecta_probs, axis=1)
+    ranked_indices = np.argsort(-raw_trifecta_probs, axis=1)
     actual_ranks = np.empty_like(ranked_indices)
     actual_ranks[np.arange(len(actual_indices))[:, None], ranked_indices] = np.arange(ranked_indices.shape[1])
     actual_rank = actual_ranks[np.arange(len(actual_indices)), actual_indices]
@@ -6664,10 +6823,15 @@ def evaluate_fast_trifecta_ensemble_candidate(
     avg_top3_overlap = float(np.mean(top3_overlap))
     normalized_log_loss = log_loss / float(np.log(120.0))
     objective_name = str(settings.get("objective", "trifecta_top12_balanced"))
-    sorted_probs = np.take_along_axis(trifecta_probs, ranked_indices, axis=1)
+    sorted_probs = np.take_along_axis(calibrated_trifecta_probs, ranked_indices, axis=1)
     value_metrics = _fast_value_rule_metrics(
         actual_rank=actual_rank,
         sorted_probs=sorted_probs,
+        trifecta_payouts=context.get("trifecta_payouts"),
+        settings=settings,
+    )
+    top12_payout_metrics = _fast_top12_payout_capture_metrics(
+        actual_rank=actual_rank,
         trifecta_payouts=context.get("trifecta_payouts"),
         settings=settings,
     )
@@ -6687,6 +6851,8 @@ def evaluate_fast_trifecta_ensemble_candidate(
             * float(value_metrics.get("normalized_recovery_score", 0.0))
             + float(settings.get("objective_value_hit_weight", 0.05))
             * float(value_metrics.get("value_rule_hit_rate", 0.0))
+            + float(settings.get("objective_top12_payout_weight", 0.08))
+            * float(top12_payout_metrics.get("normalized_top12_payout_capture_score", 0.0))
             - float(settings.get("objective_log_loss_weight", 0.05)) * normalized_log_loss
             - float(value_metrics.get("purchase_rate_penalty", 0.0))
         )
@@ -6709,6 +6875,7 @@ def evaluate_fast_trifecta_ensemble_candidate(
         "normalized_log_loss": normalized_log_loss,
         "race_count": float(len(actual_indices)),
         **value_metrics,
+        **top12_payout_metrics,
     }
     return float(objective), {name: float(weight) for name, weight in candidate_weights.items()}, metrics
 
@@ -6793,6 +6960,22 @@ def optimize_ensemble_weights(
     )
     cv_folds_used = len(fold_bases)
     fast_eval_races = sum(int(fast_context.get("race_count", 0)) for fast_context in fast_contexts)
+    if (
+        objective_name == "trifecta_value_balanced"
+        and bool((settings.get("value_confidence_calibration", {}) or {}).get("enabled", True))
+        and all(int(fast_context.get("race_count", 0)) > 0 for fast_context in fast_contexts)
+    ):
+        equal_weight = 1.0 / len(model_names) if model_names else 0.0
+        for fast_context in fast_contexts:
+            row_indices = fast_context["row_indices"]
+            reference_scores = np.zeros(row_indices.shape, dtype=float)
+            for model_name in model_names:
+                reference_scores += equal_weight * score_arrays[model_name][row_indices]
+            reference_raw_probs = _fast_trifecta_probs_from_lane_scores(reference_scores)
+            fast_context["confidence_calibration"] = _fit_fast_confidence_calibration(
+                reference_raw_probs,
+                fast_context["actual_indices"],
+            )
 
     def evaluate_weight_values(weight_values: tuple[float, ...]) -> tuple[float, dict[str, float], dict[str, float]]:
         objectives: list[float] = []
@@ -6866,6 +7049,12 @@ def optimize_ensemble_weights(
         "validation_value_rule_bought_races": float(best_metrics.get("value_rule_bought_races", 0.0)),
         "validation_normalized_recovery_score": float(best_metrics.get("normalized_recovery_score", 0.0)),
         "validation_purchase_rate_penalty": float(best_metrics.get("purchase_rate_penalty", 0.0)),
+        "validation_top12_payout_capture_mean": float(best_metrics.get("top12_payout_capture_mean", 0.0)),
+        "validation_top12_payout_capture_hit_mean": float(best_metrics.get("top12_payout_capture_hit_mean", 0.0)),
+        "validation_top12_payout_capture_total": float(best_metrics.get("top12_payout_capture_total", 0.0)),
+        "validation_normalized_top12_payout_capture_score": float(
+            best_metrics.get("normalized_top12_payout_capture_score", 0.0)
+        ),
         "validation_eval_races": float(eval_races),
         "validation_candidate_count": float(len(candidate_vectors)),
         "validation_parallel_workers": float(workers),

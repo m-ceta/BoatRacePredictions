@@ -296,6 +296,34 @@ def test_xgboost_regression_variant_config_validates_finish_position_target() ->
     ]
 
 
+def test_neural_value_recovery_variant_config_applies_defaults() -> None:
+    config = {
+        "models": {
+            "neural_regression_variants": {
+                "enabled": True,
+                "variants": [
+                    {
+                        "name": "mlp_reg_value_recovery",
+                        "model_type": "mlp",
+                        "target": "finish_position",
+                        "value_recovery_training": {
+                            "enabled": True,
+                            "payout_weight_10000_30000": 2.0,
+                        },
+                    },
+                ],
+            }
+        }
+    }
+
+    variant = ranker.get_enabled_neural_regression_variants(config)[0]
+
+    assert variant["name"] == "mlp_reg_value_recovery"
+    assert variant["value_recovery_training"]["enabled"] is True
+    assert variant["value_recovery_training"]["payout_weight_10000_30000"] == 2.0
+    assert variant["value_recovery_training"]["payout_weight_under_1000"] == 0.7
+
+
 def test_random_forest_regression_variant_config_validates_finish_position_target() -> None:
     config = {
         "models": {
@@ -701,6 +729,8 @@ def test_ensemble_weight_optimization_uses_value_balanced_objective(monkeypatch)
                 "grid_step": 0.50,
                 "objective": "trifecta_value_balanced",
                 "parallel_workers": 1,
+                "min_purchase_rate": 1.0,
+                "top12_payout_score_cap": 12000.0,
                 "value_rule": {"high": "top3", "middle": "top3", "low": "skip"},
             }
         }
@@ -723,6 +753,8 @@ def test_ensemble_weight_optimization_uses_value_balanced_objective(monkeypatch)
     assert weights["validation_value_rule_hit_rate"] == 1.0
     assert weights["validation_value_rule_recovery_rate"] == pytest.approx(40.0)
     assert weights["validation_normalized_recovery_score"] == 1.0
+    assert weights["validation_top12_payout_capture_mean"] == pytest.approx(12000.0)
+    assert weights["validation_normalized_top12_payout_capture_score"] == 1.0
 
 
 def test_trifecta_v1_model_metrics_include_ensemble_and_individual_models(monkeypatch) -> None:
