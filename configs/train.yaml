@@ -40,8 +40,8 @@ models:
       od_type: Iter
       od_wait: 30
   ensemble:
-    parallel_workers: 4
-    model_metrics_parallel_workers: 2
+    parallel_workers: 2
+    model_metrics_parallel_workers: 1
     grid_step: 0.10
     max_model_weight: 0.50
     min_nonzero_weight: 0.10
