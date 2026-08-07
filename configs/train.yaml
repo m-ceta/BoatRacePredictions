@@ -85,7 +85,7 @@ models:
           min_data_in_leaf: 80
           feature_fraction: 0.65
           lambda_l2: 5.0
-      - name: lightgbm_upset_variant
+      - name: lightgbm_upset_value_variant
         params:
           num_leaves: 63
           min_data_in_leaf: 80
@@ -104,16 +104,6 @@ models:
           payout_weight_50000: 3.0
           payout_weight_100000: 5.0
           random_seed: 42
-      - name: lightgbm_value_recovery_variant
-        params:
-          num_leaves: 31
-          min_data_in_leaf: 120
-          learning_rate: 0.025
-          feature_fraction: 0.65
-          bagging_fraction: 0.75
-          bagging_freq: 1
-          lambda_l1: 1.0
-          lambda_l2: 12.0
         value_recovery_training:
           enabled: true
           payout_weight_under_1000: 0.7
@@ -232,9 +222,23 @@ models:
           device_id: 0
           predict_device: cpu
       - name: mlp_reg_value_recovery
+        enabled: true
         model_type: mlp
         target: finish_position
         score_transform: negative
+        upset_training:
+          enabled: true
+          history_years: 10.0
+          recent_years: 3.5
+          middle_cutoff_years: 7.0
+          payout_threshold: 10000
+          control_ratio: 3
+          recent_history_weight: 0.7
+          older_history_weight: 0.3
+          payout_weight_10000: 2.0
+          payout_weight_50000: 3.0
+          payout_weight_100000: 5.0
+          random_seed: 42
         value_recovery_training:
           enabled: true
           payout_weight_under_1000: 0.7

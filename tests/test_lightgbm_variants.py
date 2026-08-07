@@ -143,6 +143,30 @@ def test_value_recovery_variant_config_applies_defaults() -> None:
     assert variant["value_recovery_training"]["payout_weight_50000_over"] == 0.6
 
 
+def test_lightgbm_variant_allows_combined_upset_and_value_recovery_training() -> None:
+    config = {
+        "models": {
+            "lightgbm_variants": {
+                "enabled": True,
+                "variants": [
+                    {
+                        "name": "lightgbm_upset_value_variant",
+                        "upset_training": {"enabled": True, "history_years": 8.0},
+                        "value_recovery_training": {"enabled": True, "payout_weight_10000_30000": 2.0},
+                    }
+                ],
+            }
+        }
+    }
+
+    variant = ranker.get_enabled_lightgbm_variants(config)[0]
+
+    assert variant["upset_training"]["enabled"] is True
+    assert variant["value_recovery_training"]["enabled"] is True
+    assert variant["upset_training"]["history_years"] == 8.0
+    assert variant["value_recovery_training"]["payout_weight_10000_30000"] == 2.0
+
+
 def test_value_recovery_variant_training_frame_weights_payout_bands() -> None:
     rows = []
     payouts = {
@@ -172,6 +196,29 @@ def test_value_recovery_variant_training_frame_weights_payout_bands() -> None:
     assert race_weights.loc["P3"] == pytest.approx(1.8)
     assert race_weights.loc["P4"] == pytest.approx(1.2)
     assert race_weights.loc["P5"] == pytest.approx(0.6)
+    assert weighted.groupby("race_id")[ranker.VALUE_RECOVERY_TRAINING_WEIGHT_COLUMN].nunique().eq(1).all()
+
+
+def test_value_recovery_variant_training_frame_multiplies_base_weight() -> None:
+    train_df = pd.DataFrame(
+        [
+            {
+                "race_id": "P3",
+                "lane": lane,
+                "trifecta_payout": 20000.0,
+                ranker.UPSET_TRAINING_WEIGHT_COLUMN: 1.5,
+            }
+            for lane in range(1, 7)
+        ]
+    )
+
+    weighted = ranker.build_value_recovery_variant_training_frame(
+        train_df,
+        ranker.DEFAULT_VALUE_RECOVERY_TRAINING_SETTINGS,
+        base_weight_column=ranker.UPSET_TRAINING_WEIGHT_COLUMN,
+    )
+
+    assert weighted[ranker.VALUE_RECOVERY_TRAINING_WEIGHT_COLUMN].iloc[0] == pytest.approx(2.7)
     assert weighted.groupby("race_id")[ranker.VALUE_RECOVERY_TRAINING_WEIGHT_COLUMN].nunique().eq(1).all()
 
 
@@ -322,6 +369,36 @@ def test_neural_value_recovery_variant_config_applies_defaults() -> None:
     assert variant["value_recovery_training"]["enabled"] is True
     assert variant["value_recovery_training"]["payout_weight_10000_30000"] == 2.0
     assert variant["value_recovery_training"]["payout_weight_under_1000"] == 0.7
+
+
+def test_neural_value_recovery_variant_allows_combined_upset_training() -> None:
+    config = {
+        "models": {
+            "neural_regression_variants": {
+                "enabled": True,
+                "variants": [
+                    {
+                        "name": "mlp_reg_value_recovery",
+                        "model_type": "mlp",
+                        "target": "finish_position",
+                        "upset_training": {"enabled": True, "history_years": 8.0},
+                        "value_recovery_training": {
+                            "enabled": True,
+                            "payout_weight_10000_30000": 2.0,
+                        },
+                    },
+                ],
+            }
+        }
+    }
+
+    variant = ranker.get_enabled_neural_regression_variants(config)[0]
+
+    assert variant["name"] == "mlp_reg_value_recovery"
+    assert variant["upset_training"]["enabled"] is True
+    assert variant["upset_training"]["history_years"] == 8.0
+    assert variant["value_recovery_training"]["enabled"] is True
+    assert variant["value_recovery_training"]["payout_weight_10000_30000"] == 2.0
 
 
 def test_random_forest_regression_variant_config_validates_finish_position_target() -> None:

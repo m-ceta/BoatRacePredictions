@@ -694,11 +694,6 @@ def get_enabled_lightgbm_variants(config: dict | None) -> list[dict[str, Any]]:
                 if value_recovery_training[key] < 0:
                     raise ValueError(f"value_recovery_training.{key} must be non-negative.")
             variant["value_recovery_training"] = value_recovery_training
-        if (
-            bool((variant.get("upset_training", {}) or {}).get("enabled", False))
-            and bool((variant.get("value_recovery_training", {}) or {}).get("enabled", False))
-        ):
-            raise ValueError("upset_training and value_recovery_training cannot both be enabled on one variant.")
     return variants
 
 
@@ -875,6 +870,27 @@ def get_enabled_neural_regression_variants(config: dict | None) -> list[dict[str
         variant["target"] = target
         variant["score_transform"] = score_transform
         variant["params"] = dict(variant.get("params", {}) or {})
+        if "upset_training" in variant:
+            upset_training = {
+                **DEFAULT_UPSET_TRAINING_SETTINGS,
+                **dict(variant.get("upset_training", {}) or {}),
+            }
+            upset_training["enabled"] = bool(upset_training.get("enabled", False))
+            upset_training["history_years"] = float(upset_training.get("history_years", 10.0))
+            upset_training["recent_years"] = float(upset_training.get("recent_years", 3.5))
+            upset_training["middle_cutoff_years"] = float(upset_training.get("middle_cutoff_years", 7.0))
+            upset_training["payout_threshold"] = float(upset_training.get("payout_threshold", 10000.0))
+            upset_training["control_ratio"] = max(int(upset_training.get("control_ratio", 3)), 0)
+            if upset_training["history_years"] <= upset_training["recent_years"]:
+                raise ValueError("upset_training.history_years must be greater than recent_years.")
+            if not upset_training["recent_years"] < upset_training["middle_cutoff_years"] <= upset_training["history_years"]:
+                raise ValueError(
+                    "upset_training.middle_cutoff_years must be greater than recent_years "
+                    "and no greater than history_years."
+                )
+            if upset_training["payout_threshold"] <= 0:
+                raise ValueError("upset_training.payout_threshold must be positive.")
+            variant["upset_training"] = upset_training
         if "value_recovery_training" in variant:
             value_recovery_training = {
                 **DEFAULT_VALUE_RECOVERY_TRAINING_SETTINGS,
@@ -4168,8 +4184,9 @@ def train_lightgbm_variants(
         value_recovery_settings = dict(variant.get("value_recovery_training", {}) or {})
         if bool(value_recovery_settings.get("enabled", False)):
             variant_train_df = build_value_recovery_variant_training_frame(
-                train_df,
+                variant_train_df,
                 value_recovery_settings,
+                base_weight_column=sample_weight_column,
                 progress_callback=progress_callback,
             )
             sample_weight_column = VALUE_RECOVERY_TRAINING_WEIGHT_COLUMN
@@ -4204,6 +4221,8 @@ def train_lightgbm_variants(
 def build_value_recovery_variant_training_frame(
     train_df: pd.DataFrame,
     settings: dict[str, Any],
+    *,
+    base_weight_column: str | None = None,
     progress_callback: Callable[[str], None] | None = None,
 ) -> pd.DataFrame:
     if train_df.empty:
@@ -4234,12 +4253,16 @@ def build_value_recovery_variant_training_frame(
         ],
         default=1.0,
     )
-    result[VALUE_RECOVERY_TRAINING_WEIGHT_COLUMN] = weights.astype(float)
+    final_weights = weights.astype(float)
+    if base_weight_column and base_weight_column in result.columns:
+        base_weights = pd.to_numeric(result[base_weight_column], errors="coerce").fillna(1.0).to_numpy(dtype=float)
+        final_weights = final_weights * base_weights
+    result[VALUE_RECOVERY_TRAINING_WEIGHT_COLUMN] = final_weights
     race_count = int(result["race_id"].nunique()) if "race_id" in result.columns else int(len(result))
     _emit_progress(
         progress_callback,
         "value recovery variant training data: "
-        f"races={race_count}, mean_weight={float(np.mean(weights)):.4g}, "
+        f"races={race_count}, mean_weight={float(np.mean(final_weights)):.4g}, "
         f"high_value_races={int(result.loc[payouts >= 10000.0, 'race_id'].nunique()) if 'race_id' in result.columns else int(np.sum(payouts >= 10000.0))}",
     )
     return result
@@ -5390,13 +5413,25 @@ def train_neural_regression_variants(
         _emit_progress(progress_callback, f"training neural regression variant: {name}, model_type={model_type}")
         variant_train_df = train_df
         sample_weight_column = None
+        upset_settings = dict(variant.get("upset_training", {}) or {})
+        if bool(upset_settings.get("enabled", False)):
+            if model_type != "mlp":
+                raise ValueError("upset_training is supported only for neural model_type=mlp.")
+            variant_train_df = build_upset_variant_training_frame(
+                train_df,
+                config,
+                upset_settings,
+                progress_callback=progress_callback,
+            )
+            sample_weight_column = UPSET_TRAINING_WEIGHT_COLUMN
         value_recovery_settings = dict(variant.get("value_recovery_training", {}) or {})
         if bool(value_recovery_settings.get("enabled", False)):
             if model_type != "mlp":
                 raise ValueError("value_recovery_training is supported only for neural model_type=mlp.")
             variant_train_df = build_value_recovery_variant_training_frame(
-                train_df,
+                variant_train_df,
                 value_recovery_settings,
+                base_weight_column=sample_weight_column,
                 progress_callback=progress_callback,
             )
             sample_weight_column = VALUE_RECOVERY_TRAINING_WEIGHT_COLUMN
