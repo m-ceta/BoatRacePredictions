@@ -421,14 +421,14 @@ DEFAULT_ENSEMBLE_SETTINGS = {
     "max_model_weight": 1.0,
     "min_nonzero_weight": 0.0,
     "objective": "trifecta_top12_balanced",
-    "objective_top12_weight": 0.35,
-    "objective_top5_weight": 0.25,
-    "objective_top3_weight": 0.15,
+    "objective_top12_weight": 0.32,
+    "objective_top5_weight": 0.18,
+    "objective_top3_weight": 0.28,
     "objective_top1_weight": 0.10,
     "objective_top3_overlap_weight": 0.10,
-    "objective_recovery_weight": 0.20,
-    "objective_value_hit_weight": 0.05,
-    "objective_top12_payout_weight": 0.08,
+    "objective_recovery_weight": 0.08,
+    "objective_value_hit_weight": 0.02,
+    "objective_top12_payout_weight": 0.02,
     "objective_log_loss_weight": 0.05,
     "recovery_score_cap": 0.80,
     "top12_payout_score_cap": 5000.0,
@@ -6920,15 +6920,15 @@ def evaluate_fast_trifecta_ensemble_candidate(
         )
     elif objective_name == "trifecta_value_balanced":
         objective = (
-            float(settings.get("objective_top12_weight", 0.25)) * top12_hit_rate
-            + float(settings.get("objective_top5_weight", 0.20)) * top5_hit_rate
-            + float(settings.get("objective_top3_weight", 0.25)) * top3_hit_rate
+            float(settings.get("objective_top12_weight", 0.32)) * top12_hit_rate
+            + float(settings.get("objective_top5_weight", 0.18)) * top5_hit_rate
+            + float(settings.get("objective_top3_weight", 0.28)) * top3_hit_rate
             + float(settings.get("objective_top1_weight", 0.10)) * top1_hit_rate
-            + float(settings.get("objective_recovery_weight", 0.20))
+            + float(settings.get("objective_recovery_weight", 0.08))
             * float(value_metrics.get("normalized_recovery_score", 0.0))
-            + float(settings.get("objective_value_hit_weight", 0.05))
+            + float(settings.get("objective_value_hit_weight", 0.02))
             * float(value_metrics.get("value_rule_hit_rate", 0.0))
-            + float(settings.get("objective_top12_payout_weight", 0.08))
+            + float(settings.get("objective_top12_payout_weight", 0.02))
             * float(top12_payout_metrics.get("normalized_top12_payout_capture_score", 0.0))
             - float(settings.get("objective_log_loss_weight", 0.05)) * normalized_log_loss
             - float(value_metrics.get("purchase_rate_penalty", 0.0))

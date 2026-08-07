@@ -50,14 +50,14 @@ models:
       folds: 3
       method: race_id_hash
     objective: trifecta_value_balanced
-    objective_top12_weight: 0.25
-    objective_top5_weight: 0.20
-    objective_top3_weight: 0.25
+    objective_top12_weight: 0.32
+    objective_top5_weight: 0.18
+    objective_top3_weight: 0.28
     objective_top1_weight: 0.10
     objective_top3_overlap_weight: 0.00
-    objective_recovery_weight: 0.20
-    objective_value_hit_weight: 0.05
-    objective_top12_payout_weight: 0.08
+    objective_recovery_weight: 0.08
+    objective_value_hit_weight: 0.02
+    objective_top12_payout_weight: 0.02
     objective_log_loss_weight: 0.05
     recovery_score_cap: 0.80
     top12_payout_score_cap: 8000
