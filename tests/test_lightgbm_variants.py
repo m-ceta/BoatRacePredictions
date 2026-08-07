@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import numpy as np
 import pytest
 
 from src.models import ranker
@@ -399,6 +400,27 @@ def test_neural_value_recovery_variant_allows_combined_upset_training() -> None:
     assert variant["upset_training"]["history_years"] == 8.0
     assert variant["value_recovery_training"]["enabled"] is True
     assert variant["value_recovery_training"]["payout_weight_10000_30000"] == 2.0
+
+
+def test_variable_ticket_recovery_metrics_uses_configured_value_rule() -> None:
+    prob_matrix = np.full((2, 120), 0.001, dtype=float)
+    prob_matrix[0, :12] = 0.05
+    prob_matrix[1, :12] = 0.04
+    prob_matrix = prob_matrix / prob_matrix.sum(axis=1, keepdims=True)
+    actual_indices = np.asarray([2, 4], dtype=int)
+    payouts = np.asarray([1000.0, 1000.0], dtype=float)
+
+    metrics = ranker._fast_variable_ticket_recovery_metrics(
+        prob_matrix,
+        actual_indices,
+        payouts,
+        value_rule={"high": "top3", "middle": "top3", "low": "skip"},
+    )
+
+    assert metrics["rule"] == {"high": "top3", "middle": "top3", "low": "skip"}
+    assert set(metrics["by_decision"]) <= {"skip", "top3"}
+    assert "top5" not in metrics["by_decision"]
+    assert "top8" not in metrics["by_decision"]
 
 
 def test_random_forest_regression_variant_config_validates_finish_position_target() -> None:

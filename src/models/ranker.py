@@ -1739,7 +1739,7 @@ def _fast_matrix_metrics(prob_matrix: np.ndarray, actual_indices: np.ndarray) ->
 def _evaluate_fast_v1_trifecta_metrics_from_ranked(
     ranked: pd.DataFrame,
     calibrator: IsotonicRegression | None,
-    weights: dict[str, float],
+    weights: dict[str, Any],
 ) -> dict[str, Any] | None:
     if ranked.empty or not {"race_id", "lane", "finish_position", "win_probability_like"}.issubset(ranked.columns):
         return None
@@ -1853,6 +1853,7 @@ def _evaluate_fast_v1_trifecta_metrics_from_ranked(
         prob_matrix,
         actual_array,
         np.asarray(trifecta_payouts, dtype=float),
+        value_rule=dict(weights.get("value_rule", {}) or {}),
     )
     if variable_ticket_recovery_metrics:
         metrics["variable_ticket_recovery_metrics"] = variable_ticket_recovery_metrics
@@ -2163,6 +2164,7 @@ def _fast_variable_ticket_recovery_metrics(
     prob_matrix: np.ndarray,
     actual_indices: np.ndarray,
     trifecta_payouts: np.ndarray,
+    value_rule: dict[str, Any] | None = None,
     stake_per_ticket: float = 100.0,
 ) -> dict[str, Any]:
     if prob_matrix.size == 0 or len(actual_indices) == 0 or len(trifecta_payouts) != len(actual_indices):
@@ -2200,12 +2202,29 @@ def _fast_variable_ticket_recovery_metrics(
         + 0.10 * np.clip(concentration / 0.25, 0.0, 1.0)
     ) * 100.0
     labels = np.where(scores >= 75.0, "high", np.where(scores >= 60.0, "middle", "low"))
-    ticket_counts = np.where(labels == "high", 5, np.where(labels == "middle", 8, 0)).astype(int)
+    rule = {
+        "high": "top5",
+        "middle": "top8",
+        "low": "skip",
+        **dict(value_rule or {}),
+    }
+    ticket_counts = np.zeros(len(valid_actual), dtype=int)
+    decisions = np.full(len(valid_actual), "skip", dtype=object)
+    for label in ("high", "middle", "low"):
+        decision = str(rule.get(label, "skip")).strip().lower()
+        mask = labels == label
+        decisions[mask] = decision
+        if decision.startswith("top"):
+            try:
+                ticket_count = int(decision.removeprefix("top"))
+            except ValueError:
+                ticket_count = 0
+            ticket_counts[mask] = max(ticket_count, 0)
     ticket_counts = np.minimum(ticket_counts, valid_probs.shape[1])
     hits = (ticket_counts > 0) & (actual_ranks < ticket_counts)
     stakes = ticket_counts.astype(float) * float(stake_per_ticket)
     returns = np.where(hits, valid_payouts, 0.0)
-    decisions = np.where(labels == "high", "top5", np.where(labels == "middle", "top8", "skip"))
+    decision_order = tuple(dict.fromkeys(["skip", *[str(rule.get(label, "skip")).strip().lower() for label in ("high", "middle", "low")]]))
 
     return {
         "summary": _fast_summarize_variable_ticket_records(
@@ -2226,14 +2245,10 @@ def _fast_variable_ticket_recovery_metrics(
                 scores=scores[mask],
                 total_races=len(valid_actual),
             )
-            for decision in ("skip", "top5", "top8")
+            for decision in decision_order
             if bool((mask := decisions == decision).any())
         },
-        "rule": {
-            "high": "top5",
-            "middle": "top8",
-            "low": "skip",
-        },
+        "rule": rule,
     }
 
 
@@ -7176,6 +7191,7 @@ def optimize_ensemble_weights(
         "validation_cv_folds": float(cv_folds_used),
         "validation_objective_name": objective_name,
         "validation_fast_trifecta_races": float(fast_eval_races),
+        "value_rule": dict(settings.get("value_rule", {}) or {}),
     }
 
 
