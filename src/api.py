@@ -28,7 +28,11 @@ from src.models.ranker import (
 )
 from src.parsers.bk_parser import parse_entry_file, parse_result_file
 from src.rowdata_sync import RowdataBackfillReport, backfill_rowdata
-from src.top12_confidence import apply_top12_probability_adjustment_table, attach_top12_confidence_columns
+from src.top12_confidence import (
+    apply_top12_probability_adjustment_table,
+    attach_top12_confidence_columns,
+    attach_top3_confidence_columns,
+)
 
 if TYPE_CHECKING:
     from src.live import TodayRacePrediction
@@ -195,6 +199,10 @@ def predict_trifecta(
         bundle.probability_adjustment_table,
         probability_col="probability",
         output_col="adjusted_probability",
+    )
+    trifecta = attach_top3_confidence_columns(
+        trifecta,
+        probability_col="adjusted_probability" if "adjusted_probability" in trifecta.columns else "probability",
     )
     if "odds" in trifecta.columns and "adjusted_probability" in trifecta.columns:
         trifecta["expected_value_probability"] = pd.to_numeric(

@@ -7,8 +7,10 @@ import pandas as pd
 from sklearn.metrics import brier_score_loss, log_loss
 
 from src.top12_confidence import (
+    attach_top3_confidence_columns,
     attach_top12_confidence_columns,
-    recommended_ticket_count_from_top12_confidence,
+    recommended_ticket_count_from_top3_confidence,
+    top3_confidence_label_key,
     top12_confidence_label_key,
 )
 
@@ -19,6 +21,13 @@ PAYOUT_BANDS: tuple[tuple[str, float | None, float | None, str], ...] = (
     ("gte_50000_lt_100000", 50000.0, 100000.0, "50000_to_99999"),
     ("gte_100000", 100000.0, None, "100000_or_more"),
 )
+
+
+def _trifecta_winner(value: object) -> str | None:
+    text = str(value).strip()
+    if not text:
+        return None
+    return text.split("-", 1)[0].strip()
 
 
 def compute_trifecta_metrics(
@@ -37,6 +46,7 @@ def compute_trifecta_metrics(
 
     race_count = int(trifecta_df["race_id"].nunique())
     top_hits = {1: 0, 3: 0, 5: 0, 10: 0, 12: 0}
+    boat_top1_hits = 0
     covered_races = 0
     log_losses: list[float] = []
     brier_scores: list[float] = []
@@ -57,6 +67,8 @@ def compute_trifecta_metrics(
 
         for top_k in top_hits:
             top_hits[top_k] += int(actual_idx < top_k)
+        if _trifecta_winner(ordered.iloc[0].get("trifecta")) == _trifecta_winner(ordered.loc[actual_idx].get("trifecta")):
+            boat_top1_hits += 1
 
         log_losses.append(-np.log(actual_probability))
         brier_scores.append(float(np.mean((probs - labels) ** 2)))
@@ -67,6 +79,7 @@ def compute_trifecta_metrics(
         "race_count": float(race_count),
         "covered_races": float(covered_races),
         "candidate_coverage_rate": covered_races / race_count if race_count else 0.0,
+        "boat_top1_hit_rate": boat_top1_hits / race_count if race_count else 0.0,
         "top1_hit_rate": top_hits[1] / race_count if race_count else 0.0,
         "top3_hit_rate": top_hits[3] / race_count if race_count else 0.0,
         "top5_hit_rate": top_hits[5] / race_count if race_count else 0.0,
@@ -89,6 +102,10 @@ def compute_trifecta_metrics(
     top12_confidence_metrics = compute_top12_confidence_metrics(trifecta_df, probability_col=probability_col)
     if top12_confidence_metrics:
         metrics["top12_confidence_metrics"] = top12_confidence_metrics
+
+    top3_confidence_metrics = compute_top3_confidence_metrics(trifecta_df, probability_col=probability_col)
+    if top3_confidence_metrics:
+        metrics["top3_confidence_metrics"] = top3_confidence_metrics
 
     payout_band_metrics = compute_payout_band_metrics(trifecta_df, probability_col=probability_col)
     if payout_band_metrics:
@@ -322,7 +339,7 @@ def compute_variable_ticket_recovery_metrics(
     if trifecta_df.empty or payout_col not in trifecta_df.columns:
         return {}
 
-    frame = attach_top12_confidence_columns(trifecta_df, probability_col=probability_col)
+    frame = attach_top3_confidence_columns(trifecta_df, probability_col=probability_col)
     records: list[dict[str, float | str]] = []
     records_by_decision: dict[str, list[dict[str, float | str]]] = {}
     for _, race_df in frame.groupby("race_id", sort=False):
@@ -338,7 +355,7 @@ def compute_variable_ticket_recovery_metrics(
             continue
 
         top_row = ordered.iloc[0]
-        requested_tickets = recommended_ticket_count_from_top12_confidence(top_row.get("top12_confidence_label"))
+        requested_tickets = recommended_ticket_count_from_top3_confidence(top_row.get("top3_confidence_label"))
         decision = _variable_ticket_decision(requested_tickets)
         ticket_count = min(requested_tickets, len(ordered))
         actual_idx = int(actual_positions[0])
@@ -349,7 +366,7 @@ def compute_variable_ticket_recovery_metrics(
             "stake": float(ticket_count) * float(stake_per_ticket),
             "return": payout * hit,
             "payout": payout,
-            "score": float(top_row.get("top12_confidence_score", 0.0) or 0.0),
+            "score": float(top_row.get("top3_confidence_score", 0.0) or 0.0),
             "ticket_count": float(ticket_count),
         }
         records.append(record)
@@ -365,19 +382,18 @@ def compute_variable_ticket_recovery_metrics(
             for decision, decision_records in sorted(records_by_decision.items())
         },
         "rule": {
-            "high": "top5",
-            "middle": "top8",
+            "high": "top3",
+            "middle": "top1",
             "low": "skip",
         },
+        "confidence_type": "top3",
     }
 
 
 def _variable_ticket_decision(ticket_count: int) -> str:
     count = int(ticket_count)
-    if count == 5:
-        return "top5"
-    if count == 8:
-        return "top8"
+    if count > 0:
+        return f"top{count}"
     return "skip"
 
 
@@ -642,6 +658,74 @@ def _summarize_top12_confidence_records(
         "mean_score": float(np.mean(scores)),
         "mean_top12_probability_mass": float(np.mean(top12_masses)),
         "mean_top5_probability_mass": float(np.mean(top5_masses)),
+    }
+
+
+def compute_top3_confidence_metrics(
+    trifecta_df: pd.DataFrame,
+    probability_col: str = "probability",
+) -> dict[str, dict[str, float]]:
+    if trifecta_df.empty:
+        return {}
+
+    required = {"race_id", "trifecta", probability_col, "is_actual"}
+    missing = required - set(trifecta_df.columns)
+    if missing:
+        raise ValueError(f"Missing top3 confidence metric columns: {sorted(missing)}")
+
+    frame = attach_top3_confidence_columns(trifecta_df, probability_col=probability_col)
+    by_label: dict[str, list[dict[str, float]]] = {}
+
+    for _, scored_race in frame.groupby("race_id", sort=False):
+        ordered = scored_race.sort_values(probability_col, ascending=False).reset_index(drop=True)
+        actual_positions = np.flatnonzero(ordered["is_actual"].to_numpy(dtype=bool))
+        if len(actual_positions) != 1:
+            continue
+        actual_idx = int(actual_positions[0])
+        top_row = ordered.iloc[0]
+        record = {
+            "boat_top1_hit": float(
+                _trifecta_winner(top_row.get("trifecta")) == _trifecta_winner(ordered.loc[actual_idx].get("trifecta"))
+            ),
+            "top3_hit": float(int(actual_idx < 3)),
+            "score": float(top_row.get("top3_confidence_score", 0.0) or 0.0),
+            "top3_probability_mass": float(top_row.get("top3_probability_mass", 0.0) or 0.0),
+            "top1_probability": float(top_row.get("top1_probability", 0.0) or 0.0),
+            "top3_top4_probability_margin": float(top_row.get("top3_top4_probability_margin", 0.0) or 0.0),
+        }
+        by_label.setdefault(top3_confidence_label_key(top_row.get("top3_confidence_label")), []).append(record)
+
+    total_races = sum(len(records) for records in by_label.values())
+    return {
+        key: _summarize_top3_confidence_records(records, total_races=total_races)
+        for key, records in sorted(by_label.items())
+    }
+
+
+def _summarize_top3_confidence_records(
+    records: list[dict[str, float]],
+    total_races: int,
+) -> dict[str, float]:
+    if not records:
+        return {
+            "race_count": 0.0,
+            "race_rate": 0.0,
+            "boat_top1_hit_rate": 0.0,
+            "top3_hit_rate": 0.0,
+            "mean_score": 0.0,
+            "mean_top3_probability_mass": 0.0,
+            "mean_top1_probability": 0.0,
+            "mean_top3_probability_margin": 0.0,
+        }
+    return {
+        "race_count": float(len(records)),
+        "race_rate": float(len(records) / total_races) if total_races else 0.0,
+        "boat_top1_hit_rate": float(np.mean([record["boat_top1_hit"] for record in records])),
+        "top3_hit_rate": float(np.mean([record["top3_hit"] for record in records])),
+        "mean_score": float(np.mean([record["score"] for record in records])),
+        "mean_top3_probability_mass": float(np.mean([record["top3_probability_mass"] for record in records])),
+        "mean_top1_probability": float(np.mean([record["top1_probability"] for record in records])),
+        "mean_top3_probability_margin": float(np.mean([record["top3_top4_probability_margin"] for record in records])),
     }
 
 

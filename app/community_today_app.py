@@ -271,9 +271,10 @@ def _format_trifecta_frame(frame):
         ("odds", "現在オッズ"),
         ("expected_value", "期待値"),
         ("recommended_bet_amount", "推奨購入金額"),
-        ("top12_confidence_score", "Top12信頼スコア"),
-        ("top12_confidence_label", "Top12信頼"),
+        ("top3_confidence_score", "Top3信頼スコア"),
+        ("top3_confidence_label", "Top3信頼"),
         ("recommended_ticket_label", "推奨点数"),
+        ("top12_confidence_score", "Top12信頼スコア"),
         ("trifecta_darkhorse_score", "穴度"),
     ]
     formatted = frame.copy()
@@ -318,8 +319,8 @@ def _render_prediction_guide() -> None:
 
 - `期待値` は `現在オッズ × 予想確率` です。
 - `期待値` が 1.0 以上、かつ `現在オッズ` が 12.0 倍以上なら `買い`、それ以外は `見送り` です。
-- `Top12信頼スコア` は 0〜100 の総合指標です。Top12内の確率合計、上位確率の集中度、1位と2位の差、Top12境界の余裕、荒れ度を合成しています。
-- `Top12信頼` は 75以上が高、60以上が中、60未満が低です。
+- `Top3信頼スコア` は 0〜100 の購入判断用指標です。Top3内の確率合計、Top1確率、1位と2位の差、Top3境界の余裕、確率集中度、荒れ度を合成しています。
+- `Top3信頼` は 75以上が高、60以上が中、60未満が低です。
 
 **予想信頼度**
 

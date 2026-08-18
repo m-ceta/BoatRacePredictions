@@ -195,20 +195,26 @@ def test_compute_trifecta_metrics_includes_variable_ticket_recovery_metrics() ->
     metrics = compute_trifecta_metrics(pd.DataFrame(rows))
 
     variable = metrics["variable_ticket_recovery_metrics"]
-    assert variable["rule"] == {"high": "top5", "middle": "top8", "low": "skip"}
+    assert variable["rule"] == {"high": "top3", "middle": "top1", "low": "skip"}
+    assert variable["confidence_type"] == "top3"
     summary = variable["summary"]
     assert summary["race_count"] == 3.0
     assert summary["purchased_race_count"] == 2.0
     assert summary["purchase_rate"] == 2.0 / 3.0
-    assert summary["average_ticket_count"] == (5.0 + 8.0) / 3.0
-    assert summary["hit_rate"] == 1.0
-    assert summary["overall_hit_rate"] == 2.0 / 3.0
-    assert summary["total_stake"] == 1300.0
-    assert summary["total_return"] == 4000.0
-    assert summary["recovery_rate"] == 4000.0 / 1300.0
+    assert summary["average_ticket_count"] == (3.0 + 1.0) / 3.0
+    assert summary["hit_rate"] == 0.0
+    assert summary["overall_hit_rate"] == 0.0
+    assert summary["total_stake"] == 400.0
+    assert summary["total_return"] == 0.0
+    assert summary["recovery_rate"] == 0.0
     assert variable["by_decision"]["skip"]["purchased_race_count"] == 0.0
-    assert variable["by_decision"]["top5"]["hit_rate"] == 1.0
-    assert variable["by_decision"]["top8"]["hit_rate"] == 1.0
+    assert variable["by_decision"]["top3"]["hit_rate"] == 0.0
+    assert variable["by_decision"]["top1"]["hit_rate"] == 0.0
+
+    top3_confidence = metrics["top3_confidence_metrics"]
+    assert top3_confidence["high"]["top3_hit_rate"] == 0.0
+    assert top3_confidence["middle"]["top3_hit_rate"] == 0.0
+    assert top3_confidence["low"]["top3_hit_rate"] == 1.0
 
     confidence_strategy = metrics["top12_confidence_strategy_recovery_metrics"]
     assert set(confidence_strategy["high"]) == {"top3", "top5", "top8", "top12", "bottom8", "bottom6"}

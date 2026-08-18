@@ -423,15 +423,16 @@ DEFAULT_ENSEMBLE_SETTINGS = {
     "objective": "trifecta_top3_balanced",
     "objective_top12_weight": 0.05,
     "objective_top5_weight": 0.10,
-    "objective_top3_weight": 0.85,
-    "objective_top1_weight": 0.00,
+    "objective_top3_weight": 0.45,
+    "objective_boat_top1_weight": 0.35,
+    "objective_top1_weight": 0.05,
     "objective_top3_overlap_weight": 0.00,
     "objective_recovery_weight": 0.00,
     "objective_value_hit_weight": 0.00,
     "objective_top12_payout_weight": 0.00,
     "objective_log_loss_weight": 0.00,
     "recovery_score_cap": 0.80,
-    "top12_payout_score_cap": 5000.0,
+    "top12_payout_score_cap": 8000.0,
     "min_purchase_rate": 0.10,
     "purchase_rate_penalty_weight": 0.20,
     "value_confidence_calibration": {
@@ -1696,6 +1697,7 @@ def _fast_matrix_metrics(prob_matrix: np.ndarray, actual_indices: np.ndarray) ->
     valid_mask = (actual >= 0) & (actual < probs.shape[1])
     covered = int(valid_mask.sum())
     top_hits = {1: 0, 3: 0, 5: 0, 10: 0, 12: 0}
+    boat_top1_hit_rate = 0.0
     if covered:
         valid_probs = probs[valid_mask]
         valid_actual = actual[valid_mask]
@@ -1706,6 +1708,9 @@ def _fast_matrix_metrics(prob_matrix: np.ndarray, actual_indices: np.ndarray) ->
         actual_probabilities = np.clip(valid_probs[np.arange(len(valid_actual)), valid_actual], 1e-15, 1.0)
         for top_k in top_hits:
             top_hits[top_k] = int(np.sum(actual_ranks < top_k))
+        predicted_winners = TRIFECTA_FAST_PERMUTATIONS[order[:, 0], 0]
+        actual_winners = TRIFECTA_FAST_PERMUTATIONS[valid_actual, 0]
+        boat_top1_hit_rate = float(np.mean(predicted_winners == actual_winners))
         brier_scores = (
             np.sum(valid_probs * valid_probs, axis=1)
             - (2.0 * valid_probs[np.arange(len(valid_actual)), valid_actual])
@@ -1725,6 +1730,7 @@ def _fast_matrix_metrics(prob_matrix: np.ndarray, actual_indices: np.ndarray) ->
         "race_count": float(race_count),
         "covered_races": float(covered),
         "candidate_coverage_rate": covered / race_count if race_count else 0.0,
+        "boat_top1_hit_rate": boat_top1_hit_rate,
         "top1_hit_rate": top_hits[1] / race_count if race_count else 0.0,
         "top3_hit_rate": top_hits[3] / race_count if race_count else 0.0,
         "top5_hit_rate": top_hits[5] / race_count if race_count else 0.0,
@@ -1822,6 +1828,9 @@ def _evaluate_fast_v1_trifecta_metrics_from_ranked(
     top12_confidence_metrics = _fast_top12_confidence_metrics(prob_matrix, actual_array)
     if top12_confidence_metrics:
         metrics["top12_confidence_metrics"] = top12_confidence_metrics
+    top3_confidence_metrics = _fast_top3_confidence_metrics(prob_matrix, actual_array)
+    if top3_confidence_metrics:
+        metrics["top3_confidence_metrics"] = top3_confidence_metrics
     payout_band_metrics = _fast_payout_band_metrics(
         prob_matrix,
         actual_array,
@@ -1979,6 +1988,54 @@ def _fast_top12_confidence_metrics(
     return metrics
 
 
+def _fast_top3_confidence_metrics(
+    prob_matrix: np.ndarray,
+    actual_indices: np.ndarray,
+) -> dict[str, Any]:
+    if prob_matrix.size == 0 or len(actual_indices) == 0:
+        return {}
+    valid_mask = (
+        (actual_indices >= 0)
+        & (actual_indices < prob_matrix.shape[1])
+    )
+    if not bool(valid_mask.any()):
+        return {}
+
+    valid_probs = prob_matrix[valid_mask]
+    valid_actual = actual_indices[valid_mask].astype(int)
+    order = np.argsort(-valid_probs, axis=1, kind="mergesort")
+    positions = np.empty_like(order)
+    positions[np.arange(len(order))[:, None], order] = np.arange(order.shape[1], dtype=int)
+    actual_ranks = positions[np.arange(len(valid_actual)), valid_actual]
+    sorted_probs = np.take_along_axis(valid_probs, order, axis=1)
+    top3_mass = sorted_probs[:, :3].sum(axis=1)
+    top1_probability = sorted_probs[:, 0]
+    top3_margin = sorted_probs[:, 2] - sorted_probs[:, 3] if sorted_probs.shape[1] > 3 else np.zeros(len(sorted_probs))
+    scores = _top3_confidence_scores_from_sorted_probs(sorted_probs)
+    labels = np.where(scores >= 75.0, "high", np.where(scores >= 60.0, "middle", "low"))
+    top3_hits = (actual_ranks < 3).astype(float)
+    predicted_winners = TRIFECTA_FAST_PERMUTATIONS[order[:, 0], 0]
+    actual_winners = TRIFECTA_FAST_PERMUTATIONS[valid_actual, 0]
+    boat_top1_hits = (predicted_winners == actual_winners).astype(float)
+
+    metrics: dict[str, Any] = {}
+    for label in ("high", "middle", "low"):
+        mask = labels == label
+        if not bool(mask.any()):
+            continue
+        metrics[label] = {
+            "race_count": float(mask.sum()),
+            "race_rate": float(mask.sum() / len(valid_actual)) if len(valid_actual) else 0.0,
+            "boat_top1_hit_rate": float(np.mean(boat_top1_hits[mask])),
+            "top3_hit_rate": float(np.mean(top3_hits[mask])),
+            "mean_score": float(np.mean(scores[mask])),
+            "mean_top3_probability_mass": float(np.mean(top3_mass[mask])),
+            "mean_top1_probability": float(np.mean(top1_probability[mask])),
+            "mean_top3_probability_margin": float(np.mean(top3_margin[mask])),
+        }
+    return metrics
+
+
 def _fast_payout_band_metrics(
     prob_matrix: np.ndarray,
     actual_indices: np.ndarray,
@@ -2117,21 +2174,7 @@ def _fast_top12_confidence_recovery_metrics(
     positions[np.arange(len(order))[:, None], order] = np.arange(order.shape[1], dtype=int)
     actual_ranks = positions[np.arange(len(valid_actual)), valid_actual]
     sorted_probs = np.take_along_axis(valid_probs, order, axis=1)
-    top12_mass = sorted_probs[:, :12].sum(axis=1)
-    top5_mass = sorted_probs[:, :5].sum(axis=1)
-    top1_top2_gap = sorted_probs[:, 0] - sorted_probs[:, 1]
-    top12_margin = sorted_probs[:, 11] - sorted_probs[:, 12]
-    clipped = np.clip(sorted_probs, 1e-12, 1.0)
-    entropy = -np.sum(clipped * np.log(clipped), axis=1)
-    max_entropy = float(np.log(sorted_probs.shape[1])) if sorted_probs.shape[1] > 1 else 1.0
-    concentration = 1.0 - np.clip(entropy / max_entropy, 0.0, 1.0)
-    scores = (
-        0.45 * np.clip((top12_mass - 0.10) / 0.45, 0.0, 1.0)
-        + 0.20 * np.clip((top5_mass - 0.04) / 0.25, 0.0, 1.0)
-        + 0.15 * np.clip(top1_top2_gap / 0.06, 0.0, 1.0)
-        + 0.10 * np.clip(top12_margin / 0.01, 0.0, 1.0)
-        + 0.10 * np.clip(concentration / 0.25, 0.0, 1.0)
-    ) * 100.0
+    scores = _top12_confidence_scores_from_sorted_probs(sorted_probs)
     labels = np.where(scores >= 75.0, "high", np.where(scores >= 60.0, "middle", "low"))
     top12_hits = actual_ranks < 12
     ticket_count = min(12, valid_probs.shape[1])
@@ -2187,25 +2230,11 @@ def _fast_variable_ticket_recovery_metrics(
     positions[np.arange(len(order))[:, None], order] = np.arange(order.shape[1], dtype=int)
     actual_ranks = positions[np.arange(len(valid_actual)), valid_actual]
     sorted_probs = np.take_along_axis(valid_probs, order, axis=1)
-    top12_mass = sorted_probs[:, :12].sum(axis=1)
-    top5_mass = sorted_probs[:, :5].sum(axis=1)
-    top1_top2_gap = sorted_probs[:, 0] - sorted_probs[:, 1]
-    top12_margin = sorted_probs[:, 11] - sorted_probs[:, 12]
-    clipped = np.clip(sorted_probs, 1e-12, 1.0)
-    entropy = -np.sum(clipped * np.log(clipped), axis=1)
-    max_entropy = float(np.log(sorted_probs.shape[1])) if sorted_probs.shape[1] > 1 else 1.0
-    concentration = 1.0 - np.clip(entropy / max_entropy, 0.0, 1.0)
-    scores = (
-        0.45 * np.clip((top12_mass - 0.10) / 0.45, 0.0, 1.0)
-        + 0.20 * np.clip((top5_mass - 0.04) / 0.25, 0.0, 1.0)
-        + 0.15 * np.clip(top1_top2_gap / 0.06, 0.0, 1.0)
-        + 0.10 * np.clip(top12_margin / 0.01, 0.0, 1.0)
-        + 0.10 * np.clip(concentration / 0.25, 0.0, 1.0)
-    ) * 100.0
+    scores = _top3_confidence_scores_from_sorted_probs(sorted_probs)
     labels = np.where(scores >= 75.0, "high", np.where(scores >= 60.0, "middle", "low"))
     rule = {
-        "high": "top5",
-        "middle": "top8",
+        "high": "top3",
+        "middle": "top1",
         "low": "skip",
         **dict(value_rule or {}),
     }
@@ -2250,6 +2279,7 @@ def _fast_variable_ticket_recovery_metrics(
             if bool((mask := decisions == decision).any())
         },
         "rule": rule,
+        "confidence_type": "top3",
     }
 
 
@@ -6656,6 +6686,7 @@ def build_fast_trifecta_eval_context(base: pd.DataFrame) -> dict[str, Any]:
     row_groups: list[np.ndarray] = []
     actual_indices: list[int] = []
     trifecta_payouts: list[float] = []
+    race_upset_scores: list[float] = []
     for _, race_df in base.groupby("race_id", sort=False):
         if len(race_df) != 6:
             continue
@@ -6679,6 +6710,9 @@ def build_fast_trifecta_eval_context(base: pd.DataFrame) -> dict[str, Any]:
         if "trifecta_payout" in race_df.columns:
             payout_values = pd.to_numeric(race_df["trifecta_payout"], errors="coerce").dropna()
             trifecta_payouts.append(float(payout_values.iloc[0]) if not payout_values.empty else float("nan"))
+        if "race_upset_score" in race_df.columns:
+            upset_values = pd.to_numeric(race_df["race_upset_score"], errors="coerce").dropna()
+            race_upset_scores.append(float(upset_values.iloc[0]) if not upset_values.empty else 0.0)
     if not row_groups:
         return {"race_count": 0}
     context = {
@@ -6688,6 +6722,8 @@ def build_fast_trifecta_eval_context(base: pd.DataFrame) -> dict[str, Any]:
     }
     if len(trifecta_payouts) == len(actual_indices):
         context["trifecta_payouts"] = np.asarray(trifecta_payouts, dtype=float)
+    if len(race_upset_scores) == len(actual_indices):
+        context["race_upset_scores"] = np.asarray(race_upset_scores, dtype=float)
     return context
 
 
@@ -6779,11 +6815,44 @@ def _top12_confidence_scores_from_sorted_probs(sorted_probs: np.ndarray) -> np.n
     ) * 100.0
 
 
+def _top3_confidence_scores_from_sorted_probs(
+    sorted_probs: np.ndarray,
+    race_upset_scores: np.ndarray | None = None,
+) -> np.ndarray:
+    if sorted_probs.size == 0:
+        return np.asarray([], dtype=float)
+    top3_end = min(3, sorted_probs.shape[1])
+    top3_mass = sorted_probs[:, :top3_end].sum(axis=1)
+    top1_probability = sorted_probs[:, 0]
+    top1_top2_gap = sorted_probs[:, 0] - sorted_probs[:, 1] if sorted_probs.shape[1] > 1 else sorted_probs[:, 0]
+    top3_margin = (
+        sorted_probs[:, 2] - sorted_probs[:, 3]
+        if sorted_probs.shape[1] > 3
+        else np.zeros(len(sorted_probs), dtype=float)
+    )
+    clipped = np.clip(sorted_probs, 1e-12, 1.0)
+    entropy = -np.sum(clipped * np.log(clipped), axis=1)
+    max_entropy = float(np.log(sorted_probs.shape[1])) if sorted_probs.shape[1] > 1 else 1.0
+    concentration = 1.0 - np.clip(entropy / max_entropy, 0.0, 1.0)
+    raw_scores = (
+        0.35 * np.clip((top3_mass - 0.03) / 0.16, 0.0, 1.0)
+        + 0.20 * np.clip((top1_probability - 0.01) / 0.08, 0.0, 1.0)
+        + 0.15 * np.clip(top1_top2_gap / 0.035, 0.0, 1.0)
+        + 0.15 * np.clip(top3_margin / 0.012, 0.0, 1.0)
+        + 0.15 * np.clip(concentration / 0.25, 0.0, 1.0)
+    )
+    if race_upset_scores is not None and len(race_upset_scores) == len(sorted_probs):
+        upset_scores = np.nan_to_num(np.asarray(race_upset_scores, dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
+        raw_scores = raw_scores - 0.08 * np.clip((upset_scores - 0.75) / 0.25, 0.0, 1.0)
+    return np.clip(raw_scores, 0.0, 1.0) * 100.0
+
+
 def _fast_value_rule_metrics(
     actual_rank: np.ndarray,
     sorted_probs: np.ndarray,
     trifecta_payouts: np.ndarray | None,
     settings: dict[str, Any],
+    race_upset_scores: np.ndarray | None = None,
     stake_per_ticket: float = 100.0,
 ) -> dict[str, float]:
     if trifecta_payouts is None or len(trifecta_payouts) != len(actual_rank):
@@ -6819,7 +6888,12 @@ def _fast_value_rule_metrics(
     valid_actual_rank = actual_rank[valid_payout_mask]
     valid_sorted_probs = sorted_probs[valid_payout_mask]
     valid_payouts = trifecta_payouts[valid_payout_mask].astype(float)
-    scores = _top12_confidence_scores_from_sorted_probs(valid_sorted_probs)
+    valid_upset_scores = (
+        np.asarray(race_upset_scores, dtype=float)[valid_payout_mask]
+        if race_upset_scores is not None and len(race_upset_scores) == len(actual_rank)
+        else None
+    )
+    scores = _top3_confidence_scores_from_sorted_probs(valid_sorted_probs, race_upset_scores=valid_upset_scores)
     labels = np.where(scores >= 75.0, "high", np.where(scores >= 60.0, "middle", "low"))
     rule = dict(settings.get("value_rule", {}) or {})
     ticket_counts = np.zeros(len(valid_actual_rank), dtype=int)
@@ -6892,7 +6966,7 @@ def _fast_top12_payout_capture_metrics(
     top12_hits = valid_ranks < 12
     captured = np.where(top12_hits, valid_payouts, 0.0)
     mean_capture = float(np.mean(captured))
-    score_cap = max(float(settings.get("top12_payout_score_cap", 5000.0)), 1e-9)
+    score_cap = max(float(settings.get("top12_payout_score_cap", 8000.0)), 1e-9)
     return {
         "top12_payout_capture_mean": mean_capture,
         "top12_payout_capture_hit_mean": float(np.mean(valid_payouts[top12_hits])) if bool(top12_hits.any()) else 0.0,
@@ -6943,11 +7017,13 @@ def evaluate_fast_trifecta_ensemble_candidate(
     top3_hit = actual_rank < 3
     top5_hit = actual_rank < 5
     top12_hit = actual_rank < 12
+    boat_top1_hit = best_permutations[:, 0] == actual_permutations[:, 0]
     log_loss = -float(np.mean(np.log(actual_probs)))
     top1_hit_rate = float(np.mean(top1_hit))
     top3_hit_rate = float(np.mean(top3_hit))
     top12_hit_rate = float(np.mean(top12_hit))
     top5_hit_rate = float(np.mean(top5_hit))
+    boat_top1_hit_rate = float(np.mean(boat_top1_hit))
     avg_top3_overlap = float(np.mean(top3_overlap))
     normalized_log_loss = log_loss / float(np.log(120.0))
     objective_name = str(settings.get("objective", "trifecta_top12_balanced"))
@@ -6957,6 +7033,7 @@ def evaluate_fast_trifecta_ensemble_candidate(
         sorted_probs=sorted_probs,
         trifecta_payouts=context.get("trifecta_payouts"),
         settings=settings,
+        race_upset_scores=context.get("race_upset_scores"),
     )
     top12_payout_metrics = _fast_top12_payout_capture_metrics(
         actual_rank=actual_rank,
@@ -6984,6 +7061,16 @@ def evaluate_fast_trifecta_ensemble_candidate(
             - float(settings.get("objective_log_loss_weight", 0.05)) * normalized_log_loss
             - float(value_metrics.get("purchase_rate_penalty", 0.0))
         )
+    elif objective_name == "trifecta_top3_balanced":
+        objective = (
+            float(settings.get("objective_boat_top1_weight", 0.35)) * boat_top1_hit_rate
+            + float(settings.get("objective_top3_weight", 0.45)) * top3_hit_rate
+            + float(settings.get("objective_top5_weight", 0.10)) * top5_hit_rate
+            + float(settings.get("objective_top12_weight", 0.05)) * top12_hit_rate
+            + float(settings.get("objective_top1_weight", 0.05)) * top1_hit_rate
+            + float(settings.get("objective_top3_overlap_weight", 0.0)) * avg_top3_overlap
+            - float(settings.get("objective_log_loss_weight", 0.0)) * normalized_log_loss
+        )
     else:
         objective = (
             float(settings.get("objective_top12_weight", 0.35)) * top12_hit_rate
@@ -6994,6 +7081,7 @@ def evaluate_fast_trifecta_ensemble_candidate(
             - float(settings.get("objective_log_loss_weight", 0.05)) * normalized_log_loss
         )
     metrics = {
+        "boat_top1_hit_rate": boat_top1_hit_rate,
         "top1_hit_rate": top1_hit_rate,
         "top3_hit_rate": top3_hit_rate,
         "top12_hit_rate": top12_hit_rate,
@@ -7074,6 +7162,8 @@ def optimize_ensemble_weights(
     base_columns = ["race_id", "lane", "finish_position"]
     if "trifecta_payout" in score_by_model[model_names[0]].columns:
         base_columns.append("trifecta_payout")
+    if "race_upset_score" in score_by_model[model_names[0]].columns:
+        base_columns.append("race_upset_score")
     base = score_by_model[model_names[0]][base_columns].copy()
     fold_bases = _split_base_by_race_hash(base, cv_folds_requested)
     fast_contexts = [build_fast_trifecta_eval_context(fold_base) for fold_base in fold_bases]
@@ -7166,6 +7256,7 @@ def optimize_ensemble_weights(
         "validation_objective": best_objective,
         "validation_top1_accuracy": float(best_metrics.get("top1_accuracy", best_metrics.get("top1_hit_rate", 0.0))),
         "validation_avg_top3_overlap": float(best_metrics.get("avg_top3_overlap", 0.0)),
+        "validation_boat_top1_hit_rate": float(best_metrics.get("boat_top1_hit_rate", 0.0)),
         "validation_top1_hit_rate": float(best_metrics.get("top1_hit_rate", 0.0)),
         "validation_top3_hit_rate": float(best_metrics.get("top3_hit_rate", 0.0)),
         "validation_top5_hit_rate": float(best_metrics.get("top5_hit_rate", 0.0)),

@@ -6,6 +6,8 @@ import pandas as pd
 
 TOP12_CONFIDENCE_HIGH_THRESHOLD = 75.0
 TOP12_CONFIDENCE_MIDDLE_THRESHOLD = 60.0
+TOP3_CONFIDENCE_HIGH_THRESHOLD = 75.0
+TOP3_CONFIDENCE_MIDDLE_THRESHOLD = 60.0
 
 _LABEL_HIGH = "\u9ad8"
 _LABEL_MIDDLE = "\u4e2d"
@@ -31,6 +33,29 @@ def attach_top12_confidence_columns(
         score_data = calculate_top12_confidence_for_race(scored, probability_col=probability_col)
         for key, value in score_data.items():
             scored[key] = value
+        score_rows.append(scored)
+    return pd.concat(score_rows, ignore_index=True) if score_rows else frame
+
+
+def attach_top3_confidence_columns(
+    trifecta_df: pd.DataFrame,
+    probability_col: str = "probability",
+    *,
+    update_recommendation: bool = True,
+) -> pd.DataFrame:
+    frame = trifecta_df.copy()
+    if frame.empty or "race_id" not in frame.columns or probability_col not in frame.columns:
+        return frame
+
+    score_rows: list[pd.DataFrame] = []
+    for _, race_df in frame.groupby("race_id", sort=False):
+        scored = race_df.copy()
+        score_data = calculate_top3_confidence_for_race(scored, probability_col=probability_col)
+        for key, value in score_data.items():
+            scored[key] = value
+        if update_recommendation:
+            scored["recommended_ticket_count"] = scored["top3_recommended_ticket_count"]
+            scored["recommended_ticket_label"] = scored["top3_recommended_ticket_label"]
         score_rows.append(scored)
     return pd.concat(score_rows, ignore_index=True) if score_rows else frame
 
@@ -89,6 +114,58 @@ def calculate_top12_confidence_for_race(
     }
 
 
+def calculate_top3_confidence_for_race(
+    race_df: pd.DataFrame,
+    probability_col: str = "probability",
+) -> dict[str, float | str]:
+    if race_df.empty or probability_col not in race_df.columns:
+        return _empty_top3_confidence()
+
+    ordered = race_df.sort_values(probability_col, ascending=False).reset_index(drop=True)
+    probs = pd.to_numeric(ordered[probability_col], errors="coerce").fillna(0.0).clip(lower=0.0).to_numpy(dtype=float)
+    total = float(probs.sum())
+    if total > 0.0:
+        probs = probs / total
+    elif len(probs):
+        probs = np.full(len(probs), 1.0 / len(probs), dtype=float)
+    else:
+        return _empty_top3_confidence()
+
+    top3_mass = float(probs[:3].sum())
+    top1_probability = float(probs[0])
+    top1_top2_gap = float(probs[0] - probs[1]) if len(probs) >= 2 else float(probs[0])
+    top3_margin = float(probs[2] - probs[3]) if len(probs) >= 4 else float(probs[min(len(probs) - 1, 2)])
+    concentration = 1.0 - _normalized_entropy(probs)
+    race_upset_score = _race_value(ordered, "race_upset_score", 0.0)
+
+    top3_mass_score = _clip01((top3_mass - 0.03) / 0.16)
+    top1_score = _clip01((top1_probability - 0.01) / 0.08)
+    top1_gap_score = _clip01(top1_top2_gap / 0.035)
+    top3_margin_score = _clip01(top3_margin / 0.012)
+    concentration_score = _clip01(concentration / 0.25)
+    upset_penalty = _clip01((race_upset_score - 0.75) / 0.25)
+
+    raw_score = (
+        0.35 * top3_mass_score
+        + 0.20 * top1_score
+        + 0.15 * top1_gap_score
+        + 0.15 * top3_margin_score
+        + 0.15 * concentration_score
+        - 0.08 * upset_penalty
+    )
+    score = round(_clip01(raw_score) * 100.0, 1)
+    recommended_ticket_count = recommended_ticket_count_from_top3_confidence(score)
+    return {
+        "top3_confidence_score": score,
+        "top3_confidence_label": label_top3_confidence(score),
+        "top3_recommended_ticket_count": recommended_ticket_count,
+        "top3_recommended_ticket_label": recommended_ticket_label_from_count(recommended_ticket_count),
+        "top3_probability_mass": round(top3_mass, 6),
+        "top1_probability": round(top1_probability, 6),
+        "top3_top4_probability_margin": round(top3_margin, 6),
+    }
+
+
 def label_top12_confidence(score: float) -> str:
     value = float(score)
     if value >= TOP12_CONFIDENCE_HIGH_THRESHOLD:
@@ -98,7 +175,25 @@ def label_top12_confidence(score: float) -> str:
     return _LABEL_LOW
 
 
+def label_top3_confidence(score: float) -> str:
+    value = float(score)
+    if value >= TOP3_CONFIDENCE_HIGH_THRESHOLD:
+        return _LABEL_HIGH
+    if value >= TOP3_CONFIDENCE_MIDDLE_THRESHOLD:
+        return _LABEL_MIDDLE
+    return _LABEL_LOW
+
+
 def top12_confidence_label_key(value: object) -> str:
+    text = str(value)
+    if text == _LABEL_HIGH:
+        return "high"
+    if text == _LABEL_MIDDLE:
+        return "middle"
+    return "low"
+
+
+def top3_confidence_label_key(value: object) -> str:
     text = str(value)
     if text == _LABEL_HIGH:
         return "high"
@@ -122,6 +217,24 @@ def recommended_ticket_count_from_top12_confidence(value: object) -> int:
         return 5
     if label == "middle":
         return 8
+    return 0
+
+
+def recommended_ticket_count_from_top3_confidence(value: object) -> int:
+    if isinstance(value, str):
+        label = top3_confidence_label_key(value)
+    else:
+        score = float(value)
+        if score >= TOP3_CONFIDENCE_HIGH_THRESHOLD:
+            label = "high"
+        elif score >= TOP3_CONFIDENCE_MIDDLE_THRESHOLD:
+            label = "middle"
+        else:
+            label = "low"
+    if label == "high":
+        return 3
+    if label == "middle":
+        return 1
     return 0
 
 
@@ -275,6 +388,18 @@ def _empty_top12_confidence() -> dict[str, float | str]:
         "top1_top2_probability_gap": 0.0,
         "top12_probability_margin": 0.0,
         "probability_concentration": 0.0,
+    }
+
+
+def _empty_top3_confidence() -> dict[str, float | str]:
+    return {
+        "top3_confidence_score": 0.0,
+        "top3_confidence_label": _LABEL_LOW,
+        "top3_recommended_ticket_count": 0,
+        "top3_recommended_ticket_label": "\u898b\u9001\u308a",
+        "top3_probability_mass": 0.0,
+        "top1_probability": 0.0,
+        "top3_top4_probability_margin": 0.0,
     }
 
 

@@ -35,7 +35,11 @@ from src.odds.expected_value import (
     attach_recommended_bet_amount_columns,
 )
 from src.parsers.bk_parser import parse_entry_text
-from src.top12_confidence import apply_top12_probability_adjustment_table, attach_top12_confidence_columns
+from src.top12_confidence import (
+    apply_top12_probability_adjustment_table,
+    attach_top12_confidence_columns,
+    attach_top3_confidence_columns,
+)
 from src.today_schedule import (
     choose_default_today_race_no as _choose_default_today_race_no,
     choose_default_today_venue as _choose_default_today_venue,
@@ -150,7 +154,7 @@ class TodayRacePrediction:
                     f"補正後確率: {format_percent(float(top_odds.get('expected_value_probability', top_odds.get('probability', 0.0)) or 0.0))}",
                     f"期待値: {float(top_odds['expected_value']):.2f}",
                     f"推奨購入金額: {int(float(top_odds.get('recommended_bet_amount', 0) or 0))}円",
-                    f"Top12信頼スコア: {float(top_odds.get('top12_confidence_score', 0.0)):.1f} ({top_odds.get('top12_confidence_label', '-')})",
+                    f"Top3信頼スコア: {float(top_odds.get('top3_confidence_score', 0.0)):.1f} ({top_odds.get('top3_confidence_label', '-')})",
                     f"推奨買い点数: {top_odds.get('recommended_ticket_label', '-')} ({int(float(top_odds.get('recommended_ticket_count', 0) or 0))}点)",
                     f"判定: {top_odds['buy_decision']}",
                 ]
@@ -163,7 +167,7 @@ class TodayRacePrediction:
                     f"補正後確率 {format_percent(float(getattr(row, 'expected_value_probability', getattr(row, 'probability', 0.0)) or 0.0))} | "
                     f"期待値 {float(row.expected_value):.2f} | "
                     f"推奨 {int(float(getattr(row, 'recommended_bet_amount', 0) or 0))}円 | "
-                    f"Top12信頼 {float(getattr(row, 'top12_confidence_score', 0.0)):.1f} ({getattr(row, 'top12_confidence_label', '-')}) | "
+                    f"Top3信頼 {float(getattr(row, 'top3_confidence_score', 0.0)):.1f} ({getattr(row, 'top3_confidence_label', '-')}) | "
                     f"判定 {row.buy_decision}"
                 )
         lines.append("Top10 3連単候補:")
@@ -242,6 +246,10 @@ def predict_today_race(
         bundle.probability_adjustment_table,
         probability_col="probability",
         output_col="adjusted_probability",
+    )
+    trifecta = attach_top3_confidence_columns(
+        trifecta,
+        probability_col="adjusted_probability" if "adjusted_probability" in trifecta.columns else "probability",
     )
     confidence_score = calculate_prediction_confidence(ranking, trifecta)
     odds = fetch_boatrace_trifecta_odds(target_date, venue_code, int(race_no))
@@ -1062,7 +1070,7 @@ def select_buy_candidates(odds_frame: pd.DataFrame, top_n: int = 5) -> pd.DataFr
     buy_only = odds_frame[odds_frame["buy_decision"] != "見送り"].copy()
     sort_columns = [
         "recommended_bet_amount",
-        "top12_confidence_score",
+        "top3_confidence_score",
         "expected_value",
         "ticket_priority_score",
         "probability",

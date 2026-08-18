@@ -52,8 +52,9 @@ models:
     objective: trifecta_top3_balanced
     objective_top12_weight: 0.05
     objective_top5_weight: 0.10
-    objective_top3_weight: 0.85
-    objective_top1_weight: 0.00
+    objective_top3_weight: 0.45
+    objective_boat_top1_weight: 0.35
+    objective_top1_weight: 0.05
     objective_top3_overlap_weight: 0.00
     objective_recovery_weight: 0.00
     objective_value_hit_weight: 0.00
