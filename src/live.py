@@ -37,6 +37,7 @@ from src.odds.expected_value import (
 from src.parsers.bk_parser import parse_entry_text
 from src.top12_confidence import (
     apply_top12_probability_adjustment_table,
+    attach_boat_top1_confidence_columns,
     attach_top12_confidence_columns,
     attach_top3_confidence_columns,
 )
@@ -154,6 +155,8 @@ class TodayRacePrediction:
                     f"補正後確率: {format_percent(float(top_odds.get('expected_value_probability', top_odds.get('probability', 0.0)) or 0.0))}",
                     f"期待値: {float(top_odds['expected_value']):.2f}",
                     f"推奨購入金額: {int(float(top_odds.get('recommended_bet_amount', 0) or 0))}円",
+                    f"1位艇信頼スコア: {float(top_odds.get('boat_top1_confidence_score', 0.0)):.1f} ({top_odds.get('boat_top1_confidence_label', '-')})",
+                    f"予測1位艇: {top_odds.get('predicted_first_boat', '-')}",
                     f"Top3信頼スコア: {float(top_odds.get('top3_confidence_score', 0.0)):.1f} ({top_odds.get('top3_confidence_label', '-')})",
                     f"推奨買い点数: {top_odds.get('recommended_ticket_label', '-')} ({int(float(top_odds.get('recommended_ticket_count', 0) or 0))}点)",
                     f"判定: {top_odds['buy_decision']}",
@@ -167,6 +170,7 @@ class TodayRacePrediction:
                     f"補正後確率 {format_percent(float(getattr(row, 'expected_value_probability', getattr(row, 'probability', 0.0)) or 0.0))} | "
                     f"期待値 {float(row.expected_value):.2f} | "
                     f"推奨 {int(float(getattr(row, 'recommended_bet_amount', 0) or 0))}円 | "
+                    f"1位艇信頼 {float(getattr(row, 'boat_top1_confidence_score', 0.0)):.1f} ({getattr(row, 'boat_top1_confidence_label', '-')}) | "
                     f"Top3信頼 {float(getattr(row, 'top3_confidence_score', 0.0)):.1f} ({getattr(row, 'top3_confidence_label', '-')}) | "
                     f"判定 {row.buy_decision}"
                 )
@@ -248,6 +252,10 @@ def predict_today_race(
         output_col="adjusted_probability",
     )
     trifecta = attach_top3_confidence_columns(
+        trifecta,
+        probability_col="adjusted_probability" if "adjusted_probability" in trifecta.columns else "probability",
+    )
+    trifecta = attach_boat_top1_confidence_columns(
         trifecta,
         probability_col="adjusted_probability" if "adjusted_probability" in trifecta.columns else "probability",
     )
@@ -1070,6 +1078,7 @@ def select_buy_candidates(odds_frame: pd.DataFrame, top_n: int = 5) -> pd.DataFr
     buy_only = odds_frame[odds_frame["buy_decision"] != "見送り"].copy()
     sort_columns = [
         "recommended_bet_amount",
+        "boat_top1_confidence_score",
         "top3_confidence_score",
         "expected_value",
         "ticket_priority_score",

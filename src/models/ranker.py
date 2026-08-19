@@ -1831,6 +1831,20 @@ def _evaluate_fast_v1_trifecta_metrics_from_ranked(
     top3_confidence_metrics = _fast_top3_confidence_metrics(prob_matrix, actual_array)
     if top3_confidence_metrics:
         metrics["top3_confidence_metrics"] = top3_confidence_metrics
+    boat_top1_confidence_metrics = _fast_boat_top1_confidence_metrics(
+        prob_matrix,
+        actual_array,
+        np.asarray(trifecta_payouts, dtype=float),
+    )
+    if boat_top1_confidence_metrics:
+        metrics["boat_top1_confidence_metrics"] = boat_top1_confidence_metrics
+    top3_x_boat_top1_confidence_metrics = _fast_top3_x_boat_top1_confidence_metrics(
+        prob_matrix,
+        actual_array,
+        np.asarray(trifecta_payouts, dtype=float),
+    )
+    if top3_x_boat_top1_confidence_metrics:
+        metrics["top3_x_boat_top1_confidence_metrics"] = top3_x_boat_top1_confidence_metrics
     payout_band_metrics = _fast_payout_band_metrics(
         prob_matrix,
         actual_array,
@@ -2036,6 +2050,171 @@ def _fast_top3_confidence_metrics(
     return metrics
 
 
+def _fast_boat_top1_confidence_metrics(
+    prob_matrix: np.ndarray,
+    actual_indices: np.ndarray,
+    trifecta_payouts: np.ndarray,
+    stake_per_ticket: float = 100.0,
+) -> dict[str, Any]:
+    if prob_matrix.size == 0 or len(actual_indices) == 0:
+        return {}
+    valid_mask = (
+        (actual_indices >= 0)
+        & (actual_indices < prob_matrix.shape[1])
+    )
+    if not bool(valid_mask.any()):
+        return {}
+
+    valid_probs = prob_matrix[valid_mask]
+    valid_actual = actual_indices[valid_mask].astype(int)
+    valid_payouts = (
+        trifecta_payouts[valid_mask].astype(float)
+        if len(trifecta_payouts) == len(actual_indices)
+        else np.full(len(valid_actual), np.nan, dtype=float)
+    )
+    order = np.argsort(-valid_probs, axis=1, kind="mergesort")
+    positions = np.empty_like(order)
+    positions[np.arange(len(order))[:, None], order] = np.arange(order.shape[1], dtype=int)
+    actual_ranks = positions[np.arange(len(valid_actual)), valid_actual]
+    sorted_probs = np.take_along_axis(valid_probs, order, axis=1)
+
+    first_boats = TRIFECTA_FAST_PERMUTATIONS[: valid_probs.shape[1], 0].astype(int)
+    boat_prob_matrix = np.zeros((len(valid_probs), 6), dtype=float)
+    for boat in range(1, 7):
+        boat_prob_matrix[:, boat - 1] = valid_probs[:, first_boats == boat].sum(axis=1)
+    predicted_boats = np.argmax(boat_prob_matrix, axis=1) + 1
+    sorted_boat_probs = np.sort(boat_prob_matrix, axis=1)[:, ::-1]
+    predicted_probabilities = sorted_boat_probs[:, 0]
+    gaps = sorted_boat_probs[:, 0] - sorted_boat_probs[:, 1]
+    top3_first_boats = first_boats[order[:, : min(3, order.shape[1])]]
+    top3_same_first_boat_rate = np.mean(top3_first_boats == predicted_boats[:, None], axis=1)
+    scores = _boat_top1_confidence_scores_from_boat_probs(
+        boat_prob_matrix,
+        top3_same_first_boat_rate=top3_same_first_boat_rate,
+    )
+    labels = np.where(scores >= 75.0, "high", np.where(scores >= 60.0, "middle", "low"))
+    actual_winners = TRIFECTA_FAST_PERMUTATIONS[valid_actual, 0].astype(int)
+    boat_top1_hits = predicted_boats == actual_winners
+    top3_hits = actual_ranks < 3
+    top12_hits = actual_ranks < 12
+    valid_payout_mask = np.isfinite(valid_payouts) & (valid_payouts > 0.0)
+    top3_ticket_count = min(3, valid_probs.shape[1])
+    top3_stake_per_race = float(top3_ticket_count) * float(stake_per_ticket)
+
+    metrics: dict[str, Any] = {}
+    for label in ("high", "middle", "low"):
+        mask = labels == label
+        if not bool(mask.any()):
+            continue
+        payout_mask = mask & valid_payout_mask
+        total_stake = float(payout_mask.sum()) * top3_stake_per_race
+        total_return = float(np.sum(np.where(top3_hits[payout_mask], valid_payouts[payout_mask], 0.0)))
+        hit_payouts = valid_payouts[payout_mask & top3_hits]
+        metrics[label] = {
+            "race_count": float(mask.sum()),
+            "race_rate": float(mask.sum() / len(valid_actual)) if len(valid_actual) else 0.0,
+            "boat_top1_hit_rate": float(np.mean(boat_top1_hits[mask])),
+            "top3_hit_rate": float(np.mean(top3_hits[mask])),
+            "top12_hit_rate": float(np.mean(top12_hits[mask])),
+            "top3_total_stake": total_stake,
+            "top3_total_return": total_return,
+            "top3_recovery_rate": total_return / total_stake if total_stake else 0.0,
+            "mean_score": float(np.mean(scores[mask])),
+            "mean_predicted_first_boat_probability": float(np.mean(predicted_probabilities[mask])),
+            "mean_predicted_first_boat_gap": float(np.mean(gaps[mask])),
+            "mean_payout_hit": float(np.mean(hit_payouts)) if len(hit_payouts) else 0.0,
+        }
+    return metrics
+
+
+def _fast_top3_x_boat_top1_confidence_metrics(
+    prob_matrix: np.ndarray,
+    actual_indices: np.ndarray,
+    trifecta_payouts: np.ndarray,
+    stake_per_ticket: float = 100.0,
+) -> dict[str, Any]:
+    if prob_matrix.size == 0 or len(actual_indices) == 0:
+        return {}
+    valid_mask = (
+        (actual_indices >= 0)
+        & (actual_indices < prob_matrix.shape[1])
+    )
+    if not bool(valid_mask.any()):
+        return {}
+
+    valid_probs = prob_matrix[valid_mask]
+    valid_actual = actual_indices[valid_mask].astype(int)
+    valid_payouts = (
+        trifecta_payouts[valid_mask].astype(float)
+        if len(trifecta_payouts) == len(actual_indices)
+        else np.full(len(valid_actual), np.nan, dtype=float)
+    )
+    order = np.argsort(-valid_probs, axis=1, kind="mergesort")
+    positions = np.empty_like(order)
+    positions[np.arange(len(order))[:, None], order] = np.arange(order.shape[1], dtype=int)
+    actual_ranks = positions[np.arange(len(valid_actual)), valid_actual]
+    sorted_probs = np.take_along_axis(valid_probs, order, axis=1)
+    top3_scores = _top3_confidence_scores_from_sorted_probs(sorted_probs)
+    top3_labels = np.where(top3_scores >= 75.0, "high", np.where(top3_scores >= 60.0, "middle", "low"))
+
+    first_boats = TRIFECTA_FAST_PERMUTATIONS[: valid_probs.shape[1], 0].astype(int)
+    boat_prob_matrix = np.zeros((len(valid_probs), 6), dtype=float)
+    for boat in range(1, 7):
+        boat_prob_matrix[:, boat - 1] = valid_probs[:, first_boats == boat].sum(axis=1)
+    predicted_boats = np.argmax(boat_prob_matrix, axis=1) + 1
+    sorted_boat_probs = np.sort(boat_prob_matrix, axis=1)[:, ::-1]
+    predicted_probabilities = sorted_boat_probs[:, 0]
+    gaps = sorted_boat_probs[:, 0] - sorted_boat_probs[:, 1]
+    top3_first_boats = first_boats[order[:, : min(3, order.shape[1])]]
+    top3_same_first_boat_rate = np.mean(top3_first_boats == predicted_boats[:, None], axis=1)
+    boat_scores = _boat_top1_confidence_scores_from_boat_probs(
+        boat_prob_matrix,
+        top3_same_first_boat_rate=top3_same_first_boat_rate,
+    )
+    boat_labels = np.where(boat_scores >= 75.0, "high", np.where(boat_scores >= 60.0, "middle", "low"))
+
+    actual_winners = TRIFECTA_FAST_PERMUTATIONS[valid_actual, 0].astype(int)
+    boat_top1_hits = predicted_boats == actual_winners
+    top3_hits = actual_ranks < 3
+    top12_hits = actual_ranks < 12
+    valid_payout_mask = np.isfinite(valid_payouts) & (valid_payouts > 0.0)
+    top3_ticket_count = min(3, valid_probs.shape[1])
+    top3_stake_per_race = float(top3_ticket_count) * float(stake_per_ticket)
+
+    result: dict[str, Any] = {}
+    for top3_label in ("high", "middle", "low"):
+        row: dict[str, Any] = {}
+        top3_mask = top3_labels == top3_label
+        if not bool(top3_mask.any()):
+            continue
+        for boat_label in ("high", "middle", "low"):
+            mask = top3_mask & (boat_labels == boat_label)
+            if not bool(mask.any()):
+                continue
+            payout_mask = mask & valid_payout_mask
+            total_stake = float(payout_mask.sum()) * top3_stake_per_race
+            total_return = float(np.sum(np.where(top3_hits[payout_mask], valid_payouts[payout_mask], 0.0)))
+            hit_payouts = valid_payouts[payout_mask & top3_hits]
+            row[boat_label] = {
+                "race_count": float(mask.sum()),
+                "race_rate": float(mask.sum() / len(valid_actual)) if len(valid_actual) else 0.0,
+                "boat_top1_hit_rate": float(np.mean(boat_top1_hits[mask])),
+                "top3_hit_rate": float(np.mean(top3_hits[mask])),
+                "top12_hit_rate": float(np.mean(top12_hits[mask])),
+                "top3_total_stake": total_stake,
+                "top3_total_return": total_return,
+                "top3_recovery_rate": total_return / total_stake if total_stake else 0.0,
+                "mean_top3_confidence_score": float(np.mean(top3_scores[mask])),
+                "mean_boat_top1_confidence_score": float(np.mean(boat_scores[mask])),
+                "mean_predicted_first_boat_probability": float(np.mean(predicted_probabilities[mask])),
+                "mean_predicted_first_boat_gap": float(np.mean(gaps[mask])),
+                "mean_payout_hit": float(np.mean(hit_payouts)) if len(hit_payouts) else 0.0,
+            }
+        if row:
+            result[top3_label] = row
+    return result
+
+
 def _fast_payout_band_metrics(
     prob_matrix: np.ndarray,
     actual_indices: np.ndarray,
@@ -2086,7 +2265,7 @@ def _fast_uniform_ticket_recovery_metrics(
     prob_matrix: np.ndarray,
     actual_indices: np.ndarray,
     trifecta_payouts: np.ndarray,
-    top_ns: tuple[int, ...] = (3, 5, 8, 12),
+    top_ns: tuple[int, ...] = (1, 3, 5, 8, 12),
     bottom_ns: tuple[int, ...] = (8, 6),
     stake_per_ticket: float = 100.0,
 ) -> dict[str, Any]:
@@ -2234,7 +2413,7 @@ def _fast_variable_ticket_recovery_metrics(
     labels = np.where(scores >= 75.0, "high", np.where(scores >= 60.0, "middle", "low"))
     rule = {
         "high": "top3",
-        "middle": "top1",
+        "middle": "top3",
         "low": "skip",
         **dict(value_rule or {}),
     }
@@ -2287,7 +2466,7 @@ def _fast_top12_confidence_strategy_recovery_metrics(
     prob_matrix: np.ndarray,
     actual_indices: np.ndarray,
     trifecta_payouts: np.ndarray,
-    top_ns: tuple[int, ...] = (3, 5, 8, 12),
+    top_ns: tuple[int, ...] = (1, 3, 5, 8, 12),
     bottom_ns: tuple[int, ...] = (8, 6),
     stake_per_ticket: float = 100.0,
 ) -> dict[str, Any]:
@@ -6842,6 +7021,44 @@ def _top3_confidence_scores_from_sorted_probs(
         + 0.15 * np.clip(concentration / 0.25, 0.0, 1.0)
     )
     if race_upset_scores is not None and len(race_upset_scores) == len(sorted_probs):
+        upset_scores = np.nan_to_num(np.asarray(race_upset_scores, dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
+        raw_scores = raw_scores - 0.08 * np.clip((upset_scores - 0.75) / 0.25, 0.0, 1.0)
+    return np.clip(raw_scores, 0.0, 1.0) * 100.0
+
+
+def _boat_top1_confidence_scores_from_boat_probs(
+    boat_prob_matrix: np.ndarray,
+    top3_same_first_boat_rate: np.ndarray | None = None,
+    race_upset_scores: np.ndarray | None = None,
+) -> np.ndarray:
+    if boat_prob_matrix.size == 0:
+        return np.asarray([], dtype=float)
+    normalized = np.nan_to_num(np.asarray(boat_prob_matrix, dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
+    row_sums = normalized.sum(axis=1, keepdims=True)
+    normalized = np.divide(
+        normalized,
+        row_sums,
+        out=np.full_like(normalized, 1.0 / normalized.shape[1]),
+        where=row_sums > 0,
+    )
+    sorted_boat_probs = np.sort(normalized, axis=1)[:, ::-1]
+    predicted_probabilities = sorted_boat_probs[:, 0]
+    gaps = sorted_boat_probs[:, 0] - sorted_boat_probs[:, 1] if sorted_boat_probs.shape[1] > 1 else sorted_boat_probs[:, 0]
+    clipped = np.clip(normalized, 1e-12, 1.0)
+    entropy = -np.sum(clipped * np.log(clipped), axis=1)
+    max_entropy = float(np.log(normalized.shape[1])) if normalized.shape[1] > 1 else 1.0
+    concentration = 1.0 - np.clip(entropy / max_entropy, 0.0, 1.0)
+    if top3_same_first_boat_rate is None or len(top3_same_first_boat_rate) != len(normalized):
+        same_first_rate = np.zeros(len(normalized), dtype=float)
+    else:
+        same_first_rate = np.clip(np.nan_to_num(top3_same_first_boat_rate, nan=0.0), 0.0, 1.0)
+    raw_scores = (
+        0.45 * np.clip((predicted_probabilities - (1.0 / 6.0)) / 0.45, 0.0, 1.0)
+        + 0.25 * np.clip(gaps / 0.25, 0.0, 1.0)
+        + 0.15 * same_first_rate
+        + 0.15 * np.clip(concentration / 0.45, 0.0, 1.0)
+    )
+    if race_upset_scores is not None and len(race_upset_scores) == len(normalized):
         upset_scores = np.nan_to_num(np.asarray(race_upset_scores, dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
         raw_scores = raw_scores - 0.08 * np.clip((upset_scores - 0.75) / 0.25, 0.0, 1.0)
     return np.clip(raw_scores, 0.0, 1.0) * 100.0

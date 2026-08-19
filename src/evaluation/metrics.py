@@ -7,8 +7,10 @@ import pandas as pd
 from sklearn.metrics import brier_score_loss, log_loss
 
 from src.top12_confidence import (
+    attach_boat_top1_confidence_columns,
     attach_top3_confidence_columns,
     attach_top12_confidence_columns,
+    boat_top1_confidence_label_key,
     recommended_ticket_count_from_top3_confidence,
     top3_confidence_label_key,
     top12_confidence_label_key,
@@ -107,6 +109,17 @@ def compute_trifecta_metrics(
     if top3_confidence_metrics:
         metrics["top3_confidence_metrics"] = top3_confidence_metrics
 
+    boat_top1_confidence_metrics = compute_boat_top1_confidence_metrics(trifecta_df, probability_col=probability_col)
+    if boat_top1_confidence_metrics:
+        metrics["boat_top1_confidence_metrics"] = boat_top1_confidence_metrics
+
+    top3_x_boat_top1_confidence_metrics = compute_top3_x_boat_top1_confidence_metrics(
+        trifecta_df,
+        probability_col=probability_col,
+    )
+    if top3_x_boat_top1_confidence_metrics:
+        metrics["top3_x_boat_top1_confidence_metrics"] = top3_x_boat_top1_confidence_metrics
+
     payout_band_metrics = compute_payout_band_metrics(trifecta_df, probability_col=probability_col)
     if payout_band_metrics:
         metrics["payout_band_metrics"] = payout_band_metrics
@@ -146,7 +159,7 @@ def compute_uniform_ticket_recovery_metrics(
     trifecta_df: pd.DataFrame,
     probability_col: str = "probability",
     payout_col: str = "trifecta_payout",
-    top_ns: Iterable[int] = (3, 5, 8, 12),
+    top_ns: Iterable[int] = (1, 3, 5, 8, 12),
     bottom_ns: Iterable[int] = (8, 6),
     stake_per_ticket: float = 100.0,
 ) -> dict[str, dict[str, float]]:
@@ -254,7 +267,7 @@ def compute_top12_confidence_strategy_recovery_metrics(
     trifecta_df: pd.DataFrame,
     probability_col: str = "probability",
     payout_col: str = "trifecta_payout",
-    top_ns: Iterable[int] = (3, 5, 8, 12),
+    top_ns: Iterable[int] = (1, 3, 5, 8, 12),
     bottom_ns: Iterable[int] = (8, 6),
     stake_per_ticket: float = 100.0,
 ) -> dict[str, dict[str, dict[str, float]]]:
@@ -383,7 +396,7 @@ def compute_variable_ticket_recovery_metrics(
         },
         "rule": {
             "high": "top3",
-            "middle": "top1",
+            "middle": "top3",
             "low": "skip",
         },
         "confidence_type": "top3",
@@ -726,6 +739,203 @@ def _summarize_top3_confidence_records(
         "mean_top3_probability_mass": float(np.mean([record["top3_probability_mass"] for record in records])),
         "mean_top1_probability": float(np.mean([record["top1_probability"] for record in records])),
         "mean_top3_probability_margin": float(np.mean([record["top3_top4_probability_margin"] for record in records])),
+    }
+
+
+def compute_boat_top1_confidence_metrics(
+    trifecta_df: pd.DataFrame,
+    probability_col: str = "probability",
+    payout_col: str = "trifecta_payout",
+    stake_per_ticket: float = 100.0,
+) -> dict[str, dict[str, float]]:
+    if trifecta_df.empty:
+        return {}
+
+    required = {"race_id", "trifecta", probability_col, "is_actual"}
+    missing = required - set(trifecta_df.columns)
+    if missing:
+        raise ValueError(f"Missing boat top1 confidence metric columns: {sorted(missing)}")
+
+    frame = attach_boat_top1_confidence_columns(trifecta_df, probability_col=probability_col)
+    has_payout = payout_col in frame.columns
+    by_label: dict[str, list[dict[str, float]]] = {}
+
+    for _, scored_race in frame.groupby("race_id", sort=False):
+        ordered = scored_race.sort_values(probability_col, ascending=False).reset_index(drop=True)
+        actual_positions = np.flatnonzero(ordered["is_actual"].to_numpy(dtype=bool))
+        if len(actual_positions) != 1:
+            continue
+
+        actual_idx = int(actual_positions[0])
+        top_row = ordered.iloc[0]
+        predicted_first_boat = str(top_row.get("predicted_first_boat", "")).split(".", 1)[0]
+        actual_first_boat = _trifecta_winner(ordered.loc[actual_idx].get("trifecta"))
+        top3_hit = float(actual_idx < 3)
+        payout = 0.0
+        if has_payout:
+            payout_values = pd.to_numeric(ordered[payout_col], errors="coerce").dropna()
+            payout = float(payout_values.iloc[0]) if not payout_values.empty else 0.0
+        record = {
+            "boat_top1_hit": float(predicted_first_boat == actual_first_boat),
+            "top3_hit": top3_hit,
+            "top12_hit": float(actual_idx < 12),
+            "score": float(top_row.get("boat_top1_confidence_score", 0.0) or 0.0),
+            "predicted_first_boat_probability": float(top_row.get("predicted_first_boat_probability", 0.0) or 0.0),
+            "predicted_first_boat_gap": float(top_row.get("predicted_first_boat_gap", 0.0) or 0.0),
+            "top3_return": payout * top3_hit if payout > 0.0 else 0.0,
+            "top3_stake": min(3, len(ordered)) * float(stake_per_ticket) if payout > 0.0 else 0.0,
+            "payout": payout,
+        }
+        by_label.setdefault(boat_top1_confidence_label_key(top_row.get("boat_top1_confidence_label")), []).append(record)
+
+    total_races = sum(len(records) for records in by_label.values())
+    return {
+        key: _summarize_boat_top1_confidence_records(records, total_races=total_races)
+        for key, records in sorted(by_label.items())
+    }
+
+
+def _summarize_boat_top1_confidence_records(
+    records: list[dict[str, float]],
+    total_races: int,
+) -> dict[str, float]:
+    if not records:
+        return {
+            "race_count": 0.0,
+            "race_rate": 0.0,
+            "boat_top1_hit_rate": 0.0,
+            "top3_hit_rate": 0.0,
+            "top12_hit_rate": 0.0,
+            "top3_total_stake": 0.0,
+            "top3_total_return": 0.0,
+            "top3_recovery_rate": 0.0,
+            "mean_score": 0.0,
+            "mean_predicted_first_boat_probability": 0.0,
+            "mean_predicted_first_boat_gap": 0.0,
+            "mean_payout_hit": 0.0,
+        }
+    top3_stakes = [record["top3_stake"] for record in records]
+    top3_returns = [record["top3_return"] for record in records]
+    total_stake = float(sum(top3_stakes))
+    total_return = float(sum(top3_returns))
+    hit_payouts = [record["payout"] for record in records if record["top3_hit"] > 0.0 and record["payout"] > 0.0]
+    return {
+        "race_count": float(len(records)),
+        "race_rate": float(len(records) / total_races) if total_races else 0.0,
+        "boat_top1_hit_rate": float(np.mean([record["boat_top1_hit"] for record in records])),
+        "top3_hit_rate": float(np.mean([record["top3_hit"] for record in records])),
+        "top12_hit_rate": float(np.mean([record["top12_hit"] for record in records])),
+        "top3_total_stake": total_stake,
+        "top3_total_return": total_return,
+        "top3_recovery_rate": total_return / total_stake if total_stake else 0.0,
+        "mean_score": float(np.mean([record["score"] for record in records])),
+        "mean_predicted_first_boat_probability": float(
+            np.mean([record["predicted_first_boat_probability"] for record in records])
+        ),
+        "mean_predicted_first_boat_gap": float(np.mean([record["predicted_first_boat_gap"] for record in records])),
+        "mean_payout_hit": float(np.mean(hit_payouts)) if hit_payouts else 0.0,
+    }
+
+
+def compute_top3_x_boat_top1_confidence_metrics(
+    trifecta_df: pd.DataFrame,
+    probability_col: str = "probability",
+    payout_col: str = "trifecta_payout",
+    stake_per_ticket: float = 100.0,
+) -> dict[str, dict[str, dict[str, float]]]:
+    if trifecta_df.empty:
+        return {}
+
+    required = {"race_id", "trifecta", probability_col, "is_actual"}
+    missing = required - set(trifecta_df.columns)
+    if missing:
+        raise ValueError(f"Missing top3 x boat top1 confidence metric columns: {sorted(missing)}")
+
+    frame = attach_top3_confidence_columns(trifecta_df, probability_col=probability_col)
+    frame = attach_boat_top1_confidence_columns(frame, probability_col=probability_col)
+    has_payout = payout_col in frame.columns
+    by_labels: dict[str, dict[str, list[dict[str, float]]]] = {
+        top3_label: {boat_label: [] for boat_label in ("high", "middle", "low")}
+        for top3_label in ("high", "middle", "low")
+    }
+
+    for _, scored_race in frame.groupby("race_id", sort=False):
+        ordered = scored_race.sort_values(probability_col, ascending=False).reset_index(drop=True)
+        actual_positions = np.flatnonzero(ordered["is_actual"].to_numpy(dtype=bool))
+        if len(actual_positions) != 1:
+            continue
+
+        actual_idx = int(actual_positions[0])
+        top_row = ordered.iloc[0]
+        top3_label = top3_confidence_label_key(top_row.get("top3_confidence_label"))
+        boat_label = boat_top1_confidence_label_key(top_row.get("boat_top1_confidence_label"))
+        predicted_first_boat = str(top_row.get("predicted_first_boat", "")).split(".", 1)[0]
+        actual_first_boat = _trifecta_winner(ordered.loc[actual_idx].get("trifecta"))
+        top3_hit = float(actual_idx < 3)
+        payout = 0.0
+        if has_payout:
+            payout_values = pd.to_numeric(ordered[payout_col], errors="coerce").dropna()
+            payout = float(payout_values.iloc[0]) if not payout_values.empty else 0.0
+        by_labels[top3_label][boat_label].append(
+            {
+                "boat_top1_hit": float(predicted_first_boat == actual_first_boat),
+                "top3_hit": top3_hit,
+                "top12_hit": float(actual_idx < 12),
+                "top3_confidence_score": float(top_row.get("top3_confidence_score", 0.0) or 0.0),
+                "boat_top1_confidence_score": float(top_row.get("boat_top1_confidence_score", 0.0) or 0.0),
+                "predicted_first_boat_probability": float(
+                    top_row.get("predicted_first_boat_probability", 0.0) or 0.0
+                ),
+                "predicted_first_boat_gap": float(top_row.get("predicted_first_boat_gap", 0.0) or 0.0),
+                "top3_return": payout * top3_hit if payout > 0.0 else 0.0,
+                "top3_stake": min(3, len(ordered)) * float(stake_per_ticket) if payout > 0.0 else 0.0,
+                "payout": payout,
+            }
+        )
+
+    total_races = sum(len(records) for by_boat in by_labels.values() for records in by_boat.values())
+    if total_races <= 0:
+        return {}
+
+    result: dict[str, dict[str, dict[str, float]]] = {}
+    for top3_label in ("high", "middle", "low"):
+        row: dict[str, dict[str, float]] = {}
+        for boat_label in ("high", "middle", "low"):
+            records = by_labels[top3_label][boat_label]
+            if records:
+                row[boat_label] = _summarize_confidence_cross_records(records, total_races=total_races)
+        if row:
+            result[top3_label] = row
+    return result
+
+
+def _summarize_confidence_cross_records(
+    records: list[dict[str, float]],
+    total_races: int,
+) -> dict[str, float]:
+    top3_stakes = [record["top3_stake"] for record in records]
+    top3_returns = [record["top3_return"] for record in records]
+    total_stake = float(sum(top3_stakes))
+    total_return = float(sum(top3_returns))
+    hit_payouts = [record["payout"] for record in records if record["top3_hit"] > 0.0 and record["payout"] > 0.0]
+    return {
+        "race_count": float(len(records)),
+        "race_rate": float(len(records) / total_races) if total_races else 0.0,
+        "boat_top1_hit_rate": float(np.mean([record["boat_top1_hit"] for record in records])),
+        "top3_hit_rate": float(np.mean([record["top3_hit"] for record in records])),
+        "top12_hit_rate": float(np.mean([record["top12_hit"] for record in records])),
+        "top3_total_stake": total_stake,
+        "top3_total_return": total_return,
+        "top3_recovery_rate": total_return / total_stake if total_stake else 0.0,
+        "mean_top3_confidence_score": float(np.mean([record["top3_confidence_score"] for record in records])),
+        "mean_boat_top1_confidence_score": float(
+            np.mean([record["boat_top1_confidence_score"] for record in records])
+        ),
+        "mean_predicted_first_boat_probability": float(
+            np.mean([record["predicted_first_boat_probability"] for record in records])
+        ),
+        "mean_predicted_first_boat_gap": float(np.mean([record["predicted_first_boat_gap"] for record in records])),
+        "mean_payout_hit": float(np.mean(hit_payouts)) if hit_payouts else 0.0,
     }
 
 

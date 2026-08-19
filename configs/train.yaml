@@ -86,6 +86,18 @@ models:
           min_data_in_leaf: 80
           feature_fraction: 0.65
           lambda_l2: 5.0
+      - name: lightgbm_top3
+        params:
+          objective: lambdarank
+          metric: ndcg
+          ndcg_eval_at: [1, 3]
+          num_leaves: 31
+          min_data_in_leaf: 40
+          learning_rate: 0.025
+          feature_fraction: 0.80
+          bagging_fraction: 0.85
+          bagging_freq: 1
+          lambda_l2: 3.0
       - name: lightgbm_upset_value_variant
         enabled: false
         params:
@@ -155,6 +167,18 @@ models:
           lambda: 8.0
           alpha: 1.0
           gamma: 0.5
+      - name: xgboost_ndcg3
+        params:
+          objective: rank:ndcg
+          eval_metric: ndcg@3
+          max_depth: 3
+          eta: 0.025
+          min_child_weight: 5.0
+          subsample: 0.85
+          colsample_bytree: 0.80
+          lambda: 5.0
+          alpha: 0.5
+          gamma: 0.2
   xgboost_regression_variants:
     enabled: true
     parallel_workers: 1

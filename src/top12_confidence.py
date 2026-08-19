@@ -8,6 +8,8 @@ TOP12_CONFIDENCE_HIGH_THRESHOLD = 75.0
 TOP12_CONFIDENCE_MIDDLE_THRESHOLD = 60.0
 TOP3_CONFIDENCE_HIGH_THRESHOLD = 75.0
 TOP3_CONFIDENCE_MIDDLE_THRESHOLD = 60.0
+BOAT_TOP1_CONFIDENCE_HIGH_THRESHOLD = 75.0
+BOAT_TOP1_CONFIDENCE_MIDDLE_THRESHOLD = 60.0
 
 _LABEL_HIGH = "\u9ad8"
 _LABEL_MIDDLE = "\u4e2d"
@@ -56,6 +58,24 @@ def attach_top3_confidence_columns(
         if update_recommendation:
             scored["recommended_ticket_count"] = scored["top3_recommended_ticket_count"]
             scored["recommended_ticket_label"] = scored["top3_recommended_ticket_label"]
+        score_rows.append(scored)
+    return pd.concat(score_rows, ignore_index=True) if score_rows else frame
+
+
+def attach_boat_top1_confidence_columns(
+    trifecta_df: pd.DataFrame,
+    probability_col: str = "probability",
+) -> pd.DataFrame:
+    frame = trifecta_df.copy()
+    if frame.empty or "race_id" not in frame.columns or "trifecta" not in frame.columns or probability_col not in frame.columns:
+        return frame
+
+    score_rows: list[pd.DataFrame] = []
+    for _, race_df in frame.groupby("race_id", sort=False):
+        scored = race_df.copy()
+        score_data = calculate_boat_top1_confidence_for_race(scored, probability_col=probability_col)
+        for key, value in score_data.items():
+            scored[key] = value
         score_rows.append(scored)
     return pd.concat(score_rows, ignore_index=True) if score_rows else frame
 
@@ -166,6 +186,72 @@ def calculate_top3_confidence_for_race(
     }
 
 
+def calculate_boat_top1_confidence_for_race(
+    race_df: pd.DataFrame,
+    probability_col: str = "probability",
+) -> dict[str, float | int | str]:
+    if race_df.empty or "trifecta" not in race_df.columns or probability_col not in race_df.columns:
+        return _empty_boat_top1_confidence()
+
+    frame = race_df.copy()
+    probs = pd.to_numeric(frame[probability_col], errors="coerce").fillna(0.0).clip(lower=0.0)
+    total = float(probs.sum())
+    if total > 0.0:
+        probs = probs / total
+    elif len(probs):
+        probs = pd.Series(np.full(len(probs), 1.0 / len(probs), dtype=float), index=frame.index)
+    else:
+        return _empty_boat_top1_confidence()
+
+    first_boats = frame["trifecta"].map(_trifecta_first_boat)
+    boat_probs = probs.groupby(first_boats).sum()
+    boat_probs = boat_probs[boat_probs.index.notna()]
+    if boat_probs.empty:
+        return _empty_boat_top1_confidence()
+
+    boat_probs = boat_probs.sort_values(ascending=False)
+    predicted_boat = int(boat_probs.index[0])
+    predicted_probability = float(boat_probs.iloc[0])
+    second_probability = float(boat_probs.iloc[1]) if len(boat_probs) >= 2 else 0.0
+    gap = predicted_probability - second_probability
+
+    ordered = frame.assign(_probability=probs, _first_boat=first_boats).sort_values("_probability", ascending=False)
+    top3_first_boats = ordered["_first_boat"].head(3)
+    top3_same_first_boat_rate = float((top3_first_boats == predicted_boat).mean()) if len(top3_first_boats) else 0.0
+    race_upset_score = _race_value(frame, "race_upset_score", 0.0)
+
+    full_boat_probs = np.zeros(6, dtype=float)
+    for boat, probability in boat_probs.items():
+        boat_index = int(boat) - 1
+        if 0 <= boat_index < len(full_boat_probs):
+            full_boat_probs[boat_index] = float(probability)
+    concentration = 1.0 - _normalized_entropy(full_boat_probs)
+
+    probability_score = _clip01((predicted_probability - (1.0 / 6.0)) / 0.45)
+    gap_score = _clip01(gap / 0.25)
+    top3_same_first_boat_score = _clip01(top3_same_first_boat_rate)
+    concentration_score = _clip01(concentration / 0.45)
+    upset_penalty = _clip01((race_upset_score - 0.75) / 0.25)
+
+    raw_score = (
+        0.45 * probability_score
+        + 0.25 * gap_score
+        + 0.15 * top3_same_first_boat_score
+        + 0.15 * concentration_score
+        - 0.08 * upset_penalty
+    )
+    score = round(_clip01(raw_score) * 100.0, 1)
+    return {
+        "boat_top1_confidence_score": score,
+        "boat_top1_confidence_label": label_boat_top1_confidence(score),
+        "predicted_first_boat": predicted_boat,
+        "predicted_first_boat_probability": round(predicted_probability, 6),
+        "predicted_first_boat_gap": round(gap, 6),
+        "predicted_first_boat_top3_share": round(top3_same_first_boat_rate, 6),
+        "boat_top1_probability_concentration": round(concentration, 6),
+    }
+
+
 def label_top12_confidence(score: float) -> str:
     value = float(score)
     if value >= TOP12_CONFIDENCE_HIGH_THRESHOLD:
@@ -184,6 +270,15 @@ def label_top3_confidence(score: float) -> str:
     return _LABEL_LOW
 
 
+def label_boat_top1_confidence(score: float) -> str:
+    value = float(score)
+    if value >= BOAT_TOP1_CONFIDENCE_HIGH_THRESHOLD:
+        return _LABEL_HIGH
+    if value >= BOAT_TOP1_CONFIDENCE_MIDDLE_THRESHOLD:
+        return _LABEL_MIDDLE
+    return _LABEL_LOW
+
+
 def top12_confidence_label_key(value: object) -> str:
     text = str(value)
     if text == _LABEL_HIGH:
@@ -194,6 +289,15 @@ def top12_confidence_label_key(value: object) -> str:
 
 
 def top3_confidence_label_key(value: object) -> str:
+    text = str(value)
+    if text == _LABEL_HIGH:
+        return "high"
+    if text == _LABEL_MIDDLE:
+        return "middle"
+    return "low"
+
+
+def boat_top1_confidence_label_key(value: object) -> str:
     text = str(value)
     if text == _LABEL_HIGH:
         return "high"
@@ -234,7 +338,7 @@ def recommended_ticket_count_from_top3_confidence(value: object) -> int:
     if label == "high":
         return 3
     if label == "middle":
-        return 1
+        return 3
     return 0
 
 
@@ -243,6 +347,16 @@ def recommended_ticket_label_from_count(ticket_count: int) -> str:
     if count > 0:
         return f"Top{count}"
     return "\u898b\u9001\u308a"
+
+
+def _trifecta_first_boat(value: object) -> int | None:
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return int(text.split("-", 1)[0])
+    except (TypeError, ValueError):
+        return None
 
 
 def fit_top12_probability_adjustment_table(
@@ -400,6 +514,18 @@ def _empty_top3_confidence() -> dict[str, float | str]:
         "top3_probability_mass": 0.0,
         "top1_probability": 0.0,
         "top3_top4_probability_margin": 0.0,
+    }
+
+
+def _empty_boat_top1_confidence() -> dict[str, float | int | str]:
+    return {
+        "boat_top1_confidence_score": 0.0,
+        "boat_top1_confidence_label": _LABEL_LOW,
+        "predicted_first_boat": 0,
+        "predicted_first_boat_probability": 0.0,
+        "predicted_first_boat_gap": 0.0,
+        "predicted_first_boat_top3_share": 0.0,
+        "boat_top1_probability_concentration": 0.0,
     }
 
 
