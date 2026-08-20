@@ -1835,6 +1835,7 @@ def _evaluate_fast_v1_trifecta_metrics_from_ranked(
         prob_matrix,
         actual_array,
         np.asarray(trifecta_payouts, dtype=float),
+        lane_prob_matrix=lane_probs_matrix,
     )
     if boat_top1_confidence_metrics:
         metrics["boat_top1_confidence_metrics"] = boat_top1_confidence_metrics
@@ -1842,6 +1843,7 @@ def _evaluate_fast_v1_trifecta_metrics_from_ranked(
         prob_matrix,
         actual_array,
         np.asarray(trifecta_payouts, dtype=float),
+        lane_prob_matrix=lane_probs_matrix,
     )
     if top3_x_boat_top1_confidence_metrics:
         metrics["top3_x_boat_top1_confidence_metrics"] = top3_x_boat_top1_confidence_metrics
@@ -2054,6 +2056,7 @@ def _fast_boat_top1_confidence_metrics(
     prob_matrix: np.ndarray,
     actual_indices: np.ndarray,
     trifecta_payouts: np.ndarray,
+    lane_prob_matrix: np.ndarray | None = None,
     stake_per_ticket: float = 100.0,
 ) -> dict[str, Any]:
     if prob_matrix.size == 0 or len(actual_indices) == 0:
@@ -2079,9 +2082,19 @@ def _fast_boat_top1_confidence_metrics(
     sorted_probs = np.take_along_axis(valid_probs, order, axis=1)
 
     first_boats = TRIFECTA_FAST_PERMUTATIONS[: valid_probs.shape[1], 0].astype(int)
-    boat_prob_matrix = np.zeros((len(valid_probs), 6), dtype=float)
-    for boat in range(1, 7):
-        boat_prob_matrix[:, boat - 1] = valid_probs[:, first_boats == boat].sum(axis=1)
+    if lane_prob_matrix is not None and len(lane_prob_matrix) == len(actual_indices):
+        boat_prob_matrix = np.asarray(lane_prob_matrix, dtype=float)[valid_mask]
+        row_sums = boat_prob_matrix.sum(axis=1, keepdims=True)
+        boat_prob_matrix = np.divide(
+            boat_prob_matrix,
+            row_sums,
+            out=np.full_like(boat_prob_matrix, 1.0 / boat_prob_matrix.shape[1]),
+            where=row_sums > 0,
+        )
+    else:
+        boat_prob_matrix = np.zeros((len(valid_probs), 6), dtype=float)
+        for boat in range(1, 7):
+            boat_prob_matrix[:, boat - 1] = valid_probs[:, first_boats == boat].sum(axis=1)
     predicted_boats = np.argmax(boat_prob_matrix, axis=1) + 1
     sorted_boat_probs = np.sort(boat_prob_matrix, axis=1)[:, ::-1]
     predicted_probabilities = sorted_boat_probs[:, 0]
@@ -2095,6 +2108,7 @@ def _fast_boat_top1_confidence_metrics(
     labels = np.where(scores >= 75.0, "high", np.where(scores >= 60.0, "middle", "low"))
     actual_winners = TRIFECTA_FAST_PERMUTATIONS[valid_actual, 0].astype(int)
     boat_top1_hits = predicted_boats == actual_winners
+    top1_hits = actual_ranks < 1
     top3_hits = actual_ranks < 3
     top12_hits = actual_ranks < 12
     valid_payout_mask = np.isfinite(valid_payouts) & (valid_payouts > 0.0)
@@ -2131,6 +2145,7 @@ def _fast_top3_x_boat_top1_confidence_metrics(
     prob_matrix: np.ndarray,
     actual_indices: np.ndarray,
     trifecta_payouts: np.ndarray,
+    lane_prob_matrix: np.ndarray | None = None,
     stake_per_ticket: float = 100.0,
 ) -> dict[str, Any]:
     if prob_matrix.size == 0 or len(actual_indices) == 0:
@@ -2158,9 +2173,19 @@ def _fast_top3_x_boat_top1_confidence_metrics(
     top3_labels = np.where(top3_scores >= 75.0, "high", np.where(top3_scores >= 60.0, "middle", "low"))
 
     first_boats = TRIFECTA_FAST_PERMUTATIONS[: valid_probs.shape[1], 0].astype(int)
-    boat_prob_matrix = np.zeros((len(valid_probs), 6), dtype=float)
-    for boat in range(1, 7):
-        boat_prob_matrix[:, boat - 1] = valid_probs[:, first_boats == boat].sum(axis=1)
+    if lane_prob_matrix is not None and len(lane_prob_matrix) == len(actual_indices):
+        boat_prob_matrix = np.asarray(lane_prob_matrix, dtype=float)[valid_mask]
+        row_sums = boat_prob_matrix.sum(axis=1, keepdims=True)
+        boat_prob_matrix = np.divide(
+            boat_prob_matrix,
+            row_sums,
+            out=np.full_like(boat_prob_matrix, 1.0 / boat_prob_matrix.shape[1]),
+            where=row_sums > 0,
+        )
+    else:
+        boat_prob_matrix = np.zeros((len(valid_probs), 6), dtype=float)
+        for boat in range(1, 7):
+            boat_prob_matrix[:, boat - 1] = valid_probs[:, first_boats == boat].sum(axis=1)
     predicted_boats = np.argmax(boat_prob_matrix, axis=1) + 1
     sorted_boat_probs = np.sort(boat_prob_matrix, axis=1)[:, ::-1]
     predicted_probabilities = sorted_boat_probs[:, 0]
@@ -2175,6 +2200,7 @@ def _fast_top3_x_boat_top1_confidence_metrics(
 
     actual_winners = TRIFECTA_FAST_PERMUTATIONS[valid_actual, 0].astype(int)
     boat_top1_hits = predicted_boats == actual_winners
+    top1_hits = actual_ranks < 1
     top3_hits = actual_ranks < 3
     top12_hits = actual_ranks < 12
     valid_payout_mask = np.isfinite(valid_payouts) & (valid_payouts > 0.0)
@@ -2199,6 +2225,7 @@ def _fast_top3_x_boat_top1_confidence_metrics(
                 "race_count": float(mask.sum()),
                 "race_rate": float(mask.sum() / len(valid_actual)) if len(valid_actual) else 0.0,
                 "boat_top1_hit_rate": float(np.mean(boat_top1_hits[mask])),
+                "top1_hit_rate": float(np.mean(top1_hits[mask])),
                 "top3_hit_rate": float(np.mean(top3_hits[mask])),
                 "top12_hit_rate": float(np.mean(top12_hits[mask])),
                 "top3_total_stake": total_stake,
@@ -6086,6 +6113,7 @@ def build_trifecta_prediction_frame(
                 if not payout_values.empty:
                     merged["trifecta_payout"] = float(payout_values.iloc[0])
             merged = attach_race_upset_and_darkhorse_scores(merged, race_df, scenario_model_bundle=None)
+            merged = attach_ranker_boat_top1_confidence(merged, race_df)
             rows.append(merged)
             continue
 
@@ -6155,6 +6183,7 @@ def build_trifecta_prediction_frame(
                     merged[probability_col] = merged[probability_col] / denom
         merged["probability"] = merged["probability_v2"] if use_v2 else merged["probability_v1"]
         merged = attach_race_upset_and_darkhorse_scores(merged, race_df, scenario_model_bundle=trifecta_v2_model)
+        merged = attach_ranker_boat_top1_confidence(merged, race_df)
         merged["dynamic_rerank_subset"] = dynamic_subset
         merged["dynamic_rerank_weight"] = float(dynamic_weight)
         merged["dynamic_rerank_enabled"] = bool(dynamic_enabled)
@@ -6290,6 +6319,70 @@ def attach_race_upset_and_darkhorse_scores(
     frame["ticket_priority_score"] = _ticket_priority_score(frame)
     frame["ticket_hint"] = frame.apply(_ticket_hint_from_row, axis=1)
     return frame
+
+
+def attach_ranker_boat_top1_confidence(
+    trifecta_df: pd.DataFrame,
+    race_df: pd.DataFrame,
+) -> pd.DataFrame:
+    frame = trifecta_df.copy()
+    if frame.empty or "win_probability_like" not in race_df.columns:
+        return frame
+    lane_probs = pd.to_numeric(race_df["win_probability_like"], errors="coerce").fillna(0.0).clip(lower=0.0)
+    lane_values = pd.to_numeric(race_df["lane"], errors="coerce")
+    valid = lane_values.notna()
+    if not bool(valid.any()):
+        return frame
+    lane_probs = lane_probs.loc[valid]
+    lane_values = lane_values.loc[valid].astype(int)
+    total = float(lane_probs.sum())
+    if total > 0.0:
+        lane_probs = lane_probs / total
+    elif len(lane_probs):
+        lane_probs = pd.Series(np.full(len(lane_probs), 1.0 / len(lane_probs), dtype=float), index=lane_probs.index)
+    else:
+        return frame
+
+    ranking = (
+        pd.DataFrame({"lane": lane_values.to_numpy(dtype=int), "probability": lane_probs.to_numpy(dtype=float)})
+        .sort_values(["probability", "lane"], ascending=[False, True])
+        .reset_index(drop=True)
+    )
+    if ranking.empty:
+        return frame
+    predicted_boat = int(ranking.loc[0, "lane"])
+    top_probability = float(ranking.loc[0, "probability"])
+    second_probability = float(ranking.loc[1, "probability"]) if len(ranking) > 1 else 0.0
+    gap = top_probability - second_probability
+    probs = ranking["probability"].to_numpy(dtype=float)
+    concentration = 1.0 - _normalized_entropy(probs)
+    race_upset_score = float(frame["race_upset_score"].iloc[0]) if "race_upset_score" in frame.columns and len(frame) else 0.0
+
+    probability_score = _clip01((top_probability - (1.0 / 6.0)) / 0.35)
+    gap_score = _clip01(gap / 0.20)
+    concentration_score = _clip01(concentration / 0.45)
+    upset_penalty = _clip01((race_upset_score - 0.75) / 0.25)
+    raw_score = 0.50 * probability_score + 0.35 * gap_score + 0.15 * concentration_score - 0.08 * upset_penalty
+    score = round(_clip01(raw_score) * 100.0, 1)
+
+    frame["boat_top1_confidence_source"] = "ranker"
+    frame["boat_top1_confidence_score"] = score
+    frame["boat_top1_confidence_label"] = _label_confidence_score(score)
+    frame["predicted_first_boat"] = predicted_boat
+    frame["predicted_first_boat_probability"] = round(top_probability, 6)
+    frame["predicted_first_boat_gap"] = round(gap, 6)
+    frame["predicted_first_boat_top3_share"] = float((ranking.head(3)["lane"] == predicted_boat).mean())
+    frame["boat_top1_probability_concentration"] = round(concentration, 6)
+    return frame
+
+
+def _label_confidence_score(score: float) -> str:
+    value = float(score)
+    if value >= 75.0:
+        return "高"
+    if value >= 60.0:
+        return "中"
+    return "低"
 
 
 def attach_darkhorse_odds_context(trifecta_df: pd.DataFrame) -> pd.DataFrame:

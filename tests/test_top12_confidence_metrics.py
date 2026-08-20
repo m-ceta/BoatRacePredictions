@@ -162,6 +162,7 @@ def test_compute_trifecta_metrics_includes_boat_top1_confidence_metrics() -> Non
     matrix = metrics["top3_x_boat_top1_confidence_metrics"]
     assert matrix["high"]["high"]["race_count"] == 2.0
     assert matrix["high"]["high"]["boat_top1_hit_rate"] == 0.5
+    assert matrix["high"]["high"]["top1_hit_rate"] == 0.5
     assert matrix["high"]["high"]["top3_hit_rate"] == 0.5
     assert matrix["high"]["high"]["top12_hit_rate"] == 1.0
     assert matrix["high"]["high"]["top3_total_stake"] == 600.0

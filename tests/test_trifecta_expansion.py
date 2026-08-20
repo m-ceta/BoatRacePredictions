@@ -98,6 +98,12 @@ def test_predict_trifecta_without_odds_does_not_fail() -> None:
     assert "trifecta_darkhorse_score" in trifecta.columns
     assert "is_darkhorse_candidate" in trifecta.columns
     assert "ticket_hint" in trifecta.columns
+    assert "boat_top1_confidence_source" in trifecta.columns
+    assert "boat_top1_confidence_score" in trifecta.columns
+    assert "boat_top1_confidence_label" in trifecta.columns
+    assert "predicted_first_boat" in trifecta.columns
+    assert trifecta["boat_top1_confidence_source"].iloc[0] == "ranker"
+    assert trifecta["predicted_first_boat"].iloc[0] == 1
     assert "odds" not in trifecta.columns
 
 

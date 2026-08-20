@@ -871,6 +871,7 @@ def compute_top3_x_boat_top1_confidence_metrics(
         boat_label = boat_top1_confidence_label_key(top_row.get("boat_top1_confidence_label"))
         predicted_first_boat = str(top_row.get("predicted_first_boat", "")).split(".", 1)[0]
         actual_first_boat = _trifecta_winner(ordered.loc[actual_idx].get("trifecta"))
+        top1_hit = float(actual_idx < 1)
         top3_hit = float(actual_idx < 3)
         payout = 0.0
         if has_payout:
@@ -879,6 +880,7 @@ def compute_top3_x_boat_top1_confidence_metrics(
         by_labels[top3_label][boat_label].append(
             {
                 "boat_top1_hit": float(predicted_first_boat == actual_first_boat),
+                "top1_hit": top1_hit,
                 "top3_hit": top3_hit,
                 "top12_hit": float(actual_idx < 12),
                 "top3_confidence_score": float(top_row.get("top3_confidence_score", 0.0) or 0.0),
@@ -922,6 +924,7 @@ def _summarize_confidence_cross_records(
         "race_count": float(len(records)),
         "race_rate": float(len(records) / total_races) if total_races else 0.0,
         "boat_top1_hit_rate": float(np.mean([record["boat_top1_hit"] for record in records])),
+        "top1_hit_rate": float(np.mean([record["top1_hit"] for record in records])),
         "top3_hit_rate": float(np.mean([record["top3_hit"] for record in records])),
         "top12_hit_rate": float(np.mean([record["top12_hit"] for record in records])),
         "top3_total_stake": total_stake,

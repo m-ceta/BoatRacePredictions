@@ -67,6 +67,15 @@ def attach_boat_top1_confidence_columns(
     probability_col: str = "probability",
 ) -> pd.DataFrame:
     frame = trifecta_df.copy()
+    existing_required = {
+        "boat_top1_confidence_score",
+        "boat_top1_confidence_label",
+        "predicted_first_boat",
+    }
+    if existing_required.issubset(frame.columns):
+        if "boat_top1_confidence_source" not in frame.columns:
+            frame["boat_top1_confidence_source"] = "existing"
+        return frame
     if frame.empty or "race_id" not in frame.columns or "trifecta" not in frame.columns or probability_col not in frame.columns:
         return frame
 
