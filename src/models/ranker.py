@@ -73,6 +73,18 @@ from src.odds.expected_value import (
 from src.top12_confidence import fit_top12_probability_adjustment_table
 
 
+TOP3_CONFIDENCE_SCORE_BANDS: tuple[tuple[str, float, float | None], ...] = (
+    ("score_90_100", 90.0, None),
+    ("score_85_90", 85.0, 90.0),
+    ("score_80_85", 80.0, 85.0),
+    ("score_75_80", 75.0, 80.0),
+    ("score_70_75", 70.0, 75.0),
+    ("score_65_70", 65.0, 70.0),
+    ("score_60_65", 60.0, 65.0),
+    ("score_lt_60", float("-inf"), 60.0),
+)
+
+
 DEFAULT_DROP_COLUMNS = {
     "race_id",
     "race_date",
@@ -1831,6 +1843,13 @@ def _evaluate_fast_v1_trifecta_metrics_from_ranked(
     top3_confidence_metrics = _fast_top3_confidence_metrics(prob_matrix, actual_array)
     if top3_confidence_metrics:
         metrics["top3_confidence_metrics"] = top3_confidence_metrics
+    top3_score_band_metrics = _fast_top3_confidence_score_band_metrics(
+        prob_matrix,
+        actual_array,
+        np.asarray(trifecta_payouts, dtype=float),
+    )
+    if top3_score_band_metrics:
+        metrics["top3_confidence_score_band_metrics"] = top3_score_band_metrics
     boat_top1_confidence_metrics = _fast_boat_top1_confidence_metrics(
         prob_matrix,
         actual_array,
@@ -1847,6 +1866,14 @@ def _evaluate_fast_v1_trifecta_metrics_from_ranked(
     )
     if top3_x_boat_top1_confidence_metrics:
         metrics["top3_x_boat_top1_confidence_metrics"] = top3_x_boat_top1_confidence_metrics
+    top3_x_boat_top1_score_band_metrics = _fast_top3_x_boat_top1_score_band_metrics(
+        prob_matrix,
+        actual_array,
+        np.asarray(trifecta_payouts, dtype=float),
+        lane_prob_matrix=lane_probs_matrix,
+    )
+    if top3_x_boat_top1_score_band_metrics:
+        metrics["top3_x_boat_top1_score_band_metrics"] = top3_x_boat_top1_score_band_metrics
     payout_band_metrics = _fast_payout_band_metrics(
         prob_matrix,
         actual_array,
@@ -2050,6 +2077,260 @@ def _fast_top3_confidence_metrics(
             "mean_top3_probability_margin": float(np.mean(top3_margin[mask])),
         }
     return metrics
+
+
+def _fast_top3_confidence_score_band_metrics(
+    prob_matrix: np.ndarray,
+    actual_indices: np.ndarray,
+    trifecta_payouts: np.ndarray,
+    stake_per_ticket: float = 100.0,
+) -> dict[str, Any]:
+    components = _fast_top3_filter_components(prob_matrix, actual_indices, trifecta_payouts)
+    if not components:
+        return {}
+    result: dict[str, Any] = {}
+    score_bands = _fast_top3_score_band_labels(components["top3_scores"])
+    total_races = len(components["valid_actual"])
+    for band, _, _ in TOP3_CONFIDENCE_SCORE_BANDS:
+        mask = score_bands == band
+        if not bool(mask.any()):
+            continue
+        result[band] = _fast_summarize_top3_filter_components(components, mask, total_races, stake_per_ticket)
+    return result
+
+
+def _fast_top3_filter_components(
+    prob_matrix: np.ndarray,
+    actual_indices: np.ndarray,
+    trifecta_payouts: np.ndarray,
+    lane_prob_matrix: np.ndarray | None = None,
+) -> dict[str, Any]:
+    if prob_matrix.size == 0 or len(actual_indices) == 0:
+        return {}
+    valid_mask = (
+        (actual_indices >= 0)
+        & (actual_indices < prob_matrix.shape[1])
+    )
+    if not bool(valid_mask.any()):
+        return {}
+
+    valid_probs = prob_matrix[valid_mask]
+    valid_actual = actual_indices[valid_mask].astype(int)
+    valid_payouts = (
+        trifecta_payouts[valid_mask].astype(float)
+        if len(trifecta_payouts) == len(actual_indices)
+        else np.full(len(valid_actual), np.nan, dtype=float)
+    )
+    order = np.argsort(-valid_probs, axis=1, kind="mergesort")
+    positions = np.empty_like(order)
+    positions[np.arange(len(order))[:, None], order] = np.arange(order.shape[1], dtype=int)
+    actual_ranks = positions[np.arange(len(valid_actual)), valid_actual]
+    sorted_probs = np.take_along_axis(valid_probs, order, axis=1)
+    first_boats = TRIFECTA_FAST_PERMUTATIONS[: valid_probs.shape[1], 0].astype(int)
+    if lane_prob_matrix is not None and len(lane_prob_matrix) == len(actual_indices):
+        boat_prob_matrix = np.asarray(lane_prob_matrix, dtype=float)[valid_mask]
+        row_sums = boat_prob_matrix.sum(axis=1, keepdims=True)
+        boat_prob_matrix = np.divide(
+            boat_prob_matrix,
+            row_sums,
+            out=np.full_like(boat_prob_matrix, 1.0 / boat_prob_matrix.shape[1]),
+            where=row_sums > 0,
+        )
+    else:
+        boat_prob_matrix = np.zeros((len(valid_probs), 6), dtype=float)
+        for boat in range(1, 7):
+            boat_prob_matrix[:, boat - 1] = valid_probs[:, first_boats == boat].sum(axis=1)
+    predicted_boats = np.argmax(boat_prob_matrix, axis=1) + 1
+    sorted_boat_probs = np.sort(boat_prob_matrix, axis=1)[:, ::-1]
+    predicted_probabilities = sorted_boat_probs[:, 0]
+    predicted_gaps = sorted_boat_probs[:, 0] - sorted_boat_probs[:, 1]
+    top3_first_boats = first_boats[order[:, : min(3, order.shape[1])]]
+    top3_same_first_boat_rate = np.mean(top3_first_boats == predicted_boats[:, None], axis=1)
+    boat_scores = _boat_top1_confidence_scores_from_boat_probs(
+        boat_prob_matrix,
+        top3_same_first_boat_rate=top3_same_first_boat_rate,
+    )
+    boat_labels = np.where(boat_scores >= 75.0, "high", np.where(boat_scores >= 60.0, "middle", "low"))
+    top3_scores = _top3_confidence_scores_from_sorted_probs(sorted_probs)
+    top3_labels = np.where(top3_scores >= 75.0, "high", np.where(top3_scores >= 60.0, "middle", "low"))
+    actual_winners = TRIFECTA_FAST_PERMUTATIONS[valid_actual, 0].astype(int)
+    top3_permutations = TRIFECTA_FAST_PERMUTATIONS[order[:, : min(3, order.shape[1])]]
+    structure = _fast_top3_structure_components(top3_permutations)
+    clipped = np.clip(sorted_probs, 1e-12, 1.0)
+    entropy = -np.sum(clipped * np.log(clipped), axis=1)
+    max_entropy = float(np.log(sorted_probs.shape[1])) if sorted_probs.shape[1] > 1 else 1.0
+    probability_entropy = np.clip(entropy / max_entropy, 0.0, 1.0)
+    return {
+        "valid_actual": valid_actual,
+        "valid_payouts": valid_payouts,
+        "actual_ranks": actual_ranks,
+        "boat_top1_hits": predicted_boats == actual_winners,
+        "top1_hits": actual_ranks < 1,
+        "top3_hits": actual_ranks < 3,
+        "top5_hits": actual_ranks < 5,
+        "top12_hits": actual_ranks < 12,
+        "top3_scores": top3_scores,
+        "top3_labels": top3_labels,
+        "boat_scores": boat_scores,
+        "boat_labels": boat_labels,
+        "predicted_probabilities": predicted_probabilities,
+        "predicted_gaps": predicted_gaps,
+        "top3_probability_mass": sorted_probs[:, : min(3, sorted_probs.shape[1])].sum(axis=1),
+        "top1_probability": sorted_probs[:, 0],
+        "top1_top2_probability_gap": sorted_probs[:, 0] - sorted_probs[:, 1] if sorted_probs.shape[1] > 1 else sorted_probs[:, 0],
+        "top3_top4_probability_margin": (
+            sorted_probs[:, 2] - sorted_probs[:, 3]
+            if sorted_probs.shape[1] > 3
+            else np.zeros(len(sorted_probs), dtype=float)
+        ),
+        "probability_entropy": probability_entropy,
+        **structure,
+    }
+
+
+def _fast_top3_structure_components(top3_permutations: np.ndarray) -> dict[str, np.ndarray]:
+    row_count = int(len(top3_permutations))
+    unique_first = np.zeros(row_count, dtype=float)
+    unique_second = np.zeros(row_count, dtype=float)
+    unique_pair = np.zeros(row_count, dtype=float)
+    unique_boat = np.zeros(row_count, dtype=float)
+    same_first_rate = np.zeros(row_count, dtype=float)
+    same_pair_rate = np.zeros(row_count, dtype=float)
+    tightness = np.zeros(row_count, dtype=float)
+    for idx, permutations in enumerate(top3_permutations):
+        first_values = [int(value) for value in permutations[:, 0].tolist()]
+        second_values = [int(value) for value in permutations[:, 1].tolist()]
+        pair_values = [(int(row[0]), int(row[1])) for row in permutations.tolist()]
+        boat_values = {int(value) for row in permutations.tolist() for value in row}
+        denom = float(max(len(permutations), 1))
+        unique_first[idx] = float(len(set(first_values)))
+        unique_second[idx] = float(len(set(second_values)))
+        unique_pair[idx] = float(len(set(pair_values)))
+        unique_boat[idx] = float(len(boat_values))
+        same_first_rate[idx] = max(first_values.count(value) for value in set(first_values)) / denom if first_values else 0.0
+        same_pair_rate[idx] = max(pair_values.count(value) for value in set(pair_values)) / denom if pair_values else 0.0
+        tightness[idx] = float(np.clip(
+            0.35 * same_first_rate[idx]
+            + 0.35 * same_pair_rate[idx]
+            + 0.15 * (1.0 - np.clip((unique_boat[idx] - 3.0) / 3.0, 0.0, 1.0))
+            + 0.15 * (1.0 - np.clip((unique_second[idx] - 1.0) / 2.0, 0.0, 1.0)),
+            0.0,
+            1.0,
+        ))
+    return {
+        "top3_unique_first_boat_count": unique_first,
+        "top3_unique_second_boat_count": unique_second,
+        "top3_unique_first_second_pair_count": unique_pair,
+        "top3_unique_boat_count": unique_boat,
+        "top3_same_first_boat_rate": same_first_rate,
+        "top3_same_first_second_pair_rate": same_pair_rate,
+        "top3_structure_tightness_score": tightness,
+    }
+
+
+def _fast_top3_score_band_labels(scores: np.ndarray) -> np.ndarray:
+    labels = np.full(len(scores), "score_unknown", dtype=object)
+    for key, lower, upper in TOP3_CONFIDENCE_SCORE_BANDS:
+        mask = scores >= lower
+        if upper is not None:
+            mask &= scores < upper
+        labels[mask] = key
+    return labels
+
+
+def _fast_summarize_top3_filter_components(
+    components: dict[str, Any],
+    mask: np.ndarray,
+    total_races: int,
+    stake_per_ticket: float,
+) -> dict[str, float]:
+    valid_payouts = components["valid_payouts"]
+    top3_hits = components["top3_hits"]
+    payout_mask = mask & np.isfinite(valid_payouts) & (valid_payouts > 0.0)
+    ticket_count = 3.0
+    total_stake = float(payout_mask.sum()) * ticket_count * float(stake_per_ticket)
+    total_return = float(np.sum(np.where(top3_hits[payout_mask], valid_payouts[payout_mask], 0.0)))
+    hit_payouts = valid_payouts[payout_mask & top3_hits]
+    result = {
+        "race_count": float(mask.sum()),
+        "race_rate": float(mask.sum() / total_races) if total_races else 0.0,
+        "boat_top1_hit_rate": float(np.mean(components["boat_top1_hits"][mask])),
+        "top1_hit_rate": float(np.mean(components["top1_hits"][mask])),
+        "top3_hit_rate": float(np.mean(components["top3_hits"][mask])),
+        "top5_hit_rate": float(np.mean(components["top5_hits"][mask])),
+        "top12_hit_rate": float(np.mean(components["top12_hits"][mask])),
+        "top3_total_stake": total_stake,
+        "top3_total_return": total_return,
+        "top3_recovery_rate": total_return / total_stake if total_stake else 0.0,
+        "mean_payout_hit": float(np.mean(hit_payouts)) if len(hit_payouts) else 0.0,
+    }
+    mean_fields = {
+        "mean_top3_confidence_score": "top3_scores",
+        "mean_boat_top1_confidence_score": "boat_scores",
+        "mean_predicted_first_boat_probability": "predicted_probabilities",
+        "mean_predicted_first_boat_gap": "predicted_gaps",
+        "mean_top3_probability_mass": "top3_probability_mass",
+        "mean_top1_probability": "top1_probability",
+        "mean_top1_top2_probability_gap": "top1_top2_probability_gap",
+        "mean_top3_top4_probability_margin": "top3_top4_probability_margin",
+        "mean_top3_same_first_boat_rate": "top3_same_first_boat_rate",
+        "mean_top3_same_first_second_pair_rate": "top3_same_first_second_pair_rate",
+        "mean_top3_unique_first_boat_count": "top3_unique_first_boat_count",
+        "mean_top3_unique_second_boat_count": "top3_unique_second_boat_count",
+        "mean_top3_unique_first_second_pair_count": "top3_unique_first_second_pair_count",
+        "mean_top3_unique_boat_count": "top3_unique_boat_count",
+        "mean_top3_structure_tightness_score": "top3_structure_tightness_score",
+        "mean_probability_entropy": "probability_entropy",
+    }
+    for output_key, component_key in mean_fields.items():
+        result[output_key] = float(np.mean(components[component_key][mask]))
+    return result
+
+
+def _fast_top3_x_boat_top1_score_band_metrics(
+    prob_matrix: np.ndarray,
+    actual_indices: np.ndarray,
+    trifecta_payouts: np.ndarray,
+    lane_prob_matrix: np.ndarray | None = None,
+    stake_per_ticket: float = 100.0,
+) -> dict[str, Any]:
+    components = _fast_top3_filter_components(
+        prob_matrix,
+        actual_indices,
+        trifecta_payouts,
+        lane_prob_matrix=lane_prob_matrix,
+    )
+    if not components:
+        return {}
+
+    total_races = len(components["valid_actual"])
+    score_bands = _fast_top3_score_band_labels(components["top3_scores"])
+    result: dict[str, Any] = {}
+    for top3_label in ("high", "middle", "low"):
+        top3_mask = components["top3_labels"] == top3_label
+        if not bool(top3_mask.any()):
+            continue
+        boat_result: dict[str, Any] = {}
+        for boat_label in ("high", "middle", "low"):
+            boat_mask = top3_mask & (components["boat_labels"] == boat_label)
+            if not bool(boat_mask.any()):
+                continue
+            band_result: dict[str, Any] = {}
+            for band, _, _ in TOP3_CONFIDENCE_SCORE_BANDS:
+                mask = boat_mask & (score_bands == band)
+                if not bool(mask.any()):
+                    continue
+                band_result[band] = _fast_summarize_top3_filter_components(
+                    components,
+                    mask,
+                    total_races,
+                    stake_per_ticket,
+                )
+            if band_result:
+                boat_result[boat_label] = band_result
+        if boat_result:
+            result[top3_label] = boat_result
+    return result
 
 
 def _fast_boat_top1_confidence_metrics(

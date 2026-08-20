@@ -23,6 +23,16 @@ PAYOUT_BANDS: tuple[tuple[str, float | None, float | None, str], ...] = (
     ("gte_50000_lt_100000", 50000.0, 100000.0, "50000_to_99999"),
     ("gte_100000", 100000.0, None, "100000_or_more"),
 )
+TOP3_CONFIDENCE_SCORE_BANDS: tuple[tuple[str, float, float | None], ...] = (
+    ("score_90_100", 90.0, None),
+    ("score_85_90", 85.0, 90.0),
+    ("score_80_85", 80.0, 85.0),
+    ("score_75_80", 75.0, 80.0),
+    ("score_70_75", 70.0, 75.0),
+    ("score_65_70", 65.0, 70.0),
+    ("score_60_65", 60.0, 65.0),
+    ("score_lt_60", float("-inf"), 60.0),
+)
 
 
 def _trifecta_winner(value: object) -> str | None:
@@ -109,6 +119,13 @@ def compute_trifecta_metrics(
     if top3_confidence_metrics:
         metrics["top3_confidence_metrics"] = top3_confidence_metrics
 
+    top3_score_band_metrics = compute_top3_confidence_score_band_metrics(
+        trifecta_df,
+        probability_col=probability_col,
+    )
+    if top3_score_band_metrics:
+        metrics["top3_confidence_score_band_metrics"] = top3_score_band_metrics
+
     boat_top1_confidence_metrics = compute_boat_top1_confidence_metrics(trifecta_df, probability_col=probability_col)
     if boat_top1_confidence_metrics:
         metrics["boat_top1_confidence_metrics"] = boat_top1_confidence_metrics
@@ -119,6 +136,13 @@ def compute_trifecta_metrics(
     )
     if top3_x_boat_top1_confidence_metrics:
         metrics["top3_x_boat_top1_confidence_metrics"] = top3_x_boat_top1_confidence_metrics
+
+    top3_x_boat_top1_score_band_metrics = compute_top3_x_boat_top1_score_band_metrics(
+        trifecta_df,
+        probability_col=probability_col,
+    )
+    if top3_x_boat_top1_score_band_metrics:
+        metrics["top3_x_boat_top1_score_band_metrics"] = top3_x_boat_top1_score_band_metrics
 
     payout_band_metrics = compute_payout_band_metrics(trifecta_df, probability_col=probability_col)
     if payout_band_metrics:
@@ -742,6 +766,54 @@ def _summarize_top3_confidence_records(
     }
 
 
+def compute_top3_confidence_score_band_metrics(
+    trifecta_df: pd.DataFrame,
+    probability_col: str = "probability",
+    payout_col: str = "trifecta_payout",
+    stake_per_ticket: float = 100.0,
+) -> dict[str, dict[str, float]]:
+    if trifecta_df.empty:
+        return {}
+
+    required = {"race_id", "trifecta", probability_col, "is_actual"}
+    missing = required - set(trifecta_df.columns)
+    if missing:
+        raise ValueError(f"Missing top3 confidence score band metric columns: {sorted(missing)}")
+
+    frame = attach_top3_confidence_columns(trifecta_df, probability_col=probability_col)
+    has_payout = payout_col in frame.columns
+    by_band: dict[str, list[dict[str, float]]] = {band: [] for band, _, _ in TOP3_CONFIDENCE_SCORE_BANDS}
+
+    for _, scored_race in frame.groupby("race_id", sort=False):
+        ordered = scored_race.sort_values(probability_col, ascending=False).reset_index(drop=True)
+        actual_positions = np.flatnonzero(ordered["is_actual"].to_numpy(dtype=bool))
+        if len(actual_positions) != 1:
+            continue
+        actual_idx = int(actual_positions[0])
+        top_row = ordered.iloc[0]
+        payout = 0.0
+        if has_payout:
+            payout_values = pd.to_numeric(ordered[payout_col], errors="coerce").dropna()
+            payout = float(payout_values.iloc[0]) if not payout_values.empty else 0.0
+        record = _top3_score_filter_record(
+            ordered=ordered,
+            top_row=top_row,
+            actual_idx=actual_idx,
+            payout=payout,
+            stake_per_ticket=stake_per_ticket,
+        )
+        by_band[_top3_score_band_key(record["top3_confidence_score"])].append(record)
+
+    total_races = sum(len(records) for records in by_band.values())
+    if total_races <= 0:
+        return {}
+    return {
+        band: _summarize_top3_score_filter_records(records, total_races=total_races)
+        for band, records in by_band.items()
+        if records
+    }
+
+
 def compute_boat_top1_confidence_metrics(
     trifecta_df: pd.DataFrame,
     probability_col: str = "probability",
@@ -909,6 +981,183 @@ def compute_top3_x_boat_top1_confidence_metrics(
         if row:
             result[top3_label] = row
     return result
+
+
+def compute_top3_x_boat_top1_score_band_metrics(
+    trifecta_df: pd.DataFrame,
+    probability_col: str = "probability",
+    payout_col: str = "trifecta_payout",
+    stake_per_ticket: float = 100.0,
+) -> dict[str, dict[str, dict[str, dict[str, float]]]]:
+    if trifecta_df.empty:
+        return {}
+
+    required = {"race_id", "trifecta", probability_col, "is_actual"}
+    missing = required - set(trifecta_df.columns)
+    if missing:
+        raise ValueError(f"Missing top3 x boat top1 score band metric columns: {sorted(missing)}")
+
+    frame = attach_top3_confidence_columns(trifecta_df, probability_col=probability_col)
+    frame = attach_boat_top1_confidence_columns(frame, probability_col=probability_col)
+    has_payout = payout_col in frame.columns
+    by_labels: dict[str, dict[str, dict[str, list[dict[str, float]]]]] = {
+        top3_label: {
+            boat_label: {band: [] for band, _, _ in TOP3_CONFIDENCE_SCORE_BANDS}
+            for boat_label in ("high", "middle", "low")
+        }
+        for top3_label in ("high", "middle", "low")
+    }
+
+    for _, scored_race in frame.groupby("race_id", sort=False):
+        ordered = scored_race.sort_values(probability_col, ascending=False).reset_index(drop=True)
+        actual_positions = np.flatnonzero(ordered["is_actual"].to_numpy(dtype=bool))
+        if len(actual_positions) != 1:
+            continue
+        actual_idx = int(actual_positions[0])
+        top_row = ordered.iloc[0]
+        payout = 0.0
+        if has_payout:
+            payout_values = pd.to_numeric(ordered[payout_col], errors="coerce").dropna()
+            payout = float(payout_values.iloc[0]) if not payout_values.empty else 0.0
+        record = _top3_score_filter_record(
+            ordered=ordered,
+            top_row=top_row,
+            actual_idx=actual_idx,
+            payout=payout,
+            stake_per_ticket=stake_per_ticket,
+        )
+        top3_label = top3_confidence_label_key(top_row.get("top3_confidence_label"))
+        boat_label = boat_top1_confidence_label_key(top_row.get("boat_top1_confidence_label"))
+        score_band = _top3_score_band_key(record["top3_confidence_score"])
+        by_labels[top3_label][boat_label][score_band].append(record)
+
+    total_races = sum(
+        len(records)
+        for by_boat in by_labels.values()
+        for by_band in by_boat.values()
+        for records in by_band.values()
+    )
+    if total_races <= 0:
+        return {}
+
+    result: dict[str, dict[str, dict[str, dict[str, float]]]] = {}
+    for top3_label in ("high", "middle", "low"):
+        top3_row: dict[str, dict[str, dict[str, float]]] = {}
+        for boat_label in ("high", "middle", "low"):
+            boat_row = {
+                band: _summarize_top3_score_filter_records(records, total_races=total_races)
+                for band, records in by_labels[top3_label][boat_label].items()
+                if records
+            }
+            if boat_row:
+                top3_row[boat_label] = boat_row
+        if top3_row:
+            result[top3_label] = top3_row
+    return result
+
+
+def _top3_score_filter_record(
+    ordered: pd.DataFrame,
+    top_row: pd.Series,
+    actual_idx: int,
+    payout: float,
+    stake_per_ticket: float,
+) -> dict[str, float]:
+    predicted_first_boat = str(top_row.get("predicted_first_boat", "")).split(".", 1)[0]
+    if not predicted_first_boat:
+        predicted_first_boat = str(_trifecta_winner(top_row.get("trifecta")) or "")
+    actual_first_boat = _trifecta_winner(ordered.loc[actual_idx].get("trifecta"))
+    top3_hit = float(actual_idx < 3)
+    top3_stake = min(3, len(ordered)) * float(stake_per_ticket) if payout > 0.0 else 0.0
+    return {
+        "boat_top1_hit": float(predicted_first_boat == actual_first_boat),
+        "top1_hit": float(actual_idx < 1),
+        "top3_hit": top3_hit,
+        "top5_hit": float(actual_idx < 5),
+        "top12_hit": float(actual_idx < 12),
+        "top3_confidence_score": float(top_row.get("top3_confidence_score", 0.0) or 0.0),
+        "boat_top1_confidence_score": float(top_row.get("boat_top1_confidence_score", 0.0) or 0.0),
+        "top3_probability_mass": float(top_row.get("top3_probability_mass", 0.0) or 0.0),
+        "top1_probability": float(top_row.get("top1_probability", 0.0) or 0.0),
+        "top1_top2_probability_gap": float(top_row.get("top1_top2_probability_gap", 0.0) or 0.0),
+        "top3_top4_probability_margin": float(top_row.get("top3_top4_probability_margin", 0.0) or 0.0),
+        "top3_same_first_boat_rate": float(top_row.get("top3_same_first_boat_rate", 0.0) or 0.0),
+        "top3_same_first_second_pair_rate": float(top_row.get("top3_same_first_second_pair_rate", 0.0) or 0.0),
+        "top3_unique_first_boat_count": float(top_row.get("top3_unique_first_boat_count", 0.0) or 0.0),
+        "top3_unique_second_boat_count": float(top_row.get("top3_unique_second_boat_count", 0.0) or 0.0),
+        "top3_unique_first_second_pair_count": float(
+            top_row.get("top3_unique_first_second_pair_count", 0.0) or 0.0
+        ),
+        "top3_unique_boat_count": float(top_row.get("top3_unique_boat_count", 0.0) or 0.0),
+        "top3_structure_tightness_score": float(top_row.get("top3_structure_tightness_score", 0.0) or 0.0),
+        "probability_entropy": float(top_row.get("probability_entropy", 0.0) or 0.0),
+        "top3_return": payout * top3_hit if payout > 0.0 else 0.0,
+        "top3_stake": top3_stake,
+        "payout": payout,
+    }
+
+
+def _summarize_top3_score_filter_records(
+    records: list[dict[str, float]],
+    total_races: int,
+) -> dict[str, float]:
+    total_stake = float(sum(record["top3_stake"] for record in records))
+    total_return = float(sum(record["top3_return"] for record in records))
+    hit_payouts = [record["payout"] for record in records if record["top3_hit"] > 0.0 and record["payout"] > 0.0]
+    return {
+        "race_count": float(len(records)),
+        "race_rate": float(len(records) / total_races) if total_races else 0.0,
+        "boat_top1_hit_rate": float(np.mean([record["boat_top1_hit"] for record in records])),
+        "top1_hit_rate": float(np.mean([record["top1_hit"] for record in records])),
+        "top3_hit_rate": float(np.mean([record["top3_hit"] for record in records])),
+        "top5_hit_rate": float(np.mean([record["top5_hit"] for record in records])),
+        "top12_hit_rate": float(np.mean([record["top12_hit"] for record in records])),
+        "top3_total_stake": total_stake,
+        "top3_total_return": total_return,
+        "top3_recovery_rate": total_return / total_stake if total_stake else 0.0,
+        "mean_payout_hit": float(np.mean(hit_payouts)) if hit_payouts else 0.0,
+        "mean_top3_confidence_score": float(np.mean([record["top3_confidence_score"] for record in records])),
+        "mean_boat_top1_confidence_score": float(
+            np.mean([record["boat_top1_confidence_score"] for record in records])
+        ),
+        "mean_top3_probability_mass": float(np.mean([record["top3_probability_mass"] for record in records])),
+        "mean_top1_probability": float(np.mean([record["top1_probability"] for record in records])),
+        "mean_top1_top2_probability_gap": float(np.mean([record["top1_top2_probability_gap"] for record in records])),
+        "mean_top3_top4_probability_margin": float(
+            np.mean([record["top3_top4_probability_margin"] for record in records])
+        ),
+        "mean_top3_same_first_boat_rate": float(
+            np.mean([record["top3_same_first_boat_rate"] for record in records])
+        ),
+        "mean_top3_same_first_second_pair_rate": float(
+            np.mean([record["top3_same_first_second_pair_rate"] for record in records])
+        ),
+        "mean_top3_unique_first_boat_count": float(
+            np.mean([record["top3_unique_first_boat_count"] for record in records])
+        ),
+        "mean_top3_unique_second_boat_count": float(
+            np.mean([record["top3_unique_second_boat_count"] for record in records])
+        ),
+        "mean_top3_unique_first_second_pair_count": float(
+            np.mean([record["top3_unique_first_second_pair_count"] for record in records])
+        ),
+        "mean_top3_unique_boat_count": float(np.mean([record["top3_unique_boat_count"] for record in records])),
+        "mean_top3_structure_tightness_score": float(
+            np.mean([record["top3_structure_tightness_score"] for record in records])
+        ),
+        "mean_probability_entropy": float(np.mean([record["probability_entropy"] for record in records])),
+    }
+
+
+def _top3_score_band_key(score: float) -> str:
+    value = float(score)
+    for key, lower, upper in TOP3_CONFIDENCE_SCORE_BANDS:
+        if value < lower:
+            continue
+        if upper is not None and value >= upper:
+            continue
+        return key
+    return "score_unknown"
 
 
 def _summarize_confidence_cross_records(

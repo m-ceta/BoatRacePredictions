@@ -166,6 +166,25 @@ def calculate_top3_confidence_for_race(
     top3_margin = float(probs[2] - probs[3]) if len(probs) >= 4 else float(probs[min(len(probs) - 1, 2)])
     concentration = 1.0 - _normalized_entropy(probs)
     race_upset_score = _race_value(ordered, "race_upset_score", 0.0)
+    top3_trifectas = ordered["trifecta"].head(3).map(_trifecta_boats).tolist() if "trifecta" in ordered.columns else []
+    valid_top3_trifectas = [boats for boats in top3_trifectas if boats is not None]
+    top3_first_boats = [boats[0] for boats in valid_top3_trifectas]
+    top3_second_boats = [boats[1] for boats in valid_top3_trifectas]
+    top3_first_second_pairs = [(boats[0], boats[1]) for boats in valid_top3_trifectas]
+    top3_used_boats = {boat for boats in valid_top3_trifectas for boat in boats}
+    top3_count = max(len(valid_top3_trifectas), 1)
+    top3_unique_first_boat_count = len(set(top3_first_boats))
+    top3_unique_second_boat_count = len(set(top3_second_boats))
+    top3_unique_first_second_pair_count = len(set(top3_first_second_pairs))
+    top3_unique_boat_count = len(top3_used_boats)
+    top3_same_first_boat_rate = (
+        max(top3_first_boats.count(boat) for boat in set(top3_first_boats)) / top3_count if top3_first_boats else 0.0
+    )
+    top3_same_first_second_pair_rate = (
+        max(top3_first_second_pairs.count(pair) for pair in set(top3_first_second_pairs)) / top3_count
+        if top3_first_second_pairs
+        else 0.0
+    )
 
     top3_mass_score = _clip01((top3_mass - 0.03) / 0.16)
     top1_score = _clip01((top1_probability - 0.01) / 0.08)
@@ -191,7 +210,24 @@ def calculate_top3_confidence_for_race(
         "top3_recommended_ticket_label": recommended_ticket_label_from_count(recommended_ticket_count),
         "top3_probability_mass": round(top3_mass, 6),
         "top1_probability": round(top1_probability, 6),
+        "top1_top2_probability_gap": round(top1_top2_gap, 6),
         "top3_top4_probability_margin": round(top3_margin, 6),
+        "top3_unique_first_boat_count": float(top3_unique_first_boat_count),
+        "top3_unique_second_boat_count": float(top3_unique_second_boat_count),
+        "top3_unique_first_second_pair_count": float(top3_unique_first_second_pair_count),
+        "top3_unique_boat_count": float(top3_unique_boat_count),
+        "top3_same_first_boat_rate": round(top3_same_first_boat_rate, 6),
+        "top3_same_first_second_pair_rate": round(top3_same_first_second_pair_rate, 6),
+        "top3_structure_tightness_score": round(
+            _clip01(
+                0.35 * top3_same_first_boat_rate
+                + 0.35 * top3_same_first_second_pair_rate
+                + 0.15 * (1.0 - _clip01((top3_unique_boat_count - 3.0) / 3.0))
+                + 0.15 * (1.0 - _clip01((top3_unique_second_boat_count - 1.0) / 2.0))
+            ),
+            6,
+        ),
+        "probability_entropy": round(_normalized_entropy(probs), 6),
     }
 
 
@@ -368,6 +404,17 @@ def _trifecta_first_boat(value: object) -> int | None:
         return None
 
 
+def _trifecta_boats(value: object) -> tuple[int, int, int] | None:
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        first, second, third = text.split("-", 2)
+        return int(first), int(second), int(third)
+    except (TypeError, ValueError):
+        return None
+
+
 def fit_top12_probability_adjustment_table(
     trifecta_df: pd.DataFrame,
     probability_col: str = "probability",
@@ -522,7 +569,16 @@ def _empty_top3_confidence() -> dict[str, float | str]:
         "top3_recommended_ticket_label": "\u898b\u9001\u308a",
         "top3_probability_mass": 0.0,
         "top1_probability": 0.0,
+        "top1_top2_probability_gap": 0.0,
         "top3_top4_probability_margin": 0.0,
+        "top3_unique_first_boat_count": 0.0,
+        "top3_unique_second_boat_count": 0.0,
+        "top3_unique_first_second_pair_count": 0.0,
+        "top3_unique_boat_count": 0.0,
+        "top3_same_first_boat_rate": 0.0,
+        "top3_same_first_second_pair_rate": 0.0,
+        "top3_structure_tightness_score": 0.0,
+        "probability_entropy": 0.0,
     }
 
 

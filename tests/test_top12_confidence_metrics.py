@@ -7,6 +7,7 @@ from src.top12_confidence import (
     apply_top12_probability_adjustment_table,
     attach_boat_top1_confidence_columns,
     attach_top12_confidence_columns,
+    attach_top3_confidence_columns,
     fit_top12_probability_adjustment_table,
 )
 
@@ -77,6 +78,27 @@ def test_attach_boat_top1_confidence_columns_adds_first_boat_score() -> None:
     assert scored["boat_top1_confidence_score"].nunique() == 1
     assert scored["predicted_first_boat"].iloc[0] == 1
     assert scored["predicted_first_boat_probability"].iloc[0] > 0.5
+
+
+def test_attach_top3_confidence_columns_adds_structure_metrics() -> None:
+    rows = _permutation_race_rows(
+        "R1",
+        "1-2-3",
+        {
+            "1-2-3": 0.20,
+            "1-2-4": 0.18,
+            "1-3-2": 0.16,
+            "2-1-3": 0.04,
+        },
+    )
+
+    scored = attach_top3_confidence_columns(pd.DataFrame(rows))
+
+    assert "top3_same_first_boat_rate" in scored.columns
+    assert "top3_same_first_second_pair_rate" in scored.columns
+    assert "top3_structure_tightness_score" in scored.columns
+    assert scored["top3_same_first_boat_rate"].iloc[0] == 1.0
+    assert scored["top3_structure_tightness_score"].iloc[0] > 0.0
 
 
 def test_probability_adjustment_table_adjusts_by_confidence_and_rank_band() -> None:
@@ -170,6 +192,17 @@ def test_compute_trifecta_metrics_includes_boat_top1_confidence_metrics() -> Non
     assert matrix["high"]["high"]["top3_recovery_rate"] == 2.0
     assert matrix["high"]["high"]["mean_top3_confidence_score"] > 0.0
     assert matrix["high"]["high"]["mean_boat_top1_confidence_score"] > 0.0
+
+    score_bands = metrics["top3_confidence_score_band_metrics"]
+    assert sum(value["race_count"] for value in score_bands.values()) == 2.0
+
+    score_matrix = metrics["top3_x_boat_top1_score_band_metrics"]
+    assert "high" in score_matrix
+    assert "high" in score_matrix["high"]
+    assert sum(value["race_count"] for value in score_matrix["high"]["high"].values()) == 2.0
+    first_band = next(iter(score_matrix["high"]["high"].values()))
+    assert first_band["top1_hit_rate"] >= 0.0
+    assert first_band["mean_top3_structure_tightness_score"] > 0.0
 
 
 def test_compute_trifecta_metrics_includes_payout_band_metrics() -> None:
