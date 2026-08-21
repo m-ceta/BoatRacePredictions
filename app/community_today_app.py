@@ -270,6 +270,10 @@ def _format_trifecta_frame(frame):
         ("recommended_bet_amount", "推奨購入金額"),
         ("buy_decision", "買い判断"),
         ("buy_decision_source", "買い判断指標"),
+        ("in_win_probability", "イン勝ち確率"),
+        ("in_win_probability_label", "イン勝ち判定"),
+        ("in_collapse_probability", "イン沈み確率"),
+        ("in_collapse_probability_label", "イン沈み判定"),
         ("top3_hit_probability", "Top3的中確率"),
         ("top3_hit_probability_label", "Top3的中判定"),
     ]
@@ -285,6 +289,16 @@ def _trifecta_display_frame(prediction: Any):
     if prediction.odds is not None and not prediction.odds.empty:
         return prediction.odds.sort_values("probability", ascending=False).head(20)
     return prediction.trifecta.sort_values("probability", ascending=False).head(20)
+
+
+def _prediction_race_value(prediction: Any, column: str, default: Any = 0.0) -> Any:
+    frame = prediction.odds if prediction.odds is not None and not prediction.odds.empty else prediction.trifecta
+    if frame is None or frame.empty or column not in frame.columns:
+        return default
+    values = frame[column].dropna()
+    if values.empty:
+        return default
+    return values.iloc[0]
 
 
 def _format_percent(value: float) -> str:
@@ -459,6 +473,19 @@ def render_prediction_tab() -> None:
     st.metric("決着パターン", prediction.race_scenario_name, prediction.race_scenario_id)
     st.caption(f"決着イメージ: {prediction.race_scenario_description}")
     st.metric("レース荒れ度", f"{float(prediction.race_upset_score) * 100:.1f}%", prediction.race_upset_label)
+    in_col1, in_col2 = st.columns(2)
+    with in_col1:
+        st.metric(
+            "イン勝ち確率",
+            f"{float(_prediction_race_value(prediction, 'in_win_probability', 0.0)) * 100:.1f}%",
+            str(_prediction_race_value(prediction, "in_win_probability_label", "-")),
+        )
+    with in_col2:
+        st.metric(
+            "イン沈み確率",
+            f"{float(_prediction_race_value(prediction, 'in_collapse_probability', 0.0)) * 100:.1f}%",
+            str(_prediction_race_value(prediction, "in_collapse_probability_label", "-")),
+        )
     _render_prediction_guide()
 
     st.markdown("**順位予測**")

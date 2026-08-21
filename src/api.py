@@ -16,6 +16,7 @@ from src.models.ranker import (
     load_classifier_artifacts,
     load_ensemble_weights,
     load_feature_columns,
+    load_in_course_probability_model,
     load_models,
     load_probability_adjustment_table,
     load_top3_hit_probability_model,
@@ -35,6 +36,7 @@ from src.top12_confidence import (
     attach_top12_confidence_columns,
     attach_top3_confidence_columns,
 )
+from src.in_course_probability import attach_in_course_probability_columns
 from src.top3_hit_probability import attach_top3_hit_probability_columns
 
 if TYPE_CHECKING:
@@ -50,6 +52,8 @@ class BoatRaceModelBundle:
     trifecta_calibrator: Any
     probability_adjustment_table: dict[str, Any] | None
     top3_hit_probability_model: Any | None
+    in_win_probability_model: Any | None
+    in_collapse_probability_model: Any | None
     classifier_models: dict[str, Any]
 
 
@@ -165,6 +169,10 @@ def load_bundle(config_path: str | Path = Path("configs/train.yaml")) -> BoatRac
         trifecta_calibrator=load_trifecta_calibrator(artifacts["trifecta_calibrator_path"]),
         probability_adjustment_table=load_probability_adjustment_table(artifacts["probability_adjustment_path"]),
         top3_hit_probability_model=load_top3_hit_probability_model(artifacts["top3_hit_probability_model_path"]),
+        in_win_probability_model=load_in_course_probability_model(artifacts["in_win_probability_model_path"]),
+        in_collapse_probability_model=load_in_course_probability_model(
+            artifacts["in_collapse_probability_model_path"]
+        ),
         classifier_models=load_classifier_artifacts(config),
     )
 
@@ -217,6 +225,12 @@ def predict_trifecta(
         trifecta,
         bundle.top3_hit_probability_model,
         probability_col="adjusted_probability" if "adjusted_probability" in trifecta.columns else "probability",
+    )
+    trifecta = attach_in_course_probability_columns(
+        trifecta,
+        future_df,
+        in_win_payload=bundle.in_win_probability_model,
+        in_collapse_payload=bundle.in_collapse_probability_model,
     )
     if "odds" in trifecta.columns and "adjusted_probability" in trifecta.columns:
         trifecta["expected_value_probability"] = pd.to_numeric(

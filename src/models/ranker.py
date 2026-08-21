@@ -70,6 +70,9 @@ from src.odds.expected_value import (
     BUY_MIN_ODDS,
     attach_expected_value_columns,
 )
+from src.in_course_probability import (
+    fit_in_course_probability_model,
+)
 from src.top3_hit_probability import (
     TOP3_HIT_PROBABILITY_BANDS,
     TOP3_HIT_PROBABILITY_FEATURES,
@@ -125,6 +128,8 @@ DEFAULT_ARTIFACT_PATHS = {
     "trifecta_calibrator_path": "artifacts/trifecta_isotonic.joblib",
     "probability_adjustment_path": "artifacts/probability_adjustment.json",
     "top3_hit_probability_model_path": "artifacts/top3_hit_probability_model.joblib",
+    "in_win_probability_model_path": "artifacts/in_win_probability_model.joblib",
+    "in_collapse_probability_model_path": "artifacts/in_collapse_probability_model.joblib",
     "metrics_path": "artifacts/metrics.json",
     "classifier_dir": "artifacts/classifiers",
     "train_checkpoint_path": "artifacts/train_checkpoint.json",
@@ -4339,6 +4344,64 @@ def train_ranker_from_splits(
         del top3_training_trifecta
     collect_garbage()
 
+    in_win_probability_model: Any | None = None
+    in_collapse_probability_model: Any | None = None
+    in_win_probability_metrics: dict[str, Any] = {"status": "skipped"}
+    in_collapse_probability_metrics: dict[str, Any] = {"status": "skipped"}
+    if resume and train_stage_completed(
+        checkpoint,
+        "in_course_probability_models",
+        [
+            artifacts["in_win_probability_model_path"],
+            artifacts["in_collapse_probability_model_path"],
+        ],
+    ):
+        progress("skipping in-course probability models: train checkpoint completed")
+        in_win_probability_model = load_in_course_probability_model(artifacts["in_win_probability_model_path"])
+        in_collapse_probability_model = load_in_course_probability_model(
+            artifacts["in_collapse_probability_model_path"]
+        )
+        in_course_metrics = checkpoint_metrics.get("in_course_probability_models", {})
+        in_win_probability_metrics = in_course_metrics.get("in_win_probability_model", {"status": "loaded"})
+        in_collapse_probability_metrics = in_course_metrics.get(
+            "in_collapse_probability_model",
+            {"status": "loaded"},
+        )
+    else:
+        progress("fitting in-course probability models")
+        in_course_training_df = apply_prediction_time_measurement_proxies(valid_df)
+        in_win_payload = fit_in_course_probability_model(in_course_training_df, target_name="in_win")
+        in_collapse_payload = fit_in_course_probability_model(in_course_training_df, target_name="in_collapse")
+        in_win_probability_model = {
+            "model": in_win_payload.model,
+            "feature_names": in_win_payload.feature_names,
+            "target_name": in_win_payload.target_name,
+            "training_metrics": in_win_payload.training_metrics,
+            "version": in_win_payload.version,
+        }
+        in_collapse_probability_model = {
+            "model": in_collapse_payload.model,
+            "feature_names": in_collapse_payload.feature_names,
+            "target_name": in_collapse_payload.target_name,
+            "training_metrics": in_collapse_payload.training_metrics,
+            "version": in_collapse_payload.version,
+        }
+        artifacts["in_win_probability_model_path"].parent.mkdir(parents=True, exist_ok=True)
+        joblib.dump(in_win_probability_model, artifacts["in_win_probability_model_path"])
+        joblib.dump(in_collapse_probability_model, artifacts["in_collapse_probability_model_path"])
+        in_win_probability_metrics = in_win_payload.training_metrics
+        in_collapse_probability_metrics = in_collapse_payload.training_metrics
+        mark_train_stage_completed(
+            checkpoint_path,
+            checkpoint,
+            "in_course_probability_models",
+            {
+                "in_win_probability_model": in_win_probability_metrics,
+                "in_collapse_probability_model": in_collapse_probability_metrics,
+            },
+        )
+    collect_garbage()
+
     if skip_evaluation:
         progress("skipping trifecta v1 metrics by model: --skip-evaluation")
         trifecta_v1_metrics = {"status": "skipped_by_request"}
@@ -4409,6 +4472,8 @@ def train_ranker_from_splits(
         "trifecta_v1_model_metrics": trifecta_v1_model_metrics,
         "probability_adjustment": probability_adjustment_table or {"status": "skipped"},
         "top3_hit_probability_model": top3_hit_probability_metrics,
+        "in_win_probability_model": in_win_probability_metrics,
+        "in_collapse_probability_model": in_collapse_probability_metrics,
         "classifier_metrics": classifier_metrics,
         "flow_model_metrics": flow_metrics,
         "staged_model_metrics": staged_metrics,
@@ -7060,6 +7125,12 @@ def load_probability_adjustment_table(path: Path) -> dict[str, Any] | None:
 
 
 def load_top3_hit_probability_model(path: Path) -> Any | None:
+    if not path.exists():
+        return None
+    return joblib.load(path)
+
+
+def load_in_course_probability_model(path: Path) -> Any | None:
     if not path.exists():
         return None
     return joblib.load(path)

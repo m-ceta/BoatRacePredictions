@@ -33,6 +33,7 @@ from src.odds.expected_value import (
     BUY_MIN_ODDS,
     RECOMMENDED_BET_TOP_N,
 )
+from src.in_course_probability import attach_in_course_probability_columns
 from src.top3_hit_probability import attach_top3_hit_probability_columns
 from src.parsers.bk_parser import parse_entry_text
 from src.top12_confidence import (
@@ -258,6 +259,12 @@ def predict_today_race(
         trifecta,
         bundle.top3_hit_probability_model,
         probability_col="adjusted_probability" if "adjusted_probability" in trifecta.columns else "probability",
+    )
+    trifecta = attach_in_course_probability_columns(
+        trifecta,
+        feature_frame,
+        in_win_payload=getattr(bundle, "in_win_probability_model", None),
+        in_collapse_payload=getattr(bundle, "in_collapse_probability_model", None),
     )
     confidence_score = calculate_prediction_confidence(ranking, trifecta)
     odds = fetch_boatrace_trifecta_odds(target_date, venue_code, int(race_no))
