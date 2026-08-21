@@ -168,6 +168,7 @@ models:
           alpha: 1.0
           gamma: 0.5
       - name: xgboost_ndcg3
+        enabled: false
         params:
           objective: rank:ndcg
           eval_metric: ndcg@3
@@ -248,7 +249,7 @@ models:
           device_id: 0
           predict_device: cpu
       - name: mlp_reg_value_recovery
-        enabled: true
+        enabled: false
         model_type: mlp
         target: finish_position
         score_transform: negative
