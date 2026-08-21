@@ -55,16 +55,17 @@ def test_build_in_course_probability_targets() -> None:
     df = pd.DataFrame(
         [
             *_race_rows("r1", in_finish=1, race_escape=0.80, collapse=0.10),
-            *_race_rows("r2", in_finish=4, race_escape=0.30, collapse=0.70),
+            *_race_rows("r2", in_finish=2, race_escape=0.60, collapse=0.30),
+            *_race_rows("r3", in_finish=3, race_escape=0.30, collapse=0.70),
         ]
     )
 
     features, in_win_target = build_in_course_probability_training_frame(df, target_name="in_win")
     _, in_collapse_target = build_in_course_probability_training_frame(df, target_name="in_collapse")
 
-    assert features["race_id"].tolist() == ["r1", "r2"]
-    assert in_win_target.tolist() == [1, 0]
-    assert in_collapse_target.tolist() == [0, 1]
+    assert features["race_id"].tolist() == ["r1", "r2", "r3"]
+    assert in_win_target.tolist() == [1, 0, 0]
+    assert in_collapse_target.tolist() == [0, 0, 1]
 
 
 def test_attach_in_course_probability_columns() -> None:

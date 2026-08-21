@@ -292,7 +292,8 @@ def _build_target(lane_df: pd.DataFrame, *, target_name: str) -> pd.DataFrame:
         if target_name == "in_win":
             target = int(finish_int == 1)
         elif target_name == "in_collapse":
-            target = int(finish_int >= 4)
+            # Collapse here means the in-course boat failed to stay in the top 2.
+            target = int(finish_int >= 3)
         else:
             raise ValueError(f"Unsupported in-course probability target: {target_name}")
         records.append({"race_id": str(race_id), "target": target})
