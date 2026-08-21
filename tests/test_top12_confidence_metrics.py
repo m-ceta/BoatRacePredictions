@@ -3,6 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 from src.evaluation.metrics import compute_trifecta_metrics
+from src.top3_hit_probability import attach_top3_hit_probability_columns, fit_top3_hit_probability_model
 from src.top12_confidence import (
     apply_top12_probability_adjustment_table,
     attach_boat_top1_confidence_columns,
@@ -203,6 +204,42 @@ def test_compute_trifecta_metrics_includes_boat_top1_confidence_metrics() -> Non
     first_band = next(iter(score_matrix["high"]["high"].values()))
     assert first_band["top1_hit_rate"] >= 0.0
     assert first_band["mean_top3_structure_tightness_score"] > 0.0
+
+
+def test_top3_hit_probability_model_adds_probability_and_metrics() -> None:
+    rows = []
+    for race_id, actual_trifecta in [
+        ("R1", "1-2-3"),
+        ("R2", "1-2-4"),
+        ("R3", "2-1-3"),
+        ("R4", "3-1-2"),
+    ]:
+        rows.extend(
+            _permutation_race_rows(
+                race_id,
+                actual_trifecta,
+                {
+                    "1-2-3": 0.20,
+                    "1-2-4": 0.18,
+                    "1-3-2": 0.16,
+                    "2-1-3": 0.04,
+                    "3-1-2": 0.03,
+                },
+            )
+        )
+    frame = pd.DataFrame(rows)
+    payload = fit_top3_hit_probability_model(frame)
+    scored = attach_top3_hit_probability_columns(frame, payload)
+
+    assert "top3_hit_probability" in scored.columns
+    assert "top3_hit_probability_label" in scored.columns
+    assert scored.groupby("race_id")["top3_hit_probability"].nunique().max() == 1
+
+    metrics = compute_trifecta_metrics(scored)
+    probability_metrics = metrics["top3_hit_probability_metrics"]
+    assert probability_metrics["race_count"] == 4.0
+    assert probability_metrics["actual_top3_hit_rate"] == 0.5
+    assert probability_metrics["bands"]
 
 
 def test_compute_trifecta_metrics_includes_payout_band_metrics() -> None:

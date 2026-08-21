@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import brier_score_loss, log_loss
 
+from src.top3_hit_probability import summarize_top3_hit_probability_bands
 from src.top12_confidence import (
     attach_boat_top1_confidence_columns,
     attach_top3_confidence_columns,
@@ -143,6 +144,10 @@ def compute_trifecta_metrics(
     )
     if top3_x_boat_top1_score_band_metrics:
         metrics["top3_x_boat_top1_score_band_metrics"] = top3_x_boat_top1_score_band_metrics
+
+    top3_hit_probability_metrics = compute_top3_hit_probability_metrics(trifecta_df, probability_col=probability_col)
+    if top3_hit_probability_metrics:
+        metrics["top3_hit_probability_metrics"] = top3_hit_probability_metrics
 
     payout_band_metrics = compute_payout_band_metrics(trifecta_df, probability_col=probability_col)
     if payout_band_metrics:
@@ -1054,6 +1059,39 @@ def compute_top3_x_boat_top1_score_band_metrics(
         if top3_row:
             result[top3_label] = top3_row
     return result
+
+
+def compute_top3_hit_probability_metrics(
+    trifecta_df: pd.DataFrame,
+    probability_col: str = "probability",
+) -> dict[str, object]:
+    if trifecta_df.empty or "top3_hit_probability" not in trifecta_df.columns:
+        return {}
+    required = {"race_id", probability_col, "is_actual"}
+    missing = required - set(trifecta_df.columns)
+    if missing:
+        raise ValueError(f"Missing top3 hit probability metric columns: {sorted(missing)}")
+
+    records: list[dict[str, float]] = []
+    for _, race_df in trifecta_df.groupby("race_id", sort=False):
+        ordered = race_df.sort_values(probability_col, ascending=False).reset_index(drop=True)
+        actual_positions = np.flatnonzero(ordered["is_actual"].to_numpy(dtype=bool))
+        if len(actual_positions) != 1:
+            continue
+        top_row = ordered.iloc[0]
+        records.append(
+            {
+                "top3_hit_probability": float(top_row.get("top3_hit_probability", 0.0) or 0.0),
+                "top3_hit": float(int(actual_positions[0]) < 3),
+                "top3_confidence_score": float(top_row.get("top3_confidence_score", 0.0) or 0.0),
+                "top3_structure_tightness_score": float(
+                    top_row.get("top3_structure_tightness_score", 0.0) or 0.0
+                ),
+            }
+        )
+    if not records:
+        return {}
+    return summarize_top3_hit_probability_bands(pd.DataFrame(records))
 
 
 def _top3_score_filter_record(

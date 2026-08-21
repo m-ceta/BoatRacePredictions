@@ -166,10 +166,7 @@ def _select_and_rename_columns(frame: pd.DataFrame, columns: list[tuple[str, str
         "race_scenario_description": "決着イメージ",
         "race_upset_score": "荒れ度",
         "race_upset_label": "荒れ判定",
-        "trifecta_darkhorse_score": "穴度",
         "is_darkhorse_candidate": "穴候補",
-        "ticket_priority_score": "買い目優先度",
-        "ticket_hint": "買い目目安",
     }
     selected_sources = {source for source, _ in available}
     available.extend(
@@ -212,14 +209,10 @@ def _format_trifecta_frame(frame: pd.DataFrame) -> pd.DataFrame:
         ("odds", "現在オッズ"),
         ("expected_value", "期待値"),
         ("recommended_bet_amount", "推奨購入金額"),
-        ("predicted_first_boat", "予測1位艇"),
-        ("boat_top1_confidence_score", "1位艇信頼スコア"),
-        ("boat_top1_confidence_label", "1位艇信頼"),
-        ("top3_confidence_score", "Top3信頼スコア"),
-        ("top3_confidence_label", "Top3信頼"),
-        ("recommended_ticket_label", "推奨点数"),
-        ("top12_confidence_score", "Top12信頼スコア"),
-        ("trifecta_darkhorse_score", "穴度"),
+        ("buy_decision", "買い判断"),
+        ("buy_decision_source", "買い判断指標"),
+        ("top3_hit_probability", "Top3的中確率"),
+        ("top3_hit_probability_label", "Top3的中判定"),
     ]
     formatted = frame.copy()
     for source, _label in columns:

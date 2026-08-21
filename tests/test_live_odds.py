@@ -6,23 +6,25 @@ import pytest
 from src.live import attach_odds_and_value, select_buy_candidates
 
 
-def test_attach_odds_and_value_marks_buy_when_ev_and_odds_thresholds_pass() -> None:
+def test_attach_odds_and_value_marks_buy_from_top3_hit_probability_label() -> None:
     trifecta = pd.DataFrame(
         {
             "race_id": ["R1"] * 4,
             "trifecta": ["1-2-3", "1-3-2", "2-1-3", "2-3-1"],
-            "probability": [0.12, 0.20, 0.08, 0.09],
+            "probability": [0.20, 0.12, 0.08, 0.15],
             "trifecta_darkhorse_score": [0.20, 0.10, 0.65, 0.70],
             "scenario_line_fit_score": [0.10, 0.10, 0.55, 0.60],
             "top12_confidence_score": [72.0] * 4,
             "top12_confidence_label": ["中"] * 4,
+            "top3_hit_probability": [0.62, 0.22, 0.58, 0.42],
+            "top3_hit_probability_label": ["high", "low", "high", "middle"],
         }
     )
     odds = {
-        "1-2-3": 12.0,  # EV 1.44, odds threshold passed
-        "1-3-2": 6.0,   # EV 1.2, odds threshold failed
-        "2-1-3": 12.0,  # EV 0.96, EV threshold failed
-        "2-3-1": 12.5,  # EV 1.125, odds threshold passed
+        "1-2-3": 12.0,
+        "1-3-2": 30.0,
+        "2-1-3": 30.0,
+        "2-3-1": 12.5,
     }
 
     enriched = attach_odds_and_value(trifecta, odds)
@@ -33,16 +35,16 @@ def test_attach_odds_and_value_marks_buy_when_ev_and_odds_thresholds_pass() -> N
     assert "is_darkhorse_candidate" in enriched.columns
     assert "top12_confidence_score" in enriched.columns
     assert "top12_confidence_label" in enriched.columns
-    assert enriched.loc[enriched["trifecta"] == "1-2-3", "expected_value"].iloc[0] == pytest.approx(1.44)
+    assert enriched.loc[enriched["trifecta"] == "1-2-3", "expected_value"].iloc[0] == pytest.approx(2.4)
     assert enriched.loc[enriched["trifecta"] == "1-2-3", "top12_confidence_score"].iloc[0] == pytest.approx(72.0)
-    assert enriched.loc[enriched["trifecta"] == "1-2-3", "recommended_bet_amount"].iloc[0] == 200
+    assert enriched.loc[enriched["trifecta"] == "1-2-3", "recommended_bet_amount"].iloc[0] == 300
     assert enriched.loc[enriched["trifecta"] == "1-2-3", "buy_decision"].iloc[0] == "買い"
     assert enriched.loc[enriched["trifecta"] == "1-3-2", "buy_decision"].iloc[0] == "見送り"
     assert enriched.loc[enriched["trifecta"] == "1-3-2", "recommended_bet_amount"].iloc[0] == 0
+    assert enriched.loc[enriched["trifecta"] == "2-3-1", "buy_decision"].iloc[0] == "検討"
+    assert enriched.loc[enriched["trifecta"] == "2-3-1", "recommended_bet_amount"].iloc[0] == 100
     assert enriched.loc[enriched["trifecta"] == "2-1-3", "buy_decision"].iloc[0] == "見送り"
     assert enriched.loc[enriched["trifecta"] == "2-1-3", "recommended_bet_amount"].iloc[0] == 0
-    assert enriched.loc[enriched["trifecta"] == "2-3-1", "buy_decision"].iloc[0] == "買い"
-    assert enriched.loc[enriched["trifecta"] == "2-3-1", "recommended_bet_amount"].iloc[0] == 100
 
 
 def test_select_buy_candidates_returns_only_buy_rows_when_available() -> None:
@@ -50,11 +52,13 @@ def test_select_buy_candidates_returns_only_buy_rows_when_available() -> None:
         {
             "race_id": ["R1"] * 4,
             "trifecta": ["1-2-3", "1-3-2", "2-1-3", "2-3-1"],
-            "probability": [0.12, 0.20, 0.08, 0.09],
+            "probability": [0.20, 0.12, 0.08, 0.15],
             "trifecta_darkhorse_score": [0.20, 0.10, 0.65, 0.70],
             "scenario_line_fit_score": [0.10, 0.10, 0.55, 0.60],
             "top12_confidence_score": [72.0, 72.0, 72.0, 72.0],
             "top12_confidence_label": ["中", "中", "中", "中"],
+            "top3_hit_probability": [0.62, 0.22, 0.58, 0.42],
+            "top3_hit_probability_label": ["high", "low", "high", "middle"],
         }
     )
     odds = {
@@ -89,7 +93,7 @@ def test_attach_odds_and_value_uses_adjusted_probability_for_expected_value() ->
     assert enriched["expected_value"].iloc[0] == pytest.approx(1.2)
 
 
-def test_attach_odds_and_value_keeps_top12_outside_ticket_at_zero_yen() -> None:
+def test_attach_odds_and_value_keeps_top3_outside_ticket_at_zero_yen() -> None:
     rows = []
     odds = {}
     trifectas = [
@@ -118,6 +122,8 @@ def test_attach_odds_and_value_keeps_top12_outside_ticket_at_zero_yen() -> None:
                 "scenario_line_fit_score": 0.1,
                 "top12_confidence_score": 70.0,
                 "top12_confidence_label": "中",
+                "top3_hit_probability": 0.60,
+                "top3_hit_probability_label": "high",
             }
         )
         odds[trifecta] = 30.0

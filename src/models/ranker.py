@@ -70,7 +70,14 @@ from src.odds.expected_value import (
     BUY_MIN_ODDS,
     attach_expected_value_columns,
 )
-from src.top12_confidence import fit_top12_probability_adjustment_table
+from src.top3_hit_probability import (
+    TOP3_HIT_PROBABILITY_BANDS,
+    TOP3_HIT_PROBABILITY_FEATURES,
+    attach_top3_hit_probability_columns,
+    fit_top3_hit_probability_model,
+    summarize_top3_hit_probability_bands,
+)
+from src.top12_confidence import apply_top12_probability_adjustment_table, fit_top12_probability_adjustment_table
 
 
 TOP3_CONFIDENCE_SCORE_BANDS: tuple[tuple[str, float, float | None], ...] = (
@@ -117,6 +124,7 @@ DEFAULT_ARTIFACT_PATHS = {
     "ensemble_weights_path": "artifacts/ensemble_weights.json",
     "trifecta_calibrator_path": "artifacts/trifecta_isotonic.joblib",
     "probability_adjustment_path": "artifacts/probability_adjustment.json",
+    "top3_hit_probability_model_path": "artifacts/top3_hit_probability_model.joblib",
     "metrics_path": "artifacts/metrics.json",
     "classifier_dir": "artifacts/classifiers",
     "train_checkpoint_path": "artifacts/train_checkpoint.json",
@@ -1759,6 +1767,7 @@ def _evaluate_fast_v1_trifecta_metrics_from_ranked(
     ranked: pd.DataFrame,
     calibrator: IsotonicRegression | None,
     weights: dict[str, Any],
+    top3_hit_probability_model: Any | None = None,
 ) -> dict[str, Any] | None:
     if ranked.empty or not {"race_id", "lane", "finish_position", "win_probability_like"}.issubset(ranked.columns):
         return None
@@ -1874,6 +1883,15 @@ def _evaluate_fast_v1_trifecta_metrics_from_ranked(
     )
     if top3_x_boat_top1_score_band_metrics:
         metrics["top3_x_boat_top1_score_band_metrics"] = top3_x_boat_top1_score_band_metrics
+    if top3_hit_probability_model is not None:
+        top3_hit_probability_metrics = _fast_top3_hit_probability_metrics(
+            prob_matrix,
+            actual_array,
+            top3_hit_probability_model,
+            lane_prob_matrix=lane_probs_matrix,
+        )
+        if top3_hit_probability_metrics:
+            metrics["top3_hit_probability_metrics"] = top3_hit_probability_metrics
     payout_band_metrics = _fast_payout_band_metrics(
         prob_matrix,
         actual_array,
@@ -2331,6 +2349,66 @@ def _fast_top3_x_boat_top1_score_band_metrics(
         if boat_result:
             result[top3_label] = boat_result
     return result
+
+
+def _fast_top3_hit_probability_metrics(
+    prob_matrix: np.ndarray,
+    actual_indices: np.ndarray,
+    top3_hit_probability_model: Any,
+    lane_prob_matrix: np.ndarray | None = None,
+) -> dict[str, Any]:
+    components = _fast_top3_filter_components(
+        prob_matrix,
+        actual_indices,
+        np.full(len(actual_indices), np.nan, dtype=float),
+        lane_prob_matrix=lane_prob_matrix,
+    )
+    if not components:
+        return {}
+    feature_frame = pd.DataFrame(
+        {
+            "top3_confidence_score": components["top3_scores"],
+            "top3_probability_mass": components["top3_probability_mass"],
+            "top1_probability": components["top1_probability"],
+            "top1_top2_probability_gap": components["top1_top2_probability_gap"],
+            "top3_top4_probability_margin": components["top3_top4_probability_margin"],
+            "top3_structure_tightness_score": components["top3_structure_tightness_score"],
+            "top3_same_first_boat_rate": components["top3_same_first_boat_rate"],
+            "top3_same_first_second_pair_rate": components["top3_same_first_second_pair_rate"],
+            "probability_entropy": components["probability_entropy"],
+            "top3_hit": components["top3_hits"].astype(float),
+        }
+    )
+    feature_names = list(
+        top3_hit_probability_model.get("feature_names", TOP3_HIT_PROBABILITY_FEATURES)
+        if isinstance(top3_hit_probability_model, dict)
+        else TOP3_HIT_PROBABILITY_FEATURES
+    )
+    model = top3_hit_probability_model.get("model") if isinstance(top3_hit_probability_model, dict) else None
+    if model is None:
+        return {}
+    x = feature_frame.reindex(columns=feature_names, fill_value=0.0).to_numpy(dtype=float)
+    if hasattr(model, "predict_proba"):
+        probabilities = model.predict_proba(x)
+        if probabilities.ndim == 2 and probabilities.shape[1] >= 2:
+            feature_frame["top3_hit_probability"] = np.asarray(probabilities[:, 1], dtype=float)
+        elif probabilities.ndim == 2 and probabilities.shape[1] == 1:
+            classes = getattr(model, "classes_", None)
+            if classes is not None and len(classes) == 1:
+                feature_frame["top3_hit_probability"] = float(int(classes[0]) == 1)
+            else:
+                feature_frame["top3_hit_probability"] = np.asarray(probabilities[:, 0], dtype=float)
+        else:
+            return {}
+    else:
+        feature_frame["top3_hit_probability"] = np.clip(np.asarray(model.predict(x), dtype=float), 0.0, 1.0)
+    metrics = summarize_top3_hit_probability_bands(feature_frame)
+    if metrics:
+        metrics["bands_definition"] = {
+            key: {"lower": float(lower), "upper": float(upper) if upper is not None else None}
+            for key, lower, upper in TOP3_HIT_PROBABILITY_BANDS
+        }
+    return metrics
 
 
 def _fast_boat_top1_confidence_metrics(
@@ -4214,6 +4292,53 @@ def train_ranker_from_splits(
         )
     collect_garbage()
 
+    top3_hit_probability_model: Any | None = None
+    top3_hit_probability_metrics: dict[str, Any] = {"status": "skipped"}
+    if resume and train_stage_completed(
+        checkpoint,
+        "top3_hit_probability_model",
+        [artifacts["top3_hit_probability_model_path"]],
+    ):
+        progress("skipping top3 hit probability model: train checkpoint completed")
+        top3_hit_probability_model = load_top3_hit_probability_model(artifacts["top3_hit_probability_model_path"])
+        top3_hit_probability_metrics = checkpoint_metrics.get("top3_hit_probability_model", {"status": "loaded"})
+    else:
+        progress("fitting top3 hit probability model")
+        top3_training_trifecta = predict_trifecta_probabilities(
+            models=models,
+            feature_columns=feature_columns,
+            future_df=valid_df,
+            ensemble_weights=ensemble_weights,
+            trifecta_calibrator=trifecta_calibrator,
+            classifier_models=classifier_models,
+            use_v2=False,
+        )
+        top3_training_trifecta = apply_top12_probability_adjustment_table(
+            top3_training_trifecta,
+            probability_adjustment_table,
+            probability_col="probability",
+            output_col="adjusted_probability",
+        )
+        top3_probability_col = "adjusted_probability" if "adjusted_probability" in top3_training_trifecta.columns else "probability"
+        top3_payload = fit_top3_hit_probability_model(top3_training_trifecta, probability_col=top3_probability_col)
+        top3_hit_probability_model = {
+            "model": top3_payload.model,
+            "feature_names": top3_payload.feature_names,
+            "training_metrics": top3_payload.training_metrics,
+            "version": top3_payload.version,
+        }
+        artifacts["top3_hit_probability_model_path"].parent.mkdir(parents=True, exist_ok=True)
+        joblib.dump(top3_hit_probability_model, artifacts["top3_hit_probability_model_path"])
+        top3_hit_probability_metrics = top3_payload.training_metrics
+        mark_train_stage_completed(
+            checkpoint_path,
+            checkpoint,
+            "top3_hit_probability_model",
+            top3_hit_probability_metrics,
+        )
+        del top3_training_trifecta
+    collect_garbage()
+
     if skip_evaluation:
         progress("skipping trifecta v1 metrics by model: --skip-evaluation")
         trifecta_v1_metrics = {"status": "skipped_by_request"}
@@ -4250,6 +4375,7 @@ def train_ranker_from_splits(
             config=config,
             progress_callback=progress,
             skip_individual_models=skip_variant_evaluation,
+            top3_hit_probability_model=top3_hit_probability_model,
         )
         trifecta_v1_metrics = trifecta_v1_model_metrics["ensemble"]
         mark_train_stage_completed(
@@ -4282,6 +4408,7 @@ def train_ranker_from_splits(
         "trifecta_v1_metrics": trifecta_v1_metrics,
         "trifecta_v1_model_metrics": trifecta_v1_model_metrics,
         "probability_adjustment": probability_adjustment_table or {"status": "skipped"},
+        "top3_hit_probability_model": top3_hit_probability_metrics,
         "classifier_metrics": classifier_metrics,
         "flow_model_metrics": flow_metrics,
         "staged_model_metrics": staged_metrics,
@@ -6932,6 +7059,12 @@ def load_probability_adjustment_table(path: Path) -> dict[str, Any] | None:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def load_top3_hit_probability_model(path: Path) -> Any | None:
+    if not path.exists():
+        return None
+    return joblib.load(path)
+
+
 def load_trifecta_calibrator(path: Path) -> IsotonicRegression:
     return joblib.load(path)
 
@@ -8015,6 +8148,7 @@ def evaluate_trifecta_v1_metrics(
     flow_model: lgb.Booster | None = None,
     flow_classes: list[str] | None = None,
     staged_models: dict[str, lgb.Booster] | None = None,
+    top3_hit_probability_model: Any | None = None,
 ) -> dict[str, Any]:
     return {
         "valid_raw": evaluate_trifecta(
@@ -8029,6 +8163,7 @@ def evaluate_trifecta_v1_metrics(
             flow_classes=flow_classes,
             staged_models=staged_models,
             use_v2=False,
+            top3_hit_probability_model=top3_hit_probability_model,
         ),
         "valid_calibrated": evaluate_trifecta(
             models,
@@ -8042,6 +8177,7 @@ def evaluate_trifecta_v1_metrics(
             flow_classes=flow_classes,
             staged_models=staged_models,
             use_v2=False,
+            top3_hit_probability_model=top3_hit_probability_model,
         ),
         "test_raw": evaluate_trifecta(
             models,
@@ -8055,6 +8191,7 @@ def evaluate_trifecta_v1_metrics(
             flow_classes=flow_classes,
             staged_models=staged_models,
             use_v2=False,
+            top3_hit_probability_model=top3_hit_probability_model,
         ),
         "test_calibrated": evaluate_trifecta(
             models,
@@ -8068,6 +8205,7 @@ def evaluate_trifecta_v1_metrics(
             flow_classes=flow_classes,
             staged_models=staged_models,
             use_v2=False,
+            top3_hit_probability_model=top3_hit_probability_model,
         ),
     }
 
@@ -8088,6 +8226,7 @@ def evaluate_trifecta_v1_model_metrics(
     config: dict | None = None,
     progress_callback: Callable[[str], None] | None = None,
     skip_individual_models: bool = False,
+    top3_hit_probability_model: Any | None = None,
 ) -> dict[str, Any]:
     settings = get_ensemble_settings(config)
     metrics: dict[str, Any] = {
@@ -8103,6 +8242,7 @@ def evaluate_trifecta_v1_model_metrics(
             flow_model=flow_model,
             flow_classes=flow_classes,
             staged_models=staged_models,
+            top3_hit_probability_model=top3_hit_probability_model,
         )
     }
     if skip_individual_models:
@@ -9066,6 +9206,7 @@ def evaluate_trifecta(
     odds_df: pd.DataFrame | None = None,
     use_v2: bool = False,
     rerank_top_n: int | None = None,
+    top3_hit_probability_model: Any | None = None,
 ) -> dict[str, float | dict[str, float]]:
     if df.empty:
         return {}
@@ -9083,7 +9224,12 @@ def evaluate_trifecta(
         staged_models=staged_models,
     )
     if not use_v2 and rerank_top_n is None and odds_df is None:
-        fast_metrics = _evaluate_fast_v1_trifecta_metrics_from_ranked(race_probs, calibrator, weights)
+        fast_metrics = _evaluate_fast_v1_trifecta_metrics_from_ranked(
+            race_probs,
+            calibrator,
+            weights,
+            top3_hit_probability_model=top3_hit_probability_model,
+        )
         if fast_metrics is not None:
             return fast_metrics
     trifecta = build_trifecta_prediction_frame(
@@ -9097,6 +9243,12 @@ def evaluate_trifecta(
     )
     probability_col = "probability_v2" if use_v2 else "probability_v1"
     trifecta["probability"] = trifecta[probability_col]
+    if top3_hit_probability_model is not None:
+        trifecta = attach_top3_hit_probability_columns(
+            trifecta,
+            top3_hit_probability_model,
+            probability_col="probability",
+        )
     if odds_df is not None and {"odds", "expected_value"}.issubset(trifecta.columns):
         expected_value = pd.to_numeric(trifecta["expected_value"], errors="coerce").fillna(0.0)
         odds = pd.to_numeric(trifecta["odds"], errors="coerce").fillna(0.0)

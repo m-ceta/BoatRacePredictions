@@ -32,8 +32,8 @@ from src.odds.expected_value import (
     BUY_EXPECTED_VALUE_THRESHOLD,
     BUY_MIN_ODDS,
     RECOMMENDED_BET_TOP_N,
-    attach_recommended_bet_amount_columns,
 )
+from src.top3_hit_probability import attach_top3_hit_probability_columns
 from src.parsers.bk_parser import parse_entry_text
 from src.top12_confidence import (
     apply_top12_probability_adjustment_table,
@@ -136,7 +136,6 @@ class TodayRacePrediction:
             f"予想着順: 1着: {first}, 2着: {second}, 3着: {third}\n"
             f"予想確立：1着: {format_percent(first_prob)}, 2着: {format_percent(second_prob)}, 3着: {format_percent(third_prob)}",
             f"予想信頼度: {self.confidence_label} ({format_percent(self.confidence_score)})",
-            f"推奨買い点数: {top.get('recommended_ticket_label', '-')} ({int(float(top.get('recommended_ticket_count', 0) or 0))}点)",
             f"3連単予想本命: {top_trifecta}",
             f"3連単予想確率: {format_percent(float(top['probability']))}",
         ]
@@ -155,10 +154,7 @@ class TodayRacePrediction:
                     f"補正後確率: {format_percent(float(top_odds.get('expected_value_probability', top_odds.get('probability', 0.0)) or 0.0))}",
                     f"期待値: {float(top_odds['expected_value']):.2f}",
                     f"推奨購入金額: {int(float(top_odds.get('recommended_bet_amount', 0) or 0))}円",
-                    f"1位艇信頼スコア: {float(top_odds.get('boat_top1_confidence_score', 0.0)):.1f} ({top_odds.get('boat_top1_confidence_label', '-')})",
-                    f"予測1位艇: {top_odds.get('predicted_first_boat', '-')}",
-                    f"Top3信頼スコア: {float(top_odds.get('top3_confidence_score', 0.0)):.1f} ({top_odds.get('top3_confidence_label', '-')})",
-                    f"推奨買い点数: {top_odds.get('recommended_ticket_label', '-')} ({int(float(top_odds.get('recommended_ticket_count', 0) or 0))}点)",
+                    f"Top3的中確率: {format_percent(float(top_odds.get('top3_hit_probability', 0.0) or 0.0))} ({top_odds.get('top3_hit_probability_label', '-')})",
                     f"判定: {top_odds['buy_decision']}",
                 ]
             )
@@ -170,15 +166,14 @@ class TodayRacePrediction:
                     f"補正後確率 {format_percent(float(getattr(row, 'expected_value_probability', getattr(row, 'probability', 0.0)) or 0.0))} | "
                     f"期待値 {float(row.expected_value):.2f} | "
                     f"推奨 {int(float(getattr(row, 'recommended_bet_amount', 0) or 0))}円 | "
-                    f"1位艇信頼 {float(getattr(row, 'boat_top1_confidence_score', 0.0)):.1f} ({getattr(row, 'boat_top1_confidence_label', '-')}) | "
-                    f"Top3信頼 {float(getattr(row, 'top3_confidence_score', 0.0)):.1f} ({getattr(row, 'top3_confidence_label', '-')}) | "
+                    f"Top3的中 {format_percent(float(getattr(row, 'top3_hit_probability', 0.0) or 0.0))} ({getattr(row, 'top3_hit_probability_label', '-')}) | "
                     f"判定 {row.buy_decision}"
                 )
         lines.append("Top10 3連単候補:")
         for row in self.trifecta.head(10).itertuples(index=False):
             lines.append(
                 f"{row.trifecta} | 確率 {format_percent(float(row.probability))} | "
-                f"{getattr(row, 'ticket_hint', '-')} | 穴度 {format_percent(float(getattr(row, 'trifecta_darkhorse_score', 0.0)))}"
+                f"Top3的中 {format_percent(float(getattr(row, 'top3_hit_probability', 0.0) or 0.0))} ({getattr(row, 'top3_hit_probability_label', '-')})"
             )
         return "\n".join(lines)
 
@@ -257,6 +252,11 @@ def predict_today_race(
     )
     trifecta = attach_boat_top1_confidence_columns(
         trifecta,
+        probability_col="adjusted_probability" if "adjusted_probability" in trifecta.columns else "probability",
+    )
+    trifecta = attach_top3_hit_probability_columns(
+        trifecta,
+        bundle.top3_hit_probability_model,
         probability_col="adjusted_probability" if "adjusted_probability" in trifecta.columns else "probability",
     )
     confidence_score = calculate_prediction_confidence(ranking, trifecta)
@@ -1059,29 +1059,55 @@ def attach_odds_and_value(
     frame["expected_value_probability"] = frame[value_probability_col]
     frame["expected_value"] = frame["odds"] * frame["expected_value_probability"]
     frame = attach_darkhorse_odds_context(frame)
-    frame = attach_recommended_bet_amount_columns(
-        frame,
-        probability_col="expected_value_probability",
-        expected_value_threshold=expected_value_threshold,
-        min_odds=min_odds,
-        top_n=RECOMMENDED_BET_TOP_N,
-    )
-    frame = frame.sort_values(["expected_value", "probability"], ascending=[False, False]).reset_index(drop=True)
-    frame["buy_decision"] = "見送り"
-    frame.loc[frame["recommended_bet_amount"] > 0, "buy_decision"] = "買い"
+    frame = attach_top3_hit_probability_buy_decision(frame)
+    frame = frame.sort_values(
+        ["top3_hit_probability", "prediction_rank", "expected_value", "probability"],
+        ascending=[False, True, False, False],
+    ).reset_index(drop=True)
     return frame
+
+
+def attach_top3_hit_probability_buy_decision(frame: pd.DataFrame) -> pd.DataFrame:
+    result = frame.copy()
+    if "top3_hit_probability" in result.columns:
+        probability = pd.to_numeric(result["top3_hit_probability"], errors="coerce").fillna(0.0)
+    else:
+        probability = pd.Series(0.0, index=result.index)
+        result["top3_hit_probability"] = probability
+    rank = pd.to_numeric(result.get("prediction_rank"), errors="coerce").fillna(999.0)
+    label = result.get("top3_hit_probability_label")
+    if label is None:
+        label = probability.map(lambda value: "high" if value >= 0.50 else ("middle" if value >= 0.35 else "low"))
+        result["top3_hit_probability_label"] = label
+    else:
+        label = label.astype(str)
+
+    top3_candidate = rank <= 3
+    high = top3_candidate & (label == "high")
+    middle = top3_candidate & (label == "middle")
+
+    result["buy_decision_source"] = "top3_hit_probability"
+    result["buy_decision"] = "見送り"
+    result.loc[middle, "buy_decision"] = "検討"
+    result.loc[high, "buy_decision"] = "買い"
+    result["recommended_bet_amount"] = 0
+    result.loc[middle, "recommended_bet_amount"] = 100
+    result.loc[high, "recommended_bet_amount"] = 300
+    result["recommended_bet_units"] = (result["recommended_bet_amount"] // 100).astype(int)
+    return result
 
 
 def select_buy_candidates(odds_frame: pd.DataFrame, top_n: int = 5) -> pd.DataFrame:
     if odds_frame.empty:
         return odds_frame
     buy_only = odds_frame[odds_frame["buy_decision"] != "見送り"].copy()
+    if "recommended_bet_amount" in odds_frame.columns:
+        amount = pd.to_numeric(odds_frame["recommended_bet_amount"], errors="coerce").fillna(0.0)
+        buy_only = odds_frame[amount > 0].copy()
     sort_columns = [
+        "top3_hit_probability",
         "recommended_bet_amount",
-        "boat_top1_confidence_score",
-        "top3_confidence_score",
         "expected_value",
-        "ticket_priority_score",
         "probability",
     ]
     sort_columns = [column for column in sort_columns if column in odds_frame.columns]

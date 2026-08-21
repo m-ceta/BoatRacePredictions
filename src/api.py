@@ -18,6 +18,7 @@ from src.models.ranker import (
     load_feature_columns,
     load_models,
     load_probability_adjustment_table,
+    load_top3_hit_probability_model,
     load_trifecta_calibrator,
     predict_race_order,
     predict_trifecta_probabilities,
@@ -34,6 +35,7 @@ from src.top12_confidence import (
     attach_top12_confidence_columns,
     attach_top3_confidence_columns,
 )
+from src.top3_hit_probability import attach_top3_hit_probability_columns
 
 if TYPE_CHECKING:
     from src.live import TodayRacePrediction
@@ -47,6 +49,7 @@ class BoatRaceModelBundle:
     ensemble_weights: dict[str, float]
     trifecta_calibrator: Any
     probability_adjustment_table: dict[str, Any] | None
+    top3_hit_probability_model: Any | None
     classifier_models: dict[str, Any]
 
 
@@ -161,6 +164,7 @@ def load_bundle(config_path: str | Path = Path("configs/train.yaml")) -> BoatRac
         ensemble_weights=load_ensemble_weights(artifacts["ensemble_weights_path"]),
         trifecta_calibrator=load_trifecta_calibrator(artifacts["trifecta_calibrator_path"]),
         probability_adjustment_table=load_probability_adjustment_table(artifacts["probability_adjustment_path"]),
+        top3_hit_probability_model=load_top3_hit_probability_model(artifacts["top3_hit_probability_model_path"]),
         classifier_models=load_classifier_artifacts(config),
     )
 
@@ -207,6 +211,11 @@ def predict_trifecta(
     )
     trifecta = attach_boat_top1_confidence_columns(
         trifecta,
+        probability_col="adjusted_probability" if "adjusted_probability" in trifecta.columns else "probability",
+    )
+    trifecta = attach_top3_hit_probability_columns(
+        trifecta,
+        bundle.top3_hit_probability_model,
         probability_col="adjusted_probability" if "adjusted_probability" in trifecta.columns else "probability",
     )
     if "odds" in trifecta.columns and "adjusted_probability" in trifecta.columns:

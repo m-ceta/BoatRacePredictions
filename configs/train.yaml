@@ -316,4 +316,5 @@ models:
     ensemble_weights_path: artifacts/ensemble_weights.json
     trifecta_calibrator_path: artifacts/trifecta_isotonic.joblib
     probability_adjustment_path: artifacts/probability_adjustment.json
+    top3_hit_probability_model_path: artifacts/top3_hit_probability_model.joblib
   metrics_path: artifacts/metrics.json
