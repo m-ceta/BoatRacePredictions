@@ -400,7 +400,11 @@ def _render_model_accuracy_summary(config_path: str) -> None:
     if not rows:
         return
 
-    st.markdown("**現在のモデル精度（検証データ）**")
+    with st.expander("現在のモデル精度（検証データ）", expanded=False):
+        _render_model_accuracy_summary_content(summary, rows)
+
+
+def _render_model_accuracy_summary_content(summary: dict[str, Any], rows: list[Any]) -> None:
     race_count = int(summary.get("race_count", 0) or 0)
     st.caption(f"評価レース数: {race_count:,}")
     chart_rows = []
