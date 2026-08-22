@@ -347,47 +347,37 @@ def _format_trifecta_frame(frame):
     return formatted.rename(columns={source: label for source, label in columns})
 
 
-def _render_trifecta_probability_chart(frame) -> None:
-    chart_frame = _format_trifecta_frame(frame)
-    if chart_frame.empty or "予想確率(%)" not in chart_frame.columns:
-        return
-    chart_frame = chart_frame.copy()
-    chart_frame["No表示"] = chart_frame.apply(
-        lambda row: f"No.{int(row['No'])} {row.get('買い目') or ''}".rstrip(),
-        axis=1,
-    )
-    chart_frame["予想確率(%)"] = pd.to_numeric(chart_frame["予想確率(%)"], errors="coerce")
-    chart_frame = chart_frame.dropna(subset=["予想確率(%)"])
-    if chart_frame.empty:
-        return
-    chart_frame["probability_percent"] = chart_frame["予想確率(%)"]
-    x_axis_max = 30.0 if float(chart_frame["probability_percent"].max()) <= 30.0 else 100.0
-    sort_order = chart_frame["No表示"].tolist()
-    y_axis = alt.Axis(labelOverlap=False, labelLimit=140, tickMinStep=1)
-    chart_height = _dataframe_height(len(chart_frame), row_height=36, header_height=48)
-    bars = (
-        alt.Chart(chart_frame)
-        .mark_bar(color="#2563eb", cornerRadiusEnd=3)
-        .encode(
-            x=alt.X("probability_percent:Q", title="予想確率(%)", scale=alt.Scale(domain=[0, x_axis_max])),
-            y=alt.Y("No表示:N", title="No", sort=sort_order, axis=y_axis),
-            tooltip=[
-                alt.Tooltip("No:Q", title="No"),
-                alt.Tooltip("買い目:N", title="買い目"),
-                alt.Tooltip("probability_percent:Q", title="予想確率(%)", format=".2f"),
-            ],
+def _ranking_column_config(frame) -> dict[str, Any]:
+    scores = pd.to_numeric(frame.get("総合スコア", pd.Series(dtype=float)), errors="coerce").dropna()
+    if scores.empty:
+        min_value, max_value = 0.0, 1.0
+    else:
+        min_value = min(0.0, float(scores.min()))
+        max_value = max(1.0, float(scores.max()))
+        if min_value == max_value:
+            max_value = min_value + 1.0
+    return {
+        "総合スコア": st.column_config.ProgressColumn(
+            "総合スコア",
+            format="%.4f",
+            min_value=min_value,
+            max_value=max_value,
         )
-    )
-    labels = (
-        alt.Chart(chart_frame)
-        .mark_text(align="left", baseline="middle", dx=4, color="#111827")
-        .encode(
-            x=alt.X("probability_percent:Q", scale=alt.Scale(domain=[0, x_axis_max])),
-            y=alt.Y("No表示:N", sort=sort_order, axis=y_axis),
-            text=alt.Text("probability_percent:Q", format=".2f"),
-        )
-    )
-    st.altair_chart((bars + labels).properties(height=chart_height), use_container_width=True)
+    }
+
+
+def _trifecta_column_config(frame) -> dict[str, Any]:
+    probabilities = pd.to_numeric(frame.get("予想確率(%)", pd.Series(dtype=float)), errors="coerce").dropna()
+    probability_max = 30.0 if probabilities.empty or float(probabilities.max()) <= 30.0 else 100.0
+    return {
+        "予想確率(%)": st.column_config.ProgressColumn(
+            "予想確率(%)",
+            format="%.2f%%",
+            min_value=0.0,
+            max_value=probability_max,
+        ),
+        "現在オッズ": st.column_config.NumberColumn("現在オッズ", format="%.1f"),
+    }
 
 
 def _trifecta_display_frame(prediction: Any):
@@ -499,18 +489,6 @@ def _render_model_accuracy_summary(config_path: str) -> None:
             chart_rows.append({"TopN": label, "指標": "的中率", "値": hit_rate})
         if recovery_rate is not None:
             chart_rows.append({"TopN": label, "指標": "回収率", "値": recovery_rate})
-    accuracy_frame = pd.DataFrame(
-        [
-            {"指標": "的中率", **{str(row["label"]): _format_percent(row.get("hit_rate")) for row in rows}},
-            {"指標": "回収率", **{str(row["label"]): _format_percent(row.get("recovery_rate")) for row in rows}},
-        ]
-    )
-    st.dataframe(
-        accuracy_frame,
-        use_container_width=True,
-        hide_index=True,
-        height=_dataframe_height(len(accuracy_frame)),
-    )
     if chart_rows:
         chart_frame = pd.DataFrame(chart_rows)
         top_order = [str(row["label"]) for row in rows]
@@ -693,21 +671,20 @@ def render_prediction_tab() -> None:
         use_container_width=True,
         hide_index=True,
         height=_dataframe_height(len(ranking_frame)),
+        column_config=_ranking_column_config(ranking_frame),
     )
 
     st.markdown("**3連単予想**")
     trifecta_display = _trifecta_display_frame(prediction)
     trifecta_frame = _format_trifecta_frame(trifecta_display)
-    table_col, chart_col = st.columns([1.0, 1.15])
-    with table_col:
-        st.dataframe(
-            trifecta_frame,
-            use_container_width=True,
-            hide_index=True,
-            height=_dataframe_height(len(trifecta_frame), row_height=36, header_height=48),
-        )
-    with chart_col:
-        _render_trifecta_probability_chart(trifecta_display)
+    st.dataframe(
+        trifecta_frame,
+        use_container_width=True,
+        hide_index=True,
+        height=_dataframe_height(len(trifecta_frame), row_height=42, header_height=64),
+        row_height=38,
+        column_config=_trifecta_column_config(trifecta_frame),
+    )
 
 
 def main() -> None:
