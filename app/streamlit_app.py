@@ -586,6 +586,7 @@ def render_prediction_tab() -> None:
         st.metric(
             "Top3的中確率",
             f"{float(_prediction_race_value(prediction, 'top3_hit_probability', 0.0)) * 100:.1f}%",
+            str(_prediction_race_value(prediction, "top3_hit_probability_label", "-")),
         )
     with metric_col2:
         st.metric(
