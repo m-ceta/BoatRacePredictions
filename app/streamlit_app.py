@@ -325,13 +325,16 @@ def _render_trifecta_probability_chart(frame: pd.DataFrame) -> None:
     if chart_frame.empty:
         return
     chart_frame["probability_percent"] = chart_frame["予想確率(%)"]
+    x_axis_max = 30.0 if float(chart_frame["probability_percent"].max()) <= 30.0 else 100.0
     sort_order = chart_frame["No表示"].tolist()
+    y_axis = alt.Axis(labelOverlap=False, labelLimit=80, tickMinStep=1)
+    chart_height = max(420, len(chart_frame) * 24)
     bars = (
         alt.Chart(chart_frame)
         .mark_bar(color="#2563eb", cornerRadiusEnd=3)
         .encode(
-            x=alt.X("probability_percent:Q", title="予想確率(%)"),
-            y=alt.Y("No表示:N", title="No", sort=sort_order),
+            x=alt.X("probability_percent:Q", title="予想確率(%)", scale=alt.Scale(domain=[0, x_axis_max])),
+            y=alt.Y("No表示:N", title="No", sort=sort_order, axis=y_axis),
             tooltip=[
                 alt.Tooltip("No:Q", title="No"),
                 alt.Tooltip("買い目:N", title="買い目"),
@@ -343,12 +346,12 @@ def _render_trifecta_probability_chart(frame: pd.DataFrame) -> None:
         alt.Chart(chart_frame)
         .mark_text(align="left", baseline="middle", dx=4, color="#111827")
         .encode(
-            x="probability_percent:Q",
-            y=alt.Y("No表示:N", sort=sort_order),
+            x=alt.X("probability_percent:Q", scale=alt.Scale(domain=[0, x_axis_max])),
+            y=alt.Y("No表示:N", sort=sort_order, axis=y_axis),
             text=alt.Text("probability_percent:Q", format=".2f"),
         )
     )
-    st.altair_chart((bars + labels).properties(height=420), use_container_width=True)
+    st.altair_chart((bars + labels).properties(height=chart_height), use_container_width=True)
 
 
 def _trifecta_display_frame(prediction: Any) -> pd.DataFrame:
@@ -415,6 +418,8 @@ def _render_model_accuracy_summary(config_path: str) -> None:
     if chart_rows:
         chart_frame = pd.DataFrame(chart_rows)
         top_order = [str(row["label"]) for row in rows]
+        y_axis = alt.Axis(labelOverlap=False, labelLimit=80)
+        chart_height = max(160, len(rows) * 28)
         for metric_name, color in (("的中率", "#16a34a"), ("回収率", "#f97316")):
             metric_frame = chart_frame[chart_frame["指標"] == metric_name]
             if metric_frame.empty:
@@ -424,8 +429,8 @@ def _render_model_accuracy_summary(config_path: str) -> None:
                 alt.Chart(metric_frame)
                 .mark_bar(color=color, cornerRadiusEnd=3)
                 .encode(
-                    x=alt.X("値:Q", title=f"{metric_name}(%)"),
-                    y=alt.Y("TopN:N", title="", sort=top_order),
+                    x=alt.X("値:Q", title=f"{metric_name}(%)", scale=alt.Scale(domain=[0, 100])),
+                    y=alt.Y("TopN:N", title="", sort=top_order, axis=y_axis),
                     tooltip=[
                         alt.Tooltip("TopN:N", title="TopN"),
                         alt.Tooltip("指標:N", title="指標"),
@@ -436,9 +441,13 @@ def _render_model_accuracy_summary(config_path: str) -> None:
             labels = (
                 alt.Chart(metric_frame)
                 .mark_text(align="left", baseline="middle", dx=4, color="#111827")
-                .encode(x="値:Q", y=alt.Y("TopN:N", sort=top_order), text=alt.Text("値:Q", format=".1f"))
+                .encode(
+                    x=alt.X("値:Q", scale=alt.Scale(domain=[0, 100])),
+                    y=alt.Y("TopN:N", sort=top_order, axis=y_axis),
+                    text=alt.Text("値:Q", format=".1f"),
+                )
             )
-            st.altair_chart((bars + labels).properties(height=160), use_container_width=True)
+            st.altair_chart((bars + labels).properties(height=chart_height), use_container_width=True)
     accuracy_frame = pd.DataFrame(
         [
             {"指標": "的中率", **{str(row["label"]): _format_percent(row.get("hit_rate")) for row in rows}},
