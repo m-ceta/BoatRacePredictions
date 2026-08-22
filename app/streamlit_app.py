@@ -243,6 +243,10 @@ def _percent_value(value: object) -> float | None:
         return None
 
 
+def _dataframe_height(row_count: int, row_height: int = 34, header_height: int = 38) -> int:
+    return header_height + max(int(row_count), 1) * row_height + 8
+
+
 def _inject_table_style() -> None:
     st.markdown(
         """
@@ -319,7 +323,10 @@ def _render_trifecta_probability_chart(frame: pd.DataFrame) -> None:
     if chart_frame.empty or "予想確率(%)" not in chart_frame.columns:
         return
     chart_frame = chart_frame.copy()
-    chart_frame["No表示"] = chart_frame["No"].map(lambda value: f"No.{int(value)}")
+    chart_frame["No表示"] = chart_frame.apply(
+        lambda row: f"No.{int(row['No'])} {row.get('買い目') or ''}".rstrip(),
+        axis=1,
+    )
     chart_frame["予想確率(%)"] = pd.to_numeric(chart_frame["予想確率(%)"], errors="coerce")
     chart_frame = chart_frame.dropna(subset=["予想確率(%)"])
     if chart_frame.empty:
@@ -327,8 +334,8 @@ def _render_trifecta_probability_chart(frame: pd.DataFrame) -> None:
     chart_frame["probability_percent"] = chart_frame["予想確率(%)"]
     x_axis_max = 30.0 if float(chart_frame["probability_percent"].max()) <= 30.0 else 100.0
     sort_order = chart_frame["No表示"].tolist()
-    y_axis = alt.Axis(labelOverlap=False, labelLimit=80, tickMinStep=1)
-    chart_height = max(420, len(chart_frame) * 24)
+    y_axis = alt.Axis(labelOverlap=False, labelLimit=140, tickMinStep=1)
+    chart_height = _dataframe_height(len(chart_frame), row_height=36, header_height=48)
     bars = (
         alt.Chart(chart_frame)
         .mark_bar(color="#2563eb", cornerRadiusEnd=3)
@@ -415,46 +422,53 @@ def _render_model_accuracy_summary(config_path: str) -> None:
             chart_rows.append({"TopN": label, "指標": "的中率", "値": hit_rate})
         if recovery_rate is not None:
             chart_rows.append({"TopN": label, "指標": "回収率", "値": recovery_rate})
-    if chart_rows:
-        chart_frame = pd.DataFrame(chart_rows)
-        top_order = [str(row["label"]) for row in rows]
-        y_axis = alt.Axis(labelOverlap=False, labelLimit=80)
-        chart_height = max(160, len(rows) * 28)
-        for metric_name, color in (("的中率", "#16a34a"), ("回収率", "#f97316")):
-            metric_frame = chart_frame[chart_frame["指標"] == metric_name]
-            if metric_frame.empty:
-                continue
-            st.caption(metric_name)
-            bars = (
-                alt.Chart(metric_frame)
-                .mark_bar(color=color, cornerRadiusEnd=3)
-                .encode(
-                    x=alt.X("値:Q", title=f"{metric_name}(%)", scale=alt.Scale(domain=[0, 100])),
-                    y=alt.Y("TopN:N", title="", sort=top_order, axis=y_axis),
-                    tooltip=[
-                        alt.Tooltip("TopN:N", title="TopN"),
-                        alt.Tooltip("指標:N", title="指標"),
-                        alt.Tooltip("値:Q", title="値(%)", format=".1f"),
-                    ],
-                )
-            )
-            labels = (
-                alt.Chart(metric_frame)
-                .mark_text(align="left", baseline="middle", dx=4, color="#111827")
-                .encode(
-                    x=alt.X("値:Q", scale=alt.Scale(domain=[0, 100])),
-                    y=alt.Y("TopN:N", sort=top_order, axis=y_axis),
-                    text=alt.Text("値:Q", format=".1f"),
-                )
-            )
-            st.altair_chart((bars + labels).properties(height=chart_height), use_container_width=True)
     accuracy_frame = pd.DataFrame(
         [
             {"指標": "的中率", **{str(row["label"]): _format_percent(row.get("hit_rate")) for row in rows}},
             {"指標": "回収率", **{str(row["label"]): _format_percent(row.get("recovery_rate")) for row in rows}},
         ]
     )
-    st.dataframe(accuracy_frame, use_container_width=True, hide_index=True)
+    st.dataframe(
+        accuracy_frame,
+        use_container_width=True,
+        hide_index=True,
+        height=_dataframe_height(len(accuracy_frame)),
+    )
+    if chart_rows:
+        chart_frame = pd.DataFrame(chart_rows)
+        top_order = [str(row["label"]) for row in rows]
+        y_axis = alt.Axis(labelOverlap=False, labelLimit=80)
+        chart_height = _dataframe_height(len(rows), row_height=30, header_height=42)
+        chart_columns = st.columns(2)
+        for column, (metric_name, color) in zip(chart_columns, (("的中率", "#16a34a"), ("回収率", "#f97316"))):
+            metric_frame = chart_frame[chart_frame["指標"] == metric_name]
+            if metric_frame.empty:
+                continue
+            with column:
+                st.caption(metric_name)
+                bars = (
+                    alt.Chart(metric_frame)
+                    .mark_bar(color=color, cornerRadiusEnd=3)
+                    .encode(
+                        x=alt.X("値:Q", title=f"{metric_name}(%)", scale=alt.Scale(domain=[0, 100])),
+                        y=alt.Y("TopN:N", title="", sort=top_order, axis=y_axis),
+                        tooltip=[
+                            alt.Tooltip("TopN:N", title="TopN"),
+                            alt.Tooltip("指標:N", title="指標"),
+                            alt.Tooltip("値:Q", title="値(%)", format=".1f"),
+                        ],
+                    )
+                )
+                labels = (
+                    alt.Chart(metric_frame)
+                    .mark_text(align="left", baseline="middle", dx=4, color="#111827")
+                    .encode(
+                        x=alt.X("値:Q", scale=alt.Scale(domain=[0, 100])),
+                        y=alt.Y("TopN:N", sort=top_order, axis=y_axis),
+                        text=alt.Text("値:Q", format=".1f"),
+                    )
+                )
+                st.altair_chart((bars + labels).properties(height=chart_height), use_container_width=True)
     st.caption("的中率は正解3連単が予測TopN以内に入った割合、回収率は各TopNを均等買いした場合の検証値です。実際の当日レースごとの結果を保証するものではありません。")
 
 
@@ -693,20 +707,28 @@ def render_prediction_tab() -> None:
     _render_prediction_guide()
     _render_model_accuracy_summary(config_path)
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("**順位予測**")
-        st.dataframe(_format_ranking_frame(prediction.ranking), use_container_width=True, hide_index=True)
-    with col2:
-        st.markdown("**三連単候補**")
-        trifecta_display = _trifecta_display_frame(prediction)
-        st.markdown("予想確率グラフ")
-        _render_trifecta_probability_chart(trifecta_display)
+    st.markdown("**順位予測**")
+    ranking_frame = _format_ranking_frame(prediction.ranking)
+    st.dataframe(
+        ranking_frame,
+        use_container_width=True,
+        hide_index=True,
+        height=_dataframe_height(len(ranking_frame)),
+    )
+
+    st.markdown("**三連単候補**")
+    trifecta_display = _trifecta_display_frame(prediction)
+    trifecta_frame = _format_trifecta_frame(trifecta_display)
+    table_col, chart_col = st.columns([1.0, 1.15])
+    with table_col:
         st.dataframe(
-            _format_trifecta_frame(trifecta_display),
+            trifecta_frame,
             use_container_width=True,
             hide_index=True,
+            height=_dataframe_height(len(trifecta_frame), row_height=36, header_height=48),
         )
+    with chart_col:
+        _render_trifecta_probability_chart(trifecta_display)
 
 
 def render_download_tab() -> None:
