@@ -386,7 +386,17 @@ def test_compute_trifecta_metrics_includes_variable_ticket_recovery_metrics() ->
     assert top3_confidence["low"]["top3_hit_rate"] == 1.0
 
     confidence_strategy = metrics["top12_confidence_strategy_recovery_metrics"]
-    assert set(confidence_strategy["high"]) == {"top1", "top3", "top5", "top8", "top12", "bottom8", "bottom6"}
+    assert set(confidence_strategy["high"]) == {
+        "top1",
+        "top3",
+        "top5",
+        "top8",
+        "top10",
+        "top12",
+        "top20",
+        "bottom8",
+        "bottom6",
+    }
     assert confidence_strategy["high"]["top1"]["hit_rate"] == 0.0
     assert confidence_strategy["high"]["top3"]["hit_rate"] == 0.0
     assert confidence_strategy["high"]["top5"]["hit_rate"] == 1.0

@@ -123,7 +123,17 @@ def test_fast_confidence_strategy_recovery_metrics_include_all_ticket_styles() -
         trifecta_payouts=np.asarray([1000.0, 3000.0, 10000.0], dtype=float),
     )
 
-    assert set(metrics["high"]) == {"top1", "top3", "top5", "top8", "top12", "bottom8", "bottom6"}
+    assert set(metrics["high"]) == {
+        "top1",
+        "top3",
+        "top5",
+        "top8",
+        "top10",
+        "top12",
+        "top20",
+        "bottom8",
+        "bottom6",
+    }
     assert metrics["high"]["top1"]["hit_rate"] == 0.0
     assert metrics["high"]["top3"]["hit_rate"] == 0.0
     assert metrics["high"]["top5"]["hit_rate"] == 1.0

@@ -1510,7 +1510,7 @@ def _evaluate_fast_rerank_payloads(
     use_v2: bool = False,
 ) -> dict[str, Any]:
     race_count = len(payloads)
-    top_hits = {1: 0, 3: 0, 5: 0, 10: 0, 12: 0}
+    top_hits = {1: 0, 3: 0, 5: 0, 10: 0, 12: 0, 20: 0}
     covered = 0
     rerank_top1 = 0
     rerank_mrr = 0.0
@@ -1565,6 +1565,7 @@ def _evaluate_fast_rerank_payloads(
         "top5_hit_rate": top_hits[5] / race_count if race_count else 0.0,
         "top10_hit_rate": top_hits[10] / race_count if race_count else 0.0,
         "top12_hit_rate": top_hits[12] / race_count if race_count else 0.0,
+        "top20_hit_rate": top_hits.get(20, 0) / race_count if race_count else 0.0,
         "log_loss": float(np.mean(log_losses)) if log_losses else 0.0,
         "brier_score": float(np.mean(brier_scores)) if brier_scores else 0.0,
         "mean_actual_probability": float(np.mean(actual_probabilities)) if actual_probabilities else 0.0,
@@ -1642,7 +1643,7 @@ def _fast_calibrated_metrics_from_frame(
             calibrator,
         )
     actual = trifecta_frame["is_actual"].astype(bool).to_numpy()
-    top_hits = {1: 0, 3: 0, 5: 0, 10: 0, 12: 0}
+    top_hits = {1: 0, 3: 0, 5: 0, 10: 0, 12: 0, 20: 0}
     covered = 0
     rerank_top1 = 0
     rerank_mrr = 0.0
@@ -1697,6 +1698,7 @@ def _fast_calibrated_metrics_from_frame(
         "top5_hit_rate": top_hits[5] / race_count if race_count else 0.0,
         "top10_hit_rate": top_hits[10] / race_count if race_count else 0.0,
         "top12_hit_rate": top_hits[12] / race_count if race_count else 0.0,
+        "top20_hit_rate": top_hits.get(20, 0) / race_count if race_count else 0.0,
         "log_loss": float(np.mean(log_losses)) if log_losses else 0.0,
         "brier_score": float(np.mean(brier_scores)) if brier_scores else 0.0,
         "mean_actual_probability": float(np.mean(actual_probabilities)) if actual_probabilities else 0.0,
@@ -1721,7 +1723,7 @@ def _fast_matrix_metrics(prob_matrix: np.ndarray, actual_indices: np.ndarray) ->
         return {}
     valid_mask = (actual >= 0) & (actual < probs.shape[1])
     covered = int(valid_mask.sum())
-    top_hits = {1: 0, 3: 0, 5: 0, 10: 0, 12: 0}
+    top_hits = {1: 0, 3: 0, 5: 0, 10: 0, 12: 0, 20: 0}
     boat_top1_hit_rate = 0.0
     if covered:
         valid_probs = probs[valid_mask]
@@ -1761,6 +1763,7 @@ def _fast_matrix_metrics(prob_matrix: np.ndarray, actual_indices: np.ndarray) ->
         "top5_hit_rate": top_hits[5] / race_count if race_count else 0.0,
         "top10_hit_rate": top_hits[10] / race_count if race_count else 0.0,
         "top12_hit_rate": top_hits[12] / race_count if race_count else 0.0,
+        "top20_hit_rate": top_hits[20] / race_count if race_count else 0.0,
         "log_loss": log_loss_value,
         "brier_score": brier_value,
         "mean_actual_probability": mean_actual,
@@ -2192,6 +2195,7 @@ def _fast_top3_filter_components(
         "top3_hits": actual_ranks < 3,
         "top5_hits": actual_ranks < 5,
         "top12_hits": actual_ranks < 12,
+        "top20_hits": actual_ranks < 20,
         "top3_scores": top3_scores,
         "top3_labels": top3_labels,
         "boat_scores": boat_scores,
@@ -2282,6 +2286,7 @@ def _fast_summarize_top3_filter_components(
         "top3_hit_rate": float(np.mean(components["top3_hits"][mask])),
         "top5_hit_rate": float(np.mean(components["top5_hits"][mask])),
         "top12_hit_rate": float(np.mean(components["top12_hits"][mask])),
+        "top20_hit_rate": float(np.mean(components["top20_hits"][mask])),
         "top3_total_stake": total_stake,
         "top3_total_return": total_return,
         "top3_recovery_rate": total_return / total_stake if total_stake else 0.0,
@@ -2475,6 +2480,7 @@ def _fast_boat_top1_confidence_metrics(
     top1_hits = actual_ranks < 1
     top3_hits = actual_ranks < 3
     top12_hits = actual_ranks < 12
+    top20_hits = actual_ranks < 20
     valid_payout_mask = np.isfinite(valid_payouts) & (valid_payouts > 0.0)
     top3_ticket_count = min(3, valid_probs.shape[1])
     top3_stake_per_race = float(top3_ticket_count) * float(stake_per_ticket)
@@ -2494,6 +2500,7 @@ def _fast_boat_top1_confidence_metrics(
             "boat_top1_hit_rate": float(np.mean(boat_top1_hits[mask])),
             "top3_hit_rate": float(np.mean(top3_hits[mask])),
             "top12_hit_rate": float(np.mean(top12_hits[mask])),
+            "top20_hit_rate": float(np.mean(top20_hits[mask])),
             "top3_total_stake": total_stake,
             "top3_total_return": total_return,
             "top3_recovery_rate": total_return / total_stake if total_stake else 0.0,
@@ -2567,6 +2574,7 @@ def _fast_top3_x_boat_top1_confidence_metrics(
     top1_hits = actual_ranks < 1
     top3_hits = actual_ranks < 3
     top12_hits = actual_ranks < 12
+    top20_hits = actual_ranks < 20
     valid_payout_mask = np.isfinite(valid_payouts) & (valid_payouts > 0.0)
     top3_ticket_count = min(3, valid_probs.shape[1])
     top3_stake_per_race = float(top3_ticket_count) * float(stake_per_ticket)
@@ -2592,6 +2600,7 @@ def _fast_top3_x_boat_top1_confidence_metrics(
                 "top1_hit_rate": float(np.mean(top1_hits[mask])),
                 "top3_hit_rate": float(np.mean(top3_hits[mask])),
                 "top12_hit_rate": float(np.mean(top12_hits[mask])),
+                "top20_hit_rate": float(np.mean(top20_hits[mask])),
                 "top3_total_stake": total_stake,
                 "top3_total_return": total_return,
                 "top3_recovery_rate": total_return / total_stake if total_stake else 0.0,
@@ -2646,6 +2655,7 @@ def _fast_payout_band_metrics(
             "top5_hit_rate": float(np.mean(actual_ranks[mask] < 5)),
             "top10_hit_rate": float(np.mean(actual_ranks[mask] < 10)),
             "top12_hit_rate": float(np.mean(actual_ranks[mask] < 12)),
+            "top20_hit_rate": float(np.mean(actual_ranks[mask] < 20)),
             "log_loss": float(np.mean(-np.log(actual_probabilities[mask]))),
             "mean_payout": float(np.mean(valid_payouts[mask])),
         }
@@ -2656,7 +2666,7 @@ def _fast_uniform_ticket_recovery_metrics(
     prob_matrix: np.ndarray,
     actual_indices: np.ndarray,
     trifecta_payouts: np.ndarray,
-    top_ns: tuple[int, ...] = (1, 3, 5, 8, 12),
+    top_ns: tuple[int, ...] = (1, 3, 5, 8, 10, 12, 20),
     bottom_ns: tuple[int, ...] = (8, 6),
     stake_per_ticket: float = 100.0,
 ) -> dict[str, Any]:
@@ -2857,7 +2867,7 @@ def _fast_top12_confidence_strategy_recovery_metrics(
     prob_matrix: np.ndarray,
     actual_indices: np.ndarray,
     trifecta_payouts: np.ndarray,
-    top_ns: tuple[int, ...] = (1, 3, 5, 8, 12),
+    top_ns: tuple[int, ...] = (1, 3, 5, 8, 10, 12, 20),
     bottom_ns: tuple[int, ...] = (8, 6),
     stake_per_ticket: float = 100.0,
 ) -> dict[str, Any]:
@@ -7812,11 +7822,13 @@ def evaluate_fast_trifecta_ensemble_candidate(
     top3_hit = actual_rank < 3
     top5_hit = actual_rank < 5
     top12_hit = actual_rank < 12
+    top20_hit = actual_rank < 20
     boat_top1_hit = best_permutations[:, 0] == actual_permutations[:, 0]
     log_loss = -float(np.mean(np.log(actual_probs)))
     top1_hit_rate = float(np.mean(top1_hit))
     top3_hit_rate = float(np.mean(top3_hit))
     top12_hit_rate = float(np.mean(top12_hit))
+    top20_hit_rate = float(np.mean(top20_hit))
     top5_hit_rate = float(np.mean(top5_hit))
     boat_top1_hit_rate = float(np.mean(boat_top1_hit))
     avg_top3_overlap = float(np.mean(top3_overlap))
@@ -7880,6 +7892,7 @@ def evaluate_fast_trifecta_ensemble_candidate(
         "top1_hit_rate": top1_hit_rate,
         "top3_hit_rate": top3_hit_rate,
         "top12_hit_rate": top12_hit_rate,
+        "top20_hit_rate": top20_hit_rate,
         "top5_hit_rate": top5_hit_rate,
         "avg_top3_overlap": avg_top3_overlap,
         "log_loss": log_loss,
@@ -8056,6 +8069,7 @@ def optimize_ensemble_weights(
         "validation_top3_hit_rate": float(best_metrics.get("top3_hit_rate", 0.0)),
         "validation_top5_hit_rate": float(best_metrics.get("top5_hit_rate", 0.0)),
         "validation_top12_hit_rate": float(best_metrics.get("top12_hit_rate", 0.0)),
+        "validation_top20_hit_rate": float(best_metrics.get("top20_hit_rate", 0.0)),
         "validation_log_loss": float(best_metrics.get("log_loss", 0.0)),
         "validation_normalized_log_loss": float(best_metrics.get("normalized_log_loss", 0.0)),
         "validation_value_rule_recovery_rate": float(best_metrics.get("value_rule_recovery_rate", 0.0)),

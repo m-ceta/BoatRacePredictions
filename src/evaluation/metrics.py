@@ -58,7 +58,7 @@ def compute_trifecta_metrics(
         raise ValueError(f"Missing trifecta metric columns: {sorted(missing)}")
 
     race_count = int(trifecta_df["race_id"].nunique())
-    top_hits = {1: 0, 3: 0, 5: 0, 10: 0, 12: 0}
+    top_hits = {1: 0, 3: 0, 5: 0, 10: 0, 12: 0, 20: 0}
     boat_top1_hits = 0
     covered_races = 0
     log_losses: list[float] = []
@@ -98,6 +98,7 @@ def compute_trifecta_metrics(
         "top5_hit_rate": top_hits[5] / race_count if race_count else 0.0,
         "top10_hit_rate": top_hits[10] / race_count if race_count else 0.0,
         "top12_hit_rate": top_hits[12] / race_count if race_count else 0.0,
+        "top20_hit_rate": top_hits[20] / race_count if race_count else 0.0,
         "log_loss": float(np.mean(log_losses)) if log_losses else 0.0,
         "brier_score": float(np.mean(brier_scores)) if brier_scores else 0.0,
         "mean_actual_probability": float(np.mean(actual_probabilities)) if actual_probabilities else 0.0,
@@ -188,7 +189,7 @@ def compute_uniform_ticket_recovery_metrics(
     trifecta_df: pd.DataFrame,
     probability_col: str = "probability",
     payout_col: str = "trifecta_payout",
-    top_ns: Iterable[int] = (1, 3, 5, 8, 12),
+    top_ns: Iterable[int] = (1, 3, 5, 8, 10, 12, 20),
     bottom_ns: Iterable[int] = (8, 6),
     stake_per_ticket: float = 100.0,
 ) -> dict[str, dict[str, float]]:
@@ -296,7 +297,7 @@ def compute_top12_confidence_strategy_recovery_metrics(
     trifecta_df: pd.DataFrame,
     probability_col: str = "probability",
     payout_col: str = "trifecta_payout",
-    top_ns: Iterable[int] = (1, 3, 5, 8, 12),
+    top_ns: Iterable[int] = (1, 3, 5, 8, 10, 12, 20),
     bottom_ns: Iterable[int] = (8, 6),
     stake_per_ticket: float = 100.0,
 ) -> dict[str, dict[str, dict[str, float]]]:
@@ -580,6 +581,7 @@ def compute_payout_band_metrics(
             "top5_hit": float(int(actual_idx < 5)),
             "top10_hit": float(int(actual_idx < 10)),
             "top12_hit": float(int(actual_idx < 12)),
+            "top20_hit": float(int(actual_idx < 20)),
             "log_loss": float(-np.log(actual_probability)),
         }
         by_band.setdefault(_payout_band_key(payout), []).append(record)
@@ -623,6 +625,7 @@ def _summarize_payout_band_records(
             "top5_hit_rate": 0.0,
             "top10_hit_rate": 0.0,
             "top12_hit_rate": 0.0,
+            "top20_hit_rate": 0.0,
             "log_loss": 0.0,
             "mean_payout": 0.0,
         }
@@ -635,6 +638,7 @@ def _summarize_payout_band_records(
         "top5_hit_rate": float(np.mean([record["top5_hit"] for record in records])),
         "top10_hit_rate": float(np.mean([record["top10_hit"] for record in records])),
         "top12_hit_rate": float(np.mean([record["top12_hit"] for record in records])),
+        "top20_hit_rate": float(np.mean([record["top20_hit"] for record in records])),
         "log_loss": float(np.mean([record["log_loss"] for record in records])),
         "mean_payout": float(np.mean([record["payout"] for record in records])),
     }
@@ -1113,6 +1117,7 @@ def _top3_score_filter_record(
         "top3_hit": top3_hit,
         "top5_hit": float(actual_idx < 5),
         "top12_hit": float(actual_idx < 12),
+        "top20_hit": float(actual_idx < 20),
         "top3_confidence_score": float(top_row.get("top3_confidence_score", 0.0) or 0.0),
         "boat_top1_confidence_score": float(top_row.get("boat_top1_confidence_score", 0.0) or 0.0),
         "top3_probability_mass": float(top_row.get("top3_probability_mass", 0.0) or 0.0),
@@ -1150,6 +1155,7 @@ def _summarize_top3_score_filter_records(
         "top3_hit_rate": float(np.mean([record["top3_hit"] for record in records])),
         "top5_hit_rate": float(np.mean([record["top5_hit"] for record in records])),
         "top12_hit_rate": float(np.mean([record["top12_hit"] for record in records])),
+        "top20_hit_rate": float(np.mean([record["top20_hit"] for record in records])),
         "top3_total_stake": total_stake,
         "top3_total_return": total_return,
         "top3_recovery_rate": total_return / total_stake if total_stake else 0.0,

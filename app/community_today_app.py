@@ -6,6 +6,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 import streamlit as st
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -118,19 +119,33 @@ def load_model_accuracy_summary(config_path: str) -> dict[str, object] | None:
     if section is None:
         return None
 
+    recovery_metrics = section.get("uniform_ticket_recovery_metrics", {})
+    if not isinstance(recovery_metrics, dict):
+        recovery_metrics = {}
+
     rows = []
-    for label, key in (
-        ("Top1", "top1_hit_rate"),
-        ("Top3", "top3_hit_rate"),
-        ("Top5", "top5_hit_rate"),
-        ("Top10", "top10_hit_rate"),
-        ("Top12", "top12_hit_rate"),
-        ("Top20", "top20_hit_rate"),
-        ("Top25", "top25_hit_rate"),
+    for label, key, recovery_key in (
+        ("Top1", "top1_hit_rate", "top1"),
+        ("Top3", "top3_hit_rate", "top3"),
+        ("Top5", "top5_hit_rate", "top5"),
+        ("Top10", "top10_hit_rate", "top10"),
+        ("Top12", "top12_hit_rate", "top12"),
+        ("Top20", "top20_hit_rate", "top20"),
+        ("Top25", "top25_hit_rate", "top25"),
     ):
-        value = section.get(key)
-        if value is not None:
-            rows.append({"label": label, "value": float(value)})
+        recovery_entry = recovery_metrics.get(recovery_key, {})
+        if not isinstance(recovery_entry, dict):
+            recovery_entry = {}
+        hit_rate = section.get(key, recovery_entry.get("hit_rate"))
+        recovery_rate = recovery_entry.get("recovery_rate")
+        if hit_rate is not None or recovery_rate is not None:
+            rows.append(
+                {
+                    "label": label,
+                    "hit_rate": float(hit_rate) if hit_rate is not None else None,
+                    "recovery_rate": float(recovery_rate) if recovery_rate is not None else None,
+                }
+            )
     if not rows:
         return None
     return {
@@ -315,13 +330,15 @@ def _format_ranking_frame(frame):
 def _format_trifecta_frame(frame):
     formatted = frame.copy().reset_index(drop=True)
     probability_col = "adjusted_probability" if "adjusted_probability" in formatted.columns else "probability"
+    display_probability_col = "display_prediction_probability"
     formatted["display_rank_no"] = range(1, len(formatted) + 1)
+    if probability_col in formatted.columns:
+        formatted[display_probability_col] = pd.to_numeric(formatted[probability_col], errors="coerce") * 100.0
     columns = [
         ("display_rank_no", "No"),
         ("trifecta", "買い目"),
-        (probability_col, "予想確率"),
+        (display_probability_col, "予想確率(%)"),
         ("odds", "現在オッズ"),
-        ("recommended_bet_amount", "推奨購入金額"),
     ]
     for source, _label in columns:
         if source not in formatted.columns:
@@ -346,8 +363,25 @@ def _prediction_race_value(prediction: Any, column: str, default: Any = 0.0) -> 
     return values.iloc[0]
 
 
-def _format_percent(value: float) -> str:
-    return f"{float(value) * 100:.1f}%"
+def _format_percent(value: object) -> str:
+    try:
+        return f"{float(value) * 100:.1f}%"
+    except (TypeError, ValueError):
+        return "-"
+
+
+def _inject_table_style() -> None:
+    st.markdown(
+        """
+<style>
+div[data-testid="stDataFrame"] [role="gridcell"],
+div[data-testid="stDataFrame"] [role="columnheader"] {
+  font-size: 1rem;
+}
+</style>
+""",
+        unsafe_allow_html=True,
+    )
 
 
 def _confidence_label(score: float) -> str:
@@ -373,9 +407,8 @@ def _render_prediction_guide() -> None:
 **3連単予想一覧**
 
 - `No` は予想確率が高い順の順位です。
-- `予想確率` は補正後の3連単確率です。1レース120通りを合計すると1になるように正規化しています。
+- `予想確率(%)` は補正後の3連単確率です。1レース120通りを合計すると100%になるように正規化しています。
 - `オッズ` は取得できた場合だけ表示します。
-- `推奨購入金額` はTop3的中確率を元にした目安です。0円の場合は見送り相当です。
 
 **上部の指標**
 
@@ -385,8 +418,8 @@ def _render_prediction_guide() -> None:
 
 **期待値と買い判断**
 
-- 内部の期待値は、一覧の `予想確率` と現在オッズを掛けて計算しています。
-- 買い判断は画面には出さず、推奨購入金額として表示します。
+- 内部の期待値は、一覧の `予想確率(%)` を確率へ戻し、現在オッズを掛けて計算しています。
+- 買い判断は期待値計算には残していますが、一覧では予想順位・確率・オッズを優先して表示します。
 - Top3的中確率が低いレースや、イン勝ち確率が低く展開が割れやすいレースは、予想順位が下がりやすいため慎重に見てください。
 """
         )
@@ -401,13 +434,16 @@ def _render_model_accuracy_summary(config_path: str) -> None:
         return
 
     st.markdown("**現在のモデル精度（検証データ）**")
-    columns = st.columns(min(len(rows) + 1, 6))
     race_count = int(summary.get("race_count", 0) or 0)
-    columns[0].metric("評価レース数", f"{race_count:,}")
-    for index, row in enumerate(rows, start=1):
-        column = columns[index % len(columns)]
-        column.metric(str(row["label"]), f"{float(row['value']) * 100:.1f}%")
-    st.caption("直近の学習評価で算出された、正解3連単が予測TopN以内に入った割合です。実際の当日レースごとの的中率を保証するものではありません。")
+    st.caption(f"評価レース数: {race_count:,}")
+    accuracy_frame = pd.DataFrame(
+        [
+            {"指標": "的中率", **{str(row["label"]): _format_percent(row.get("hit_rate")) for row in rows}},
+            {"指標": "回収率", **{str(row["label"]): _format_percent(row.get("recovery_rate")) for row in rows}},
+        ]
+    )
+    st.dataframe(accuracy_frame, use_container_width=True, hide_index=True)
+    st.caption("的中率は正解3連単が予測TopN以内に入った割合、回収率は各TopNを均等買いした場合の検証値です。実際の当日レースごとの結果を保証するものではありません。")
 
 
 def bootstrap_shared_data_from_secrets() -> None:
@@ -530,7 +566,6 @@ def render_prediction_tab() -> None:
         st.metric(
             "Top3的中確率",
             f"{float(_prediction_race_value(prediction, 'top3_hit_probability', 0.0)) * 100:.1f}%",
-            str(_prediction_race_value(prediction, "top3_hit_probability_label", "-")),
         )
     with metric_col2:
         st.metric(
@@ -560,6 +595,7 @@ def render_prediction_tab() -> None:
 
 def main() -> None:
     st.set_page_config(page_title="BoatRace Today", page_icon="🚤", layout="wide")
+    _inject_table_style()
     st.title("BoatRace Today")
     st.caption("Streamlit Community Cloud 向けの当日予測アプリです。")
 

@@ -510,7 +510,27 @@ def build_live_feature_frame(
             frame[column] = pd.NA
         elif column not in categorical_feature_names:
             frame[column] = pd.to_numeric(frame[column], errors="coerce")
-    return frame[["race_id", *feature_columns]].copy()
+    display_columns = [
+        "race_id",
+        "race_date",
+        "venue",
+        "race_no",
+        "lane",
+        "racer_name",
+        "class_name",
+        "branch",
+        "age",
+        "motor_no",
+        "boat_no",
+        "course",
+        "exhibition_time",
+        "start_timing",
+    ]
+    output_columns: list[str] = []
+    for column in [*display_columns, *feature_columns]:
+        if column in frame.columns and column not in output_columns:
+            output_columns.append(column)
+    return frame[output_columns].copy()
 
 
 def fill_live_measurement_proxies(frame: pd.DataFrame) -> pd.DataFrame:
