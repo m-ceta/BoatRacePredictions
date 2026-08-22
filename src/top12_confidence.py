@@ -482,6 +482,7 @@ def apply_top12_probability_adjustment_table(
     probability = pd.to_numeric(frame[probability_col], errors="coerce").fillna(0.0).clip(lower=0.0)
     if not adjustment_table:
         frame[output_col] = probability
+        frame[output_col] = _normalize_probability_column(frame, output_col)
         frame["probability_adjustment_factor"] = 1.0
         frame["probability_adjustment_rank_band"] = pd.NA
         return frame
@@ -507,9 +508,29 @@ def apply_top12_probability_adjustment_table(
     ]
     factor_series = pd.Series(factors, index=frame.index, dtype=float)
     frame[output_col] = (probability * factor_series).clip(lower=0.0, upper=1.0)
+    frame[output_col] = _normalize_probability_column(frame, output_col)
     frame["probability_adjustment_factor"] = factor_series
     frame["probability_adjustment_rank_band"] = rank_band
     return frame
+
+
+def _normalize_probability_column(frame: pd.DataFrame, column: str) -> pd.Series:
+    probability = pd.to_numeric(frame[column], errors="coerce").fillna(0.0).clip(lower=0.0)
+    if "race_id" not in frame.columns:
+        total = float(probability.sum())
+        if total > 0.0:
+            return probability / total
+        if len(probability):
+            return pd.Series(1.0 / len(probability), index=frame.index, dtype=float)
+        return probability
+
+    totals = probability.groupby(frame["race_id"], sort=False).transform("sum")
+    normalized = probability.divide(totals.where(totals > 0.0), fill_value=0.0)
+    zero_total = totals <= 0.0
+    if bool(zero_total.any()):
+        counts = probability.groupby(frame["race_id"], sort=False).transform("size")
+        normalized = normalized.mask(zero_total, 1.0 / counts)
+    return normalized.astype(float)
 
 
 def _normalized_entropy(probs: np.ndarray) -> float:

@@ -1059,16 +1059,19 @@ def attach_odds_and_value(
     frame[value_probability_col] = pd.to_numeric(frame[value_probability_col], errors="coerce")
     frame["odds"] = pd.to_numeric(frame["odds"], errors="coerce")
     if "race_id" in frame.columns:
-        frame["prediction_rank"] = frame.groupby("race_id")["probability"].rank(ascending=False, method="first")
+        frame["prediction_rank"] = frame.groupby("race_id")[value_probability_col].rank(
+            ascending=False,
+            method="first",
+        )
     else:
-        frame["prediction_rank"] = frame["probability"].rank(ascending=False, method="first")
+        frame["prediction_rank"] = frame[value_probability_col].rank(ascending=False, method="first")
     frame["prediction_rank"] = frame["prediction_rank"].astype("Int64")
     frame["expected_value_probability"] = frame[value_probability_col]
     frame["expected_value"] = frame["odds"] * frame["expected_value_probability"]
     frame = attach_darkhorse_odds_context(frame)
     frame = attach_top3_hit_probability_buy_decision(frame)
     frame = frame.sort_values(
-        ["top3_hit_probability", "prediction_rank", "expected_value", "probability"],
+        ["top3_hit_probability", "prediction_rank", "expected_value", "expected_value_probability"],
         ascending=[False, True, False, False],
     ).reset_index(drop=True)
     return frame

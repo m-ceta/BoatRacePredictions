@@ -242,8 +242,9 @@ def predict_trifecta(
         ]
     if top_n is None:
         return trifecta
+    sort_probability_col = "adjusted_probability" if "adjusted_probability" in trifecta.columns else "probability"
     return (
-        trifecta.sort_values(["race_id", "probability"], ascending=[True, False])
+        trifecta.sort_values(["race_id", sort_probability_col], ascending=[True, False])
         .groupby("race_id", sort=False)
         .head(top_n)
         .reset_index(drop=True)

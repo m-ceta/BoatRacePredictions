@@ -1,4 +1,5 @@
 import logging
+import json
 import sys
 import traceback
 from datetime import date
@@ -14,6 +15,7 @@ if str(REPO_ROOT) not in sys.path:
 from src.drive_restore import (  # noqa: E402
     download_and_restore_packages,
 )
+from src.models.ranker import get_artifact_paths, load_config  # noqa: E402
 
 LOGGER = logging.getLogger(__name__)
 
@@ -49,6 +51,11 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def _resolve_repo_path(path: str | Path) -> Path:
+    target = Path(path)
+    return target if target.is_absolute() else repo_root() / target
+
+
 def default_config_path() -> str:
     return "configs/train.yaml"
 
@@ -80,6 +87,56 @@ def get_shared_data_urls() -> tuple[str, str]:
         default_secret("artifacts_drive_file_url", ""),
     )
     return str(data_url).strip(), str(artifacts_url).strip()
+
+
+@st.cache_data(show_spinner=False, ttl=300)
+def load_model_accuracy_summary(config_path: str) -> dict[str, object] | None:
+    try:
+        config = load_config(_resolve_repo_path(config_path))
+        artifacts = get_artifact_paths(config)
+        metrics_path = artifacts["metrics_path"]
+        if not metrics_path.is_absolute():
+            metrics_path = repo_root() / metrics_path
+        if not metrics_path.exists():
+            return None
+        metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+    section = None
+    for root_key in ("trifecta", "trifecta_v1_metrics"):
+        root = metrics.get(root_key, {})
+        if not isinstance(root, dict):
+            continue
+        for split_key in ("valid_calibrated", "valid_raw"):
+            candidate = root.get(split_key)
+            if isinstance(candidate, dict) and candidate:
+                section = candidate
+                break
+        if section is not None:
+            break
+    if section is None:
+        return None
+
+    rows = []
+    for label, key in (
+        ("Top1", "top1_hit_rate"),
+        ("Top3", "top3_hit_rate"),
+        ("Top5", "top5_hit_rate"),
+        ("Top10", "top10_hit_rate"),
+        ("Top12", "top12_hit_rate"),
+        ("Top20", "top20_hit_rate"),
+        ("Top25", "top25_hit_rate"),
+    ):
+        value = section.get(key)
+        if value is not None:
+            rows.append({"label": label, "value": float(value)})
+    if not rows:
+        return None
+    return {
+        "race_count": int(float(section.get("race_count", 0.0) or 0.0)),
+        "rows": rows,
+    }
 
 
 @st.cache_resource(show_spinner=False)
@@ -220,11 +277,6 @@ def _set_default_prediction_race(schedule: dict[str, dict[int, object]]) -> None
 def _select_and_rename_columns(frame: Any, columns: list[tuple[str, str]]):
     available = [(source, label) for source, label in columns if source in frame.columns]
     extra_labels = {
-        "race_scenario_name": "決着パターン",
-        "race_scenario_id": "決着ID",
-        "race_scenario_description": "決着イメージ",
-        "race_upset_score": "荒れ度",
-        "race_upset_label": "荒れ判定",
         "is_darkhorse_candidate": "穴候補",
     }
     selected_sources = {source for source, _ in available}
@@ -261,23 +313,16 @@ def _format_ranking_frame(frame):
 
 
 def _format_trifecta_frame(frame):
+    formatted = frame.copy().reset_index(drop=True)
+    probability_col = "adjusted_probability" if "adjusted_probability" in formatted.columns else "probability"
+    formatted["display_rank_no"] = range(1, len(formatted) + 1)
     columns = [
+        ("display_rank_no", "No"),
         ("trifecta", "買い目"),
-        ("probability", "予想確率"),
-        ("adjusted_probability", "補正後確率"),
+        (probability_col, "予想確率"),
         ("odds", "現在オッズ"),
-        ("expected_value", "期待値"),
         ("recommended_bet_amount", "推奨購入金額"),
-        ("buy_decision", "買い判断"),
-        ("buy_decision_source", "買い判断指標"),
-        ("in_win_probability", "イン勝ち確率"),
-        ("in_win_probability_label", "イン勝ち判定"),
-        ("in_collapse_probability", "イン沈み確率"),
-        ("in_collapse_probability_label", "イン沈み判定"),
-        ("top3_hit_probability", "Top3的中確率"),
-        ("top3_hit_probability_label", "Top3的中判定"),
     ]
-    formatted = frame.copy()
     for source, _label in columns:
         if source not in formatted.columns:
             formatted[source] = None
@@ -286,9 +331,9 @@ def _format_trifecta_frame(frame):
 
 
 def _trifecta_display_frame(prediction: Any):
-    if prediction.odds is not None and not prediction.odds.empty:
-        return prediction.odds.sort_values("probability", ascending=False).head(20)
-    return prediction.trifecta.sort_values("probability", ascending=False).head(20)
+    frame = prediction.odds if prediction.odds is not None and not prediction.odds.empty else prediction.trifecta
+    probability_col = "adjusted_probability" if "adjusted_probability" in frame.columns else "probability"
+    return frame.sort_values(probability_col, ascending=False).head(20).reset_index(drop=True)
 
 
 def _prediction_race_value(prediction: Any, column: str, default: Any = 0.0) -> Any:
@@ -325,33 +370,44 @@ def _render_prediction_guide() -> None:
     with st.expander("買い目判断と予測の見方", expanded=False):
         st.markdown(
             """
-**買い目の判断方法**
+**3連単予想一覧**
 
-- 買い判断は `Top3 hit probability` モデルの分類結果を使います。
-- 予測順位Top3以内で `Top3 hit label = high` なら `買い`、`middle` なら `検討`、`low` またはTop3外は `見送り` です。
-- `期待値` はオッズ込みの参考値として表示しますが、買い/見送り判定の主条件ではありません。
-- 推奨購入金額は目安です。`買い` は強め、`検討` は控えめ、`見送り` は0円です。
-- `Top3 hit probability` は、Top3に正解が入るかを2値分類モデルで推定した確率です。
-- `Top3 hit label` は `high / middle / low` の3分類です。
+- `No` は予想確率が高い順の順位です。
+- `予想確率` は補正後の3連単確率です。1レース120通りを合計すると1になるように正規化しています。
+- `オッズ` は取得できた場合だけ表示します。
+- `推奨購入金額` はTop3的中確率を元にした目安です。0円の場合は見送り相当です。
 
-**予想信頼度**
+**上部の指標**
 
-- 本命艇の `1着期待度` が高いほど上がります。
-- 1位と2位の差、3連単1位候補と2位候補の差が大きいほど上がります。
-- `高 / 中 / 低` は、予想がどれだけ絞れているかの目安です。
+- `Top3的中確率` は、予想Top3内に正解3連単が入る見込みを過去データから学習した確率です。
+- `イン勝ち確率` は、1コース艇が1着になる見込みです。
+- `イン沈み確率` は、1コース艇が3着以下になる見込みです。
 
-**1着期待度**
+**期待値と買い判断**
 
-- その艇が 1 着になる見込みを、順位モデルのスコアから相対的に表した値です。
-- 同じレース内で、どの艇が頭候補として強いかを見るための指標です。
-
-**基本モデル確率と最適化後確率**
-
-- `基本モデル確率` は、順位予想からそのまま作った 3連単確率です。
-- `最適化後確率` は、追加モデルで 3連単の並び順を調整した後の確率です。
-- `予想確率` は、通常この最適化後の値を使っています。
+- 内部の期待値は、一覧の `予想確率` と現在オッズを掛けて計算しています。
+- 買い判断は画面には出さず、推奨購入金額として表示します。
+- Top3的中確率が低いレースや、イン勝ち確率が低く展開が割れやすいレースは、予想順位が下がりやすいため慎重に見てください。
 """
         )
+
+
+def _render_model_accuracy_summary(config_path: str) -> None:
+    summary = load_model_accuracy_summary(config_path)
+    if not summary:
+        return
+    rows = list(summary.get("rows", []))
+    if not rows:
+        return
+
+    st.markdown("**現在のモデル精度（検証データ）**")
+    columns = st.columns(min(len(rows) + 1, 6))
+    race_count = int(summary.get("race_count", 0) or 0)
+    columns[0].metric("評価レース数", f"{race_count:,}")
+    for index, row in enumerate(rows, start=1):
+        column = columns[index % len(columns)]
+        column.metric(str(row["label"]), f"{float(row['value']) * 100:.1f}%")
+    st.caption("直近の学習評価で算出された、正解3連単が予測TopN以内に入った割合です。実際の当日レースごとの的中率を保証するものではありません。")
 
 
 def bootstrap_shared_data_from_secrets() -> None:
@@ -469,24 +525,27 @@ def render_prediction_tab() -> None:
         return
 
     st.success("予測が完了しました。")
-    st.text(_build_prediction_summary(prediction))
-    st.metric("決着パターン", prediction.race_scenario_name, prediction.race_scenario_id)
-    st.caption(f"決着イメージ: {prediction.race_scenario_description}")
-    st.metric("レース荒れ度", f"{float(prediction.race_upset_score) * 100:.1f}%", prediction.race_upset_label)
-    in_col1, in_col2 = st.columns(2)
-    with in_col1:
+    metric_col1, metric_col2, metric_col3 = st.columns(3)
+    with metric_col1:
+        st.metric(
+            "Top3的中確率",
+            f"{float(_prediction_race_value(prediction, 'top3_hit_probability', 0.0)) * 100:.1f}%",
+            str(_prediction_race_value(prediction, "top3_hit_probability_label", "-")),
+        )
+    with metric_col2:
         st.metric(
             "イン勝ち確率",
             f"{float(_prediction_race_value(prediction, 'in_win_probability', 0.0)) * 100:.1f}%",
             str(_prediction_race_value(prediction, "in_win_probability_label", "-")),
         )
-    with in_col2:
+    with metric_col3:
         st.metric(
             "イン沈み確率",
             f"{float(_prediction_race_value(prediction, 'in_collapse_probability', 0.0)) * 100:.1f}%",
             str(_prediction_race_value(prediction, "in_collapse_probability_label", "-")),
         )
     _render_prediction_guide()
+    _render_model_accuracy_summary(default_config_path())
 
     st.markdown("**順位予測**")
     st.dataframe(_format_ranking_frame(prediction.ranking), use_container_width=True, hide_index=True)
