@@ -7,6 +7,7 @@ from datetime import date
 from pathlib import Path
 from typing import Sequence
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -235,6 +236,13 @@ def _format_percent(value: object) -> str:
         return "-"
 
 
+def _percent_value(value: object) -> float | None:
+    try:
+        return float(value) * 100.0
+    except (TypeError, ValueError):
+        return None
+
+
 def _inject_table_style() -> None:
     st.markdown(
         """
@@ -306,6 +314,43 @@ def _format_trifecta_frame(frame: pd.DataFrame) -> pd.DataFrame:
     return formatted.rename(columns={source: label for source, label in columns})
 
 
+def _render_trifecta_probability_chart(frame: pd.DataFrame) -> None:
+    chart_frame = _format_trifecta_frame(frame)
+    if chart_frame.empty or "予想確率(%)" not in chart_frame.columns:
+        return
+    chart_frame = chart_frame.copy()
+    chart_frame["No表示"] = chart_frame["No"].map(lambda value: f"No.{int(value)}")
+    chart_frame["予想確率(%)"] = pd.to_numeric(chart_frame["予想確率(%)"], errors="coerce")
+    chart_frame = chart_frame.dropna(subset=["予想確率(%)"])
+    if chart_frame.empty:
+        return
+    chart_frame["probability_percent"] = chart_frame["予想確率(%)"]
+    sort_order = chart_frame["No表示"].tolist()
+    bars = (
+        alt.Chart(chart_frame)
+        .mark_bar(color="#2563eb", cornerRadiusEnd=3)
+        .encode(
+            x=alt.X("probability_percent:Q", title="予想確率(%)"),
+            y=alt.Y("No表示:N", title="No", sort=sort_order),
+            tooltip=[
+                alt.Tooltip("No:Q", title="No"),
+                alt.Tooltip("買い目:N", title="買い目"),
+                alt.Tooltip("probability_percent:Q", title="予想確率(%)", format=".2f"),
+            ],
+        )
+    )
+    labels = (
+        alt.Chart(chart_frame)
+        .mark_text(align="left", baseline="middle", dx=4, color="#111827")
+        .encode(
+            x="probability_percent:Q",
+            y=alt.Y("No表示:N", sort=sort_order),
+            text=alt.Text("probability_percent:Q", format=".2f"),
+        )
+    )
+    st.altair_chart((bars + labels).properties(height=420), use_container_width=True)
+
+
 def _trifecta_display_frame(prediction: Any) -> pd.DataFrame:
     frame = prediction.odds if prediction.odds is not None and not prediction.odds.empty else prediction.trifecta
     probability_col = "adjusted_probability" if "adjusted_probability" in frame.columns else "probability"
@@ -358,6 +403,42 @@ def _render_model_accuracy_summary(config_path: str) -> None:
     st.markdown("**現在のモデル精度（検証データ）**")
     race_count = int(summary.get("race_count", 0) or 0)
     st.caption(f"評価レース数: {race_count:,}")
+    chart_rows = []
+    for row in rows:
+        label = str(row["label"])
+        hit_rate = _percent_value(row.get("hit_rate"))
+        recovery_rate = _percent_value(row.get("recovery_rate"))
+        if hit_rate is not None:
+            chart_rows.append({"TopN": label, "指標": "的中率", "値": hit_rate})
+        if recovery_rate is not None:
+            chart_rows.append({"TopN": label, "指標": "回収率", "値": recovery_rate})
+    if chart_rows:
+        chart_frame = pd.DataFrame(chart_rows)
+        top_order = [str(row["label"]) for row in rows]
+        for metric_name, color in (("的中率", "#16a34a"), ("回収率", "#f97316")):
+            metric_frame = chart_frame[chart_frame["指標"] == metric_name]
+            if metric_frame.empty:
+                continue
+            st.caption(metric_name)
+            bars = (
+                alt.Chart(metric_frame)
+                .mark_bar(color=color, cornerRadiusEnd=3)
+                .encode(
+                    x=alt.X("値:Q", title=f"{metric_name}(%)"),
+                    y=alt.Y("TopN:N", title="", sort=top_order),
+                    tooltip=[
+                        alt.Tooltip("TopN:N", title="TopN"),
+                        alt.Tooltip("指標:N", title="指標"),
+                        alt.Tooltip("値:Q", title="値(%)", format=".1f"),
+                    ],
+                )
+            )
+            labels = (
+                alt.Chart(metric_frame)
+                .mark_text(align="left", baseline="middle", dx=4, color="#111827")
+                .encode(x="値:Q", y=alt.Y("TopN:N", sort=top_order), text=alt.Text("値:Q", format=".1f"))
+            )
+            st.altair_chart((bars + labels).properties(height=160), use_container_width=True)
     accuracy_frame = pd.DataFrame(
         [
             {"指標": "的中率", **{str(row["label"]): _format_percent(row.get("hit_rate")) for row in rows}},
@@ -609,8 +690,11 @@ def render_prediction_tab() -> None:
         st.dataframe(_format_ranking_frame(prediction.ranking), use_container_width=True, hide_index=True)
     with col2:
         st.markdown("**三連単候補**")
+        trifecta_display = _trifecta_display_frame(prediction)
+        st.markdown("予想確率グラフ")
+        _render_trifecta_probability_chart(trifecta_display)
         st.dataframe(
-            _format_trifecta_frame(_trifecta_display_frame(prediction)),
+            _format_trifecta_frame(trifecta_display),
             use_container_width=True,
             hide_index=True,
         )
