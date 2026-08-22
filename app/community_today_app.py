@@ -642,6 +642,8 @@ def render_prediction_tab() -> None:
         return
 
     st.success("予測が完了しました。")
+    _render_model_accuracy_summary(default_config_path())
+
     metric_col1, metric_col2, metric_col3 = st.columns(3)
     with metric_col1:
         st.metric(
@@ -662,7 +664,6 @@ def render_prediction_tab() -> None:
             str(_prediction_race_value(prediction, "in_collapse_probability_label", "-")),
         )
     _render_prediction_guide()
-    _render_model_accuracy_summary(default_config_path())
 
     st.markdown("**順位予測**")
     ranking_frame = _format_ranking_frame(prediction.ranking)
@@ -681,7 +682,7 @@ def render_prediction_tab() -> None:
         trifecta_frame,
         use_container_width=True,
         hide_index=True,
-        height=_dataframe_height(len(trifecta_frame), row_height=42, header_height=64),
+        height="auto",
         row_height=38,
         column_config=_trifecta_column_config(trifecta_frame),
     )
