@@ -310,18 +310,17 @@ def _format_ranking_frame(frame):
     return _select_and_rename_columns(
         frame,
         [
-            ("predicted_rank", "予想着順"),
             ("lane", "艇番"),
-            ("racer_name", "選手名"),
+            ("course", "進入"),
+            ("predicted_rank", "予想順位"),
             ("class_name", "級別"),
+            ("racer_name", "氏名"),
             ("branch", "支部"),
             ("age", "年齢"),
             ("motor_no", "モーター"),
             ("boat_no", "ボート"),
             ("exhibition_time", "展示タイム"),
-            ("course", "進入"),
             ("start_timing", "ST"),
-            ("win_probability_like", "1着期待度"),
             ("score", "総合スコア"),
         ],
     )
