@@ -439,6 +439,7 @@ DEFAULT_NEURAL_REGRESSION_VARIANT_SETTINGS = {
 
 
 DEFAULT_ENSEMBLE_SETTINGS = {
+    "optimize": False,
     "parallel_workers": 1,
     "model_metrics_parallel_workers": 1,
     "max_eval_races": 0,
@@ -467,6 +468,14 @@ DEFAULT_ENSEMBLE_SETTINGS = {
         "high": "top3",
         "middle": "top3",
         "low": "skip",
+    },
+    "fixed_weights": {
+        "lightgbm": 0.20,
+        "lightgbm_legacy_features": 0.10,
+        "lightgbm_stable_top6": 0.10,
+        "lightgbm_top3": 0.20,
+        "mlp_reg_finish_position": 0.30,
+        "ridge_reg_finish_position": 0.10,
     },
     "cross_validation": {
         "enabled": False,
@@ -627,6 +636,7 @@ def get_ensemble_settings(config: dict | None) -> dict[str, Any]:
         **DEFAULT_ENSEMBLE_SETTINGS,
         **(configured or {}),
     }
+    settings["optimize"] = bool(settings.get("optimize", False))
     settings["parallel_workers"] = max(int(settings.get("parallel_workers", 1)), 1)
     settings["model_metrics_parallel_workers"] = max(int(settings.get("model_metrics_parallel_workers", 1)), 1)
     settings["max_eval_races"] = max(int(settings.get("max_eval_races", 0)), 0)
@@ -646,6 +656,15 @@ def get_ensemble_settings(config: dict | None) -> dict[str, Any]:
         **DEFAULT_ENSEMBLE_SETTINGS["value_rule"],
         **dict(settings.get("value_rule", {}) or {}),
     }
+    settings["fixed_weights"] = {
+        str(name): float(weight)
+        for name, weight in dict(settings.get("fixed_weights", {}) or {}).items()
+    }
+    if any(weight < 0.0 for weight in settings["fixed_weights"].values()):
+        raise ValueError("models.ensemble.fixed_weights values must be non-negative.")
+    positive_fixed_total = sum(weight for weight in settings["fixed_weights"].values() if weight > 0.0)
+    if not settings["optimize"] and positive_fixed_total <= 0.0:
+        raise ValueError("models.ensemble.fixed_weights must contain at least one positive weight when optimize=false.")
     settings["value_confidence_calibration"] = {
         **DEFAULT_ENSEMBLE_SETTINGS["value_confidence_calibration"],
         **dict(settings.get("value_confidence_calibration", {}) or {}),
@@ -665,6 +684,34 @@ def get_ensemble_settings(config: dict | None) -> dict[str, Any]:
         cross_validation["folds"] = 1
     settings["cross_validation"] = cross_validation
     return settings
+
+
+def fixed_ensemble_weights(models: dict[str, Any], config: dict | None = None) -> dict[str, float]:
+    settings = get_ensemble_settings(config)
+    configured = dict(settings.get("fixed_weights", {}) or {})
+    available = set(models)
+    missing_positive = sorted(
+        name for name, weight in configured.items() if float(weight) > 0.0 and name not in available
+    )
+    if missing_positive:
+        raise ValueError(
+            "models.ensemble.fixed_weights references unavailable model(s): "
+            + ", ".join(missing_positive)
+        )
+    weights = {name: float(configured.get(name, 0.0)) for name in models}
+    total = sum(weights.values())
+    if total <= 0.0:
+        raise ValueError("No positive fixed ensemble weights are available for trained models.")
+    normalized = {name: weight / total for name, weight in weights.items() if weight > 0.0}
+    normalized.update(
+        {
+            "validation_objective": 0.0,
+            "validation_candidate_count": 0.0,
+            "validation_parallel_workers": 0.0,
+            "validation_objective_name": "fixed",
+        }
+    )
+    return normalized
 
 
 def get_enabled_lightgbm_variants(config: dict | None) -> list[dict[str, Any]]:
@@ -4166,20 +4213,26 @@ def train_ranker_from_splits(
         **ridge_regression_variant_models,
         **neural_regression_variant_models,
     }
+    ensemble_settings = get_ensemble_settings(config)
+    ensemble_stage_label = "ensemble optimization" if bool(ensemble_settings.get("optimize", False)) else "fixed ensemble weights"
     if resume and train_stage_completed(checkpoint, "ensemble", [artifacts["ensemble_weights_path"]]) and "ensemble" in checkpoint_metrics:
-        progress("skipping ensemble optimization: train checkpoint completed")
+        progress(f"skipping {ensemble_stage_label}: train checkpoint completed")
         ensemble_weights = load_ensemble_weights(artifacts["ensemble_weights_path"])
         ensemble_metrics = checkpoint_metrics.get("ensemble", {})
     else:
-        progress("optimizing ensemble weights")
-        ensemble_weights = optimize_ensemble_weights(
-            models,
-            valid_df,
-            feature_columns,
-            categorical_columns,
-            config=config,
-            progress_callback=progress,
-        )
+        if bool(ensemble_settings.get("optimize", False)):
+            progress("optimizing ensemble weights")
+            ensemble_weights = optimize_ensemble_weights(
+                models,
+                valid_df,
+                feature_columns,
+                categorical_columns,
+                config=config,
+                progress_callback=progress,
+            )
+        else:
+            progress("using fixed ensemble weights")
+            ensemble_weights = fixed_ensemble_weights(models, config)
         ensemble_weights["scenario_metric_min_races"] = int(
             get_phase3_settings(config)["evaluation"].get("scenario_min_races", 100)
         )

@@ -722,6 +722,51 @@ def test_ensemble_weight_optimization_includes_lightgbm_variants(monkeypatch) ->
     assert weights["validation_top1_accuracy"] == 1.0
 
 
+def test_fixed_ensemble_weights_uses_configured_weights() -> None:
+    weights = ranker.fixed_ensemble_weights(
+        {
+            "lightgbm": object(),
+            "lightgbm_legacy_features": object(),
+            "mlp_reg_finish_position": object(),
+        },
+        config={
+            "models": {
+                "ensemble": {
+                    "optimize": False,
+                    "fixed_weights": {
+                        "lightgbm": 0.2,
+                        "lightgbm_legacy_features": 0.1,
+                        "mlp_reg_finish_position": 0.3,
+                    },
+                }
+            }
+        },
+    )
+
+    assert weights["lightgbm"] == pytest.approx(0.2 / 0.6)
+    assert weights["lightgbm_legacy_features"] == pytest.approx(0.1 / 0.6)
+    assert weights["mlp_reg_finish_position"] == pytest.approx(0.3 / 0.6)
+    assert weights["validation_objective_name"] == "fixed"
+
+
+def test_fixed_ensemble_weights_rejects_missing_positive_model() -> None:
+    with pytest.raises(ValueError, match="unavailable model"):
+        ranker.fixed_ensemble_weights(
+            {"lightgbm": object()},
+            config={
+                "models": {
+                    "ensemble": {
+                        "optimize": False,
+                        "fixed_weights": {
+                            "lightgbm": 0.2,
+                            "mlp_reg_finish_position": 0.3,
+                        },
+                    }
+                }
+            },
+        )
+
+
 def test_ensemble_weight_optimization_supports_rank_legacy_objective(monkeypatch) -> None:
     valid_df = pd.DataFrame(
         {

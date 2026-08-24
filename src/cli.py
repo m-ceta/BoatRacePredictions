@@ -324,6 +324,11 @@ def train_main() -> None:
     parser.add_argument("--lightgbm-variant-workers", type=int, default=None)
     parser.add_argument("--ensemble-workers", type=int, default=None)
     parser.add_argument("--ensemble-max-eval-races", type=int, default=None)
+    parser.add_argument(
+        "--optimize-ensemble-weights",
+        action="store_true",
+        help="run ensemble weight search instead of using models.ensemble.fixed_weights",
+    )
     parser.add_argument("--resume", action="store_true", help="resume completed boatrace-train stages from artifacts/train_checkpoint.json")
     parser.add_argument("--reset-train-checkpoint", action="store_true", help="clear boatrace-train checkpoint before training")
     parser.add_argument("--skip-evaluation", action="store_true", help="train and save model artifacts without running post-training metrics")
@@ -344,6 +349,7 @@ def train_main() -> None:
         variant_workers=args.lightgbm_variant_workers,
         ensemble_workers=args.ensemble_workers,
         ensemble_max_eval_races=args.ensemble_max_eval_races,
+        optimize_ensemble_weights=args.optimize_ensemble_weights,
     )
     train_df, valid_df, test_df, config = load_training_splits_from_parquet(
         Path(config["data"]["training_table"]),
@@ -415,6 +421,7 @@ def with_lightgbm_variant_cli_overrides(
     variant_workers: int | None = None,
     ensemble_workers: int | None = None,
     ensemble_max_eval_races: int | None = None,
+    optimize_ensemble_weights: bool = False,
 ) -> dict:
     updated = dict(config)
     models_config = dict(updated.get("models", {}) or {})
@@ -431,6 +438,8 @@ def with_lightgbm_variant_cli_overrides(
         ensemble_config["parallel_workers"] = max(int(ensemble_workers), 1)
     if ensemble_max_eval_races is not None:
         ensemble_config["max_eval_races"] = max(int(ensemble_max_eval_races), 0)
+    if optimize_ensemble_weights:
+        ensemble_config["optimize"] = True
     models_config["ensemble"] = ensemble_config
     updated["models"] = models_config
     return updated

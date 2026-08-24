@@ -40,6 +40,14 @@ models:
       od_type: Iter
       od_wait: 30
   ensemble:
+    optimize: false
+    fixed_weights:
+      lightgbm: 0.20
+      lightgbm_legacy_features: 0.10
+      lightgbm_stable_top6: 0.10
+      lightgbm_top3: 0.20
+      mlp_reg_finish_position: 0.30
+      ridge_reg_finish_position: 0.10
     parallel_workers: 1
     model_metrics_parallel_workers: 1
     grid_step: 0.10
@@ -151,7 +159,7 @@ models:
           bagging_freq: 1
           lambda_l2: 8.0
   xgboost_variants:
-    enabled: true
+    enabled: false
     parallel_workers: 1
     num_threads_per_variant: 2
     variants:
