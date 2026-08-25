@@ -254,6 +254,13 @@ def _inject_table_style() -> None:
 div[data-testid="stDataFrame"] [role="gridcell"],
 div[data-testid="stDataFrame"] [role="columnheader"] {
   font-size: 1rem;
+  justify-content: center;
+  text-align: center;
+}
+div[data-testid="stDataFrame"] [role="gridcell"] > div,
+div[data-testid="stDataFrame"] [role="columnheader"] > div {
+  justify-content: center;
+  text-align: center;
 }
 </style>
 """,
