@@ -380,6 +380,79 @@ def _trifecta_column_config(frame) -> dict[str, Any]:
     }
 
 
+def _render_centered_prediction_table(
+    frame: pd.DataFrame,
+    *,
+    formats: dict[str, str] | None = None,
+    bars: dict[str, tuple[float, float, str]] | None = None,
+) -> None:
+    styler = frame.style.hide(axis="index").format(formats or {}, na_rep="-")
+    for column, (min_value, max_value, color) in (bars or {}).items():
+        if column in frame.columns:
+            styler = styler.bar(subset=[column], vmin=min_value, vmax=max_value, color=color)
+    styler = styler.set_properties(
+        **{
+            "font-size": "1rem",
+            "text-align": "center",
+            "vertical-align": "middle",
+        }
+    )
+    styler = styler.set_table_styles(
+        [
+            {
+                "selector": "th",
+                "props": [
+                    ("font-size", "1rem"),
+                    ("font-weight", "700"),
+                    ("text-align", "center"),
+                    ("vertical-align", "middle"),
+                ],
+            },
+            {
+                "selector": "td",
+                "props": [
+                    ("text-align", "center"),
+                    ("vertical-align", "middle"),
+                ],
+            },
+        ]
+    )
+    st.markdown(f'<div class="centered-dataframe">{styler.to_html()}</div>', unsafe_allow_html=True)
+
+
+def _render_ranking_table(frame: pd.DataFrame) -> None:
+    score_col = frame.columns[-1] if len(frame.columns) else None
+    bars: dict[str, tuple[float, float, str]] = {}
+    formats: dict[str, str] = {}
+    if score_col is not None:
+        scores = pd.to_numeric(frame[score_col], errors="coerce").dropna()
+        if scores.empty:
+            min_value, max_value = 0.0, 1.0
+        else:
+            min_value = min(0.0, float(scores.min()))
+            max_value = max(1.0, float(scores.max()))
+            if min_value == max_value:
+                max_value = min_value + 1.0
+        bars[str(score_col)] = (min_value, max_value, "#d7e9ff")
+        formats[str(score_col)] = "{:.4f}"
+    _render_centered_prediction_table(frame, formats=formats, bars=bars)
+
+
+def _render_trifecta_table(frame: pd.DataFrame) -> None:
+    probability_col = frame.columns[2] if len(frame.columns) > 2 else None
+    odds_col = frame.columns[3] if len(frame.columns) > 3 else None
+    formats: dict[str, str] = {}
+    bars: dict[str, tuple[float, float, str]] = {}
+    if probability_col is not None:
+        probabilities = pd.to_numeric(frame[probability_col], errors="coerce").dropna()
+        probability_max = 30.0 if probabilities.empty or float(probabilities.max()) <= 30.0 else 100.0
+        bars[str(probability_col)] = (0.0, probability_max, "#dff3df")
+        formats[str(probability_col)] = "{:.2f}%"
+    if odds_col is not None:
+        formats[str(odds_col)] = "{:.1f}"
+    _render_centered_prediction_table(frame, formats=formats, bars=bars)
+
+
 def _trifecta_display_frame(prediction: Any):
     frame = prediction.odds if prediction.odds is not None and not prediction.odds.empty else prediction.trifecta
     probability_col = "adjusted_probability" if "adjusted_probability" in frame.columns else "probability"
@@ -428,6 +501,16 @@ div[data-testid="stDataFrame"] [role="gridcell"] > div,
 div[data-testid="stDataFrame"] [role="columnheader"] > div {
   justify-content: center;
   text-align: center;
+}
+.centered-dataframe table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.centered-dataframe th,
+.centered-dataframe td {
+  padding: 0.45rem 0.6rem;
+  text-align: center !important;
+  vertical-align: middle !important;
 }
 </style>
 """,
@@ -678,25 +761,12 @@ def render_prediction_tab() -> None:
 
     st.markdown("**順位予測**")
     ranking_frame = _format_ranking_frame(prediction.ranking)
-    st.dataframe(
-        ranking_frame,
-        use_container_width=True,
-        hide_index=True,
-        height=_dataframe_height(len(ranking_frame)),
-        column_config=_ranking_column_config(ranking_frame),
-    )
+    _render_ranking_table(ranking_frame)
 
     st.markdown("**3連単予想**")
     trifecta_display = _trifecta_display_frame(prediction)
     trifecta_frame = _format_trifecta_frame(trifecta_display)
-    st.dataframe(
-        trifecta_frame,
-        use_container_width=True,
-        hide_index=True,
-        height="auto",
-        row_height=38,
-        column_config=_trifecta_column_config(trifecta_frame),
-    )
+    _render_trifecta_table(trifecta_frame)
 
 
 def main() -> None:
