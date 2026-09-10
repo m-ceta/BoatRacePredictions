@@ -408,6 +408,33 @@ def _render_centered_prediction_table(
     st.markdown(f'<div class="centered-dataframe">{styler.to_html()}</div>', unsafe_allow_html=True)
 
 
+def _sort_ranking_frame(frame: pd.DataFrame, key_prefix: str) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+    columns = [str(column) for column in frame.columns]
+    control_col1, control_col2 = st.columns([3, 1])
+    with control_col1:
+        sort_key = st.selectbox(
+            "ソートキー",
+            options=columns,
+            index=0,
+            key=f"{key_prefix}_sort_key",
+        )
+    with control_col2:
+        ascending = st.toggle("昇順", value=True, key=f"{key_prefix}_sort_ascending")
+    sort_values = pd.to_numeric(frame[sort_key], errors="coerce")
+    if sort_values.notna().any():
+        sortable = frame.assign(_sort_key=sort_values)
+    else:
+        sortable = frame.assign(_sort_key=frame[sort_key].astype(str))
+    return sortable.sort_values(
+        "_sort_key",
+        ascending=ascending,
+        kind="mergesort",
+        na_position="last",
+    ).drop(columns=["_sort_key"])
+
+
 def _render_ranking_table(frame: pd.DataFrame) -> None:
     score_col = frame.columns[-1] if len(frame.columns) else None
     bars: dict[str, tuple[float, float, str]] = {}
@@ -786,6 +813,7 @@ def render_prediction_tab() -> None:
 
     st.markdown("**順位予測**")
     ranking_frame = _format_ranking_frame(prediction.ranking)
+    ranking_frame = _sort_ranking_frame(ranking_frame, "prediction_ranking")
     _render_ranking_table(ranking_frame)
 
     st.markdown("**三連単候補**")
