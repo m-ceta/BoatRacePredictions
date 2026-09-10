@@ -411,7 +411,12 @@ def _render_centered_prediction_table(
 def _render_ranking_table(frame: pd.DataFrame) -> None:
     score_col = frame.columns[-1] if len(frame.columns) else None
     bars: dict[str, tuple[float, float, str]] = {}
-    formats: dict[str, str] = {}
+    formats: dict[str, str] = {
+        "予想順位": "{:.0f}",
+        "展示タイム": "{:.2f}",
+        "ST": "{:.2f}",
+        "総合スコア": "{:.3f}",
+    }
     if score_col is not None:
         scores = pd.to_numeric(frame[score_col], errors="coerce").dropna()
         if scores.empty:
@@ -422,7 +427,6 @@ def _render_ranking_table(frame: pd.DataFrame) -> None:
             if min_value == max_value:
                 max_value = min_value + 1.0
         bars[str(score_col)] = (min_value, max_value, "#d7e9ff")
-        formats[str(score_col)] = "{:.4f}"
     _render_centered_prediction_table(frame, formats=formats, bars=bars)
 
 
