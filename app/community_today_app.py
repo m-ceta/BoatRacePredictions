@@ -424,15 +424,23 @@ def _sort_ranking_frame(frame: pd.DataFrame, key_prefix: str) -> pd.DataFrame:
     if frame.empty:
         return frame
     columns = [str(column) for column in frame.columns]
-    control_col1, control_col2 = st.columns([3, 1])
-    with control_col1:
+    dropdown_weight = max(1.4, min(3.2, max(len(column) for column in columns) * 0.18))
+    spacer_weight = max(0.2, 6.0 - dropdown_weight)
+    label_col, select_col, toggle_col, _spacer_col = st.columns(
+        [0.9, dropdown_weight, 0.8, spacer_weight],
+        vertical_alignment="center",
+    )
+    with label_col:
+        st.markdown("ソートキー")
+    with select_col:
         sort_key = st.selectbox(
             "ソートキー",
             options=columns,
             index=0,
             key=f"{key_prefix}_sort_key",
+            label_visibility="collapsed",
         )
-    with control_col2:
+    with toggle_col:
         ascending = st.toggle("昇順", value=True, key=f"{key_prefix}_sort_ascending")
     sort_values = pd.to_numeric(frame[sort_key], errors="coerce")
     if sort_values.notna().any():
