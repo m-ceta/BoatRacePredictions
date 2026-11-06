@@ -113,13 +113,13 @@ def load_model_accuracy_summary(config_path: str) -> dict[str, object] | None:
 
     rows = []
     for label, key, recovery_key in (
-        ("Top1", "top1_hit_rate", "top1"),
-        ("Top3", "top3_hit_rate", "top3"),
-        ("Top5", "top5_hit_rate", "top5"),
-        ("Top10", "top10_hit_rate", "top10"),
-        ("Top12", "top12_hit_rate", "top12"),
-        ("Top20", "top20_hit_rate", "top20"),
-        ("Top25", "top25_hit_rate", "top25"),
+        ("No.1", "top1_hit_rate", "top1"),
+        ("No.1〜3", "top3_hit_rate", "top3"),
+        ("No.1〜5", "top5_hit_rate", "top5"),
+        ("No.1〜10", "top10_hit_rate", "top10"),
+        ("No.1〜12", "top12_hit_rate", "top12"),
+        ("No.1〜20", "top20_hit_rate", "top20"),
+        ("No.1〜25", "top25_hit_rate", "top25"),
     ):
         recovery_entry = recovery_metrics.get(recovery_key, {})
         if not isinstance(recovery_entry, dict):
@@ -251,6 +251,24 @@ def _inject_table_style() -> None:
     st.markdown(
         """
 <style>
+div[data-testid="stExpander"] details {
+  border: 1px solid var(--primary-color, #2563eb);
+  border-radius: 0.6rem;
+}
+div[data-testid="stExpander"] summary {
+  background-color: var(--secondary-background-color, #f0f2f6);
+  border-radius: 0.6rem;
+  cursor: pointer;
+  padding: 0.8rem 1rem;
+}
+div[data-testid="stExpander"] summary:hover {
+  outline: 2px solid var(--primary-color, #2563eb);
+  outline-offset: -2px;
+}
+div[data-testid="stExpander"] summary p {
+  font-weight: 600;
+}
+
 div[data-testid="stDataFrame"] [role="gridcell"],
 div[data-testid="stDataFrame"] [role="columnheader"] {
   font-size: 1rem;
@@ -497,18 +515,18 @@ def _prediction_race_value(prediction: Any, column: str, default: Any = 0.0) -> 
 
 
 def _render_prediction_guide() -> None:
-    with st.expander("買い目判断と予測の見方", expanded=False):
+    with st.expander("買い目判断と予測の見方 ｜ クリックで詳細を表示・非表示", expanded=False):
         st.markdown(
             """
 **3連単予想一覧**
 
-- `No` は予想確率が高い順の順位です。
+- `No` は3連単予想の予想確率が高い順の順位です。No.1が最上位で、No.1〜3は上位3点を表します。
 - `予想確率(%)` は補正後の3連単確率です。1レース120通りを合計すると100%になるように正規化しています。
 - `オッズ` は取得できた場合だけ表示します。
 
 **上部の指標**
 
-- `Top3的中確率` は、予想Top3内に正解3連単が入る見込みを過去データから学習した確率です。
+- `3連単予想 No.1〜3 的中確率` は、3連単予想一覧のNo.1〜3に正解3連単が入る見込みを過去データから学習した確率です。
 - `イン勝ち確率` は、1コース艇が1着になる見込みです。
 - `イン沈み確率` は、1コース艇が3着以下になる見込みです。
 
@@ -516,7 +534,7 @@ def _render_prediction_guide() -> None:
 
 - 内部の期待値は、一覧の `予想確率(%)` を確率へ戻し、現在オッズを掛けて計算しています。
 - 買い判断は期待値計算には残していますが、一覧では予想順位・確率・オッズを優先して表示します。
-- Top3的中確率が低いレースや、イン勝ち確率が低く展開が割れやすいレースは、予想順位が下がりやすいため慎重に見てください。
+- 3連単予想 No.1〜3 的中確率が低いレースや、イン勝ち確率が低く展開が割れやすいレースは、予想順位が下がりやすいため慎重に見てください。
 """
         )
 
@@ -529,12 +547,13 @@ def _render_model_accuracy_summary(config_path: str) -> None:
     if not rows:
         return
 
-    with st.expander("現在のモデル精度（検証データ）", expanded=False):
+    with st.expander("現在のモデル精度（検証データ） ｜ クリックで詳細を表示・非表示", expanded=False):
         _render_model_accuracy_summary_content(summary, rows)
 
 
 def _render_model_accuracy_summary_content(summary: dict[str, Any], rows: list[Any]) -> None:
     race_count = int(summary.get("race_count", 0) or 0)
+    st.caption("Noは3連単予想一覧の順位です。No.1は最上位の1点、No.1〜Nは上位N点を対象にしています。")
     st.caption(f"評価レース数: {race_count:,}")
     chart_rows = []
     for row in rows:
@@ -542,16 +561,16 @@ def _render_model_accuracy_summary_content(summary: dict[str, Any], rows: list[A
         hit_rate = _percent_value(row.get("hit_rate"))
         recovery_rate = _percent_value(row.get("recovery_rate"))
         if hit_rate is not None:
-            chart_rows.append({"TopN": label, "指標": "的中率", "値": hit_rate})
+            chart_rows.append({"3連単予想No": label, "指標": "3連単予想_的中率", "値": hit_rate})
         if recovery_rate is not None:
-            chart_rows.append({"TopN": label, "指標": "回収率", "値": recovery_rate})
+            chart_rows.append({"3連単予想No": label, "指標": "3連単予想_回収率", "値": recovery_rate})
     if chart_rows:
         chart_frame = pd.DataFrame(chart_rows)
         top_order = [str(row["label"]) for row in rows]
-        y_axis = alt.Axis(labelOverlap=False, labelLimit=80)
+        y_axis = alt.Axis(labelOverlap=False, labelLimit=110)
         chart_height = _dataframe_height(len(rows), row_height=30, header_height=42)
         chart_columns = st.columns(2)
-        for column, (metric_name, color) in zip(chart_columns, (("的中率", "#16a34a"), ("回収率", "#f97316"))):
+        for column, (metric_name, color) in zip(chart_columns, (("3連単予想_的中率", "#16a34a"), ("3連単予想_回収率", "#f97316"))):
             metric_frame = chart_frame[chart_frame["指標"] == metric_name]
             if metric_frame.empty:
                 continue
@@ -562,9 +581,9 @@ def _render_model_accuracy_summary_content(summary: dict[str, Any], rows: list[A
                     .mark_bar(color=color, cornerRadiusEnd=3)
                     .encode(
                         x=alt.X("値:Q", title=f"{metric_name}(%)", scale=alt.Scale(domain=[0, 100])),
-                        y=alt.Y("TopN:N", title="", sort=top_order, axis=y_axis),
+                        y=alt.Y("3連単予想No:N", title="3連単予想のNo", sort=top_order, axis=y_axis),
                         tooltip=[
-                            alt.Tooltip("TopN:N", title="TopN"),
+                            alt.Tooltip("3連単予想No:N", title="3連単予想No"),
                             alt.Tooltip("指標:N", title="指標"),
                             alt.Tooltip("値:Q", title="値(%)", format=".1f"),
                         ],
@@ -575,12 +594,12 @@ def _render_model_accuracy_summary_content(summary: dict[str, Any], rows: list[A
                     .mark_text(align="left", baseline="middle", dx=4, color="#111827")
                     .encode(
                         x=alt.X("値:Q", scale=alt.Scale(domain=[0, 100])),
-                        y=alt.Y("TopN:N", sort=top_order, axis=y_axis),
+                        y=alt.Y("3連単予想No:N", sort=top_order, axis=y_axis),
                         text=alt.Text("値:Q", format=".1f"),
                     )
                 )
                 st.altair_chart((bars + labels).properties(height=chart_height), use_container_width=True)
-    st.caption("的中率は正解3連単が予測TopN以内に入った割合、回収率は各TopNを均等買いした場合の検証値です。実際の当日レースごとの結果を保証するものではありません。")
+    st.caption("3連単予想_的中率は正解3連単がNo.1〜Nに含まれた割合、3連単予想_回収率はNo.1〜Nの各買い目を同額ずつ購入した場合の検証値です。実際の当日レースごとの結果を保証するものではありません。")
 
 
 def _run_python_cli(command_label: str, args: Sequence[str]) -> tuple[int, str]:
@@ -697,7 +716,7 @@ def _render_recent_backtest_report(report: dict) -> None:
     col5.metric("購入点数", f"{ticket_count}")
     col6.metric("購入額", f"{total_stake:,.0f}円")
     col7.metric("払戻額", f"{total_return:,.0f}円")
-    col8.metric("Top12内率", f"{float(summary.get('top12_hit_rate', 0.0)) * 100:.1f}%")
+    col8.metric("3連単予想 No.1〜12 的中率", f"{float(summary.get('top12_hit_rate', 0.0)) * 100:.1f}%")
 
     missing_payout_files = summary.get("missing_payout_files", [])
     if missing_payout_files:
@@ -801,7 +820,7 @@ def render_prediction_tab() -> None:
     metric_col1, metric_col2, metric_col3 = st.columns(3)
     with metric_col1:
         st.metric(
-            "Top3的中確率",
+            "3連単予想 No.1〜3 的中確率",
             f"{float(_prediction_race_value(prediction, 'top3_hit_probability', 0.0)) * 100:.1f}%",
             str(_prediction_race_value(prediction, "top3_hit_probability_label", "-")),
         )
