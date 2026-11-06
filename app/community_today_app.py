@@ -14,10 +14,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.drive_restore import (  # noqa: E402
+from src.drive_restore import (
     download_and_restore_packages,
 )
-from src.models.ranker import get_artifact_paths, load_config  # noqa: E402
+from src.models.ranker import get_artifact_paths, load_config
 
 LOGGER = logging.getLogger(__name__)
 
