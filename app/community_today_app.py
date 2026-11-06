@@ -753,6 +753,10 @@ def render_prediction_tab() -> None:
         format_func=lambda value: f"{int(value)}R",
         key=race_key,
     )
+    deadline = schedule.get(selected, {}).get(int(race_no))
+    if deadline is not None:
+        st.info(f"投票締切予定時刻：{deadline:%H:%M}（日本時間）")
+        st.caption("締切時刻は変更される場合があります。投票前に公式の最新情報をご確認ください。")
     from src.today_schedule import current_jst_date
 
     target_date = current_jst_date()

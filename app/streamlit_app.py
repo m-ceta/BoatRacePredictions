@@ -790,6 +790,10 @@ def render_prediction_tab() -> None:
         format_func=lambda value: f"{int(value)}R",
         key=race_key,
     )
+    deadline = schedule.get(selected, {}).get(int(race_no))
+    if deadline is not None:
+        st.info(f"投票締切予定時刻：{deadline:%H:%M}（日本時間）")
+        st.caption("締切時刻は変更される場合があります。投票前に公式の最新情報をご確認ください。")
     target_date = current_jst_date()
     exhibition_courses = load_exhibition_courses(selected, int(race_no), target_date)
     course_overrides, course_overrides_valid = _render_course_inputs(
