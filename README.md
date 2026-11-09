@@ -45,6 +45,33 @@ boatrace-webui-today
 
 ## 学習パイプライン
 
+### ST予測の比較実験
+
+`models.st_prediction.enabled: true` の場合、`boatrace-train`（`train_full` を含む）の最後に、
+軽量なST回帰モデルと比較用の順位モデルを学習します。現行アンサンブルのweight・当日予測は変更しません。
+
+- STモデルの入力は選手の過去ST、場、艇番、実進入コースなどのレース前情報のみです。本番STは正解としてのみ使用します。
+- 比較実験は時系列分割です。train期間の先頭80%を候補学習期間とし、それ以後の日付のvalidレースだけを評価します。
+- 順位学習用の予測STは日付単位の時系列OOFで作成します。最初の期間は履歴学習用とし、比較する両順位モデルから共通で除外します。
+- 同一レース群・同一設定のLightGBMで、既存proxyのみ／予測ST特徴7項目追加を比較します。既存proxyは残します。
+- 初期値は学習候補最大30,000レース、評価最大3,000レース、OOF 3分割、各モデル80反復、CPU 2スレッドです。
+- 進入コースや着順が不明・重複するレースは除外し、ST正解の欠損・F/Lなども除外します。実使用件数をレポートへ記録します。
+
+結果は `artifacts/metrics.json` の `st_prediction_experiment` と、
+`artifacts/st_prediction_experiment.json` に保存します（保存先は既存metricsと同じディレクトリ）。
+STのMAE/RMSE、隣艇より先に出るかの正解率、1位艇的中率、三連単Top1/3/5/10/12/20的中率、
+log_loss、追加前後の差分、Top3/Top12の改善・悪化レース数を確認できます。
+ログの `delta=+...pp` は的中率の差（パーセントポイント）です。
+
+これは**順位モデル単体から未校正の同一方式で三連単へ変換した比較**であり、
+classifier・確率補正を含む本番アンサンブルの改善を保証する評価ではありません。
+まずこの差分と標準誤差を確認し、有効なら本番への組み込みを検討してください。
+STモデル・両順位モデルは `st_prediction_experiment.joblib` に保存します。
+`src.models.st_prediction.predict_experiment_scores` から保存した実験モデルを再利用できます。
+
+`--resume` は完了済みの比較実験を再利用します。`--skip-variant-evaluation` でもこの比較は実行し、
+`--skip-evaluation` は実験モデルの学習・保存のみ行います。比較自体が不要なら `enabled: false` にしてください。
+
 Linux:
 
 ```bash

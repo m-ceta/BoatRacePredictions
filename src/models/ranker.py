@@ -3837,6 +3837,15 @@ def train_ranker_from_splits(
             categorical_columns,
         )
 
+    st_experiment_enabled = bool(config.get("models", {}).get("st_prediction", {}).get("enabled", False))
+    actual_train_st = (
+        pd.to_numeric(train_df["start_timing"], errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+        if st_experiment_enabled else None
+    )
+    actual_valid_st = (
+        pd.to_numeric(valid_df["start_timing"], errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+        if st_experiment_enabled and not valid_df.empty else np.empty(0)
+    )
     progress("applying prediction-time measurement proxies")
     train_df = apply_prediction_time_measurement_proxies(train_df)
     valid_df = apply_prediction_time_measurement_proxies(valid_df) if not valid_df.empty else valid_df
@@ -4513,6 +4522,37 @@ def train_ranker_from_splits(
         mark_train_stage_completed(checkpoint_path, checkpoint, "trifecta_v1_metrics", trifecta_v1_metrics)
     collect_garbage()
 
+    st_experiment_metrics: dict[str, Any] = {"status": "disabled"}
+    if st_experiment_enabled:
+        from src.models.st_prediction import run_st_prediction_experiment
+
+        st_artifact = artifacts["metrics_path"].with_name("st_prediction_experiment.joblib")
+        st_report_path = st_artifact.with_suffix(".json")
+        previous_st_report = checkpoint_metrics.get("st_prediction_experiment", {})
+        if (
+            resume
+            and train_stage_completed(checkpoint, "st_prediction_experiment", [st_artifact, st_report_path])
+            and (skip_evaluation or previous_st_report.get("status") == "completed")
+        ):
+            progress("skipping ST prediction experiment: train checkpoint completed")
+            st_experiment_metrics = previous_st_report
+        else:
+            progress("training lightweight ST prediction experiment (production ensemble unchanged)")
+            st_experiment_metrics = run_st_prediction_experiment(
+                train_df, valid_df, actual_train_st, actual_valid_st,
+                feature_columns, categorical_columns, config, st_artifact, progress,
+                skip_evaluation=skip_evaluation,
+            )
+            st_report_path.write_text(
+                json.dumps(st_experiment_metrics, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            mark_train_stage_completed(
+                checkpoint_path, checkpoint, "st_prediction_experiment", st_experiment_metrics
+            )
+            progress(f"ST prediction experiment report: {st_report_path} (status={st_experiment_metrics['status']})")
+        del actual_train_st, actual_valid_st
+        collect_garbage()
+
     ranker_metrics = {
         **({"catboost": catboost_metrics} if catboost_model is not None else {}),
         "lightgbm": lightgbm_metrics,
@@ -4541,6 +4581,7 @@ def train_ranker_from_splits(
         "flow_model_metrics": flow_metrics,
         "staged_model_metrics": staged_metrics,
     }
+    metrics["st_prediction_experiment"] = st_experiment_metrics
     progress("base model training complete")
     return (
         models,
