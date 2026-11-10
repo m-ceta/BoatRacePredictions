@@ -501,7 +501,9 @@ def _render_trifecta_table(frame: pd.DataFrame) -> None:
 def _trifecta_display_frame(prediction: Any) -> pd.DataFrame:
     frame = prediction.odds if prediction.odds is not None and not prediction.odds.empty else prediction.trifecta
     probability_col = "adjusted_probability" if "adjusted_probability" in frame.columns else "probability"
-    return frame.sort_values(probability_col, ascending=False).head(20).reset_index(drop=True)
+    from src.top12_confidence import sort_trifecta_candidates
+
+    return sort_trifecta_candidates(frame, probability_col).head(20).reset_index(drop=True)
 
 
 def _prediction_race_value(prediction: Any, column: str, default: Any = 0.0) -> Any:

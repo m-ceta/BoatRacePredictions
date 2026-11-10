@@ -21,6 +21,21 @@ PROBABILITY_ADJUSTMENT_DEFAULT_FACTOR_MIN = 0.25
 PROBABILITY_ADJUSTMENT_DEFAULT_FACTOR_MAX = 2.0
 
 
+def sort_trifecta_candidates(frame: pd.DataFrame, probability_col: str) -> pd.DataFrame:
+    """Resolve equal probabilities by ticket, consistently across all paths."""
+    columns = [probability_col]
+    ascending = [False]
+    if "trifecta" in frame:
+        columns.append("trifecta")
+        ascending.append(True)
+    return frame.sort_values(
+        columns, ascending=ascending, kind="stable",
+        key=lambda values: values.astype(str).str.replace(
+            r"\d+", lambda match: match.group().zfill(6), regex=True,
+        ) if values.name == "trifecta" else values,
+    )
+
+
 def attach_top12_confidence_columns(
     trifecta_df: pd.DataFrame,
     probability_col: str = "probability",
@@ -96,7 +111,7 @@ def calculate_top12_confidence_for_race(
     if race_df.empty or probability_col not in race_df.columns:
         return _empty_top12_confidence()
 
-    ordered = race_df.sort_values(probability_col, ascending=False).reset_index(drop=True)
+    ordered = sort_trifecta_candidates(race_df, probability_col).reset_index(drop=True)
     probs = pd.to_numeric(ordered[probability_col], errors="coerce").fillna(0.0).clip(lower=0.0).to_numpy(dtype=float)
     total = float(probs.sum())
     if total > 0.0:
@@ -150,7 +165,7 @@ def calculate_top3_confidence_for_race(
     if race_df.empty or probability_col not in race_df.columns:
         return _empty_top3_confidence()
 
-    ordered = race_df.sort_values(probability_col, ascending=False).reset_index(drop=True)
+    ordered = sort_trifecta_candidates(race_df, probability_col).reset_index(drop=True)
     probs = pd.to_numeric(ordered[probability_col], errors="coerce").fillna(0.0).clip(lower=0.0).to_numpy(dtype=float)
     total = float(probs.sum())
     if total > 0.0:

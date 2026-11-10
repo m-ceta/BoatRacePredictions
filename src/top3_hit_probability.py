@@ -11,8 +11,12 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
-from src.top12_confidence import attach_boat_top1_confidence_columns, attach_top3_confidence_columns
+from src.top12_confidence import (
+    attach_boat_top1_confidence_columns, attach_top3_confidence_columns, sort_trifecta_candidates,
+)
 
+
+TOP3_HIT_PROBABILITY_VERSION = 2
 
 TOP3_HIT_PROBABILITY_FEATURES: tuple[str, ...] = (
     "top3_confidence_score",
@@ -42,7 +46,7 @@ class Top3HitProbabilityPayload:
     model: Any
     feature_names: list[str]
     training_metrics: dict[str, Any]
-    version: int = 1
+    version: int = TOP3_HIT_PROBABILITY_VERSION
 
 
 def fit_top3_hit_probability_model(
@@ -100,7 +104,7 @@ def build_top3_hit_probability_training_frame(
     records: list[dict[str, Any]] = []
     targets: list[int] = []
     for race_id, race_df in frame.groupby("race_id", sort=False):
-        ordered = race_df.sort_values(probability_col, ascending=False).reset_index(drop=True)
+        ordered = sort_trifecta_candidates(race_df, probability_col).reset_index(drop=True)
         actual_positions = np.flatnonzero(ordered.get("is_actual", pd.Series(False, index=ordered.index)).to_numpy(dtype=bool))
         if len(actual_positions) != 1:
             continue
@@ -133,7 +137,7 @@ def attach_top3_hit_probability_columns(
 
     updates: list[pd.Series] = []
     for race_id, race_df in frame.groupby("race_id", sort=False):
-        top_index = race_df.sort_values(probability_col, ascending=False).index[0]
+        top_index = sort_trifecta_candidates(race_df, probability_col).index[0]
         feature_values = {}
         for name in feature_names:
             raw_value = frame.at[top_index, name] if name in frame.columns else 0.0
@@ -211,7 +215,7 @@ def label_top3_hit_probability(probability: float) -> str:
 def _prepare_top3_hit_probability_frame(trifecta_df: pd.DataFrame, probability_col: str) -> pd.DataFrame:
     frame = attach_top3_confidence_columns(trifecta_df, probability_col=probability_col)
     frame = attach_boat_top1_confidence_columns(frame, probability_col=probability_col)
-    return frame
+    return sort_trifecta_candidates(frame, probability_col) if probability_col in frame else frame
 
 
 def _attach_fallback_top3_hit_probability(frame: pd.DataFrame) -> pd.DataFrame:

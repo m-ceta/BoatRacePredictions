@@ -15,6 +15,7 @@ from src.top12_confidence import (
     recommended_ticket_count_from_top3_confidence,
     top3_confidence_label_key,
     top12_confidence_label_key,
+    sort_trifecta_candidates,
 )
 
 
@@ -67,7 +68,7 @@ def compute_trifecta_metrics(
     top_probabilities: list[float] = []
 
     for _, race_df in trifecta_df.groupby("race_id", sort=False):
-        ordered = race_df.sort_values(probability_col, ascending=False).reset_index(drop=True)
+        ordered = sort_trifecta_candidates(race_df, probability_col).reset_index(drop=True)
         actual_positions = np.flatnonzero(ordered["is_actual"].to_numpy(dtype=bool))
         if len(actual_positions) != 1:
             continue
@@ -207,7 +208,7 @@ def compute_uniform_ticket_recovery_metrics(
         payout = float(payout_values.iloc[0])
         if payout <= 0.0:
             continue
-        ordered = race_df.sort_values(probability_col, ascending=False).reset_index(drop=True)
+        ordered = sort_trifecta_candidates(race_df, probability_col).reset_index(drop=True)
         actual_positions = np.flatnonzero(ordered["is_actual"].to_numpy(dtype=bool))
         if len(actual_positions) != 1:
             continue
@@ -266,7 +267,7 @@ def compute_top12_confidence_recovery_metrics(
         payout = float(payout_values.iloc[0])
         if payout <= 0.0:
             continue
-        ordered = race_df.sort_values(probability_col, ascending=False).reset_index(drop=True)
+        ordered = sort_trifecta_candidates(race_df, probability_col).reset_index(drop=True)
         actual_positions = np.flatnonzero(ordered["is_actual"].to_numpy(dtype=bool))
         if len(actual_positions) != 1:
             continue
@@ -321,7 +322,7 @@ def compute_top12_confidence_strategy_recovery_metrics(
         payout = float(payout_values.iloc[0])
         if payout <= 0.0:
             continue
-        ordered = race_df.sort_values(probability_col, ascending=False).reset_index(drop=True)
+        ordered = sort_trifecta_candidates(race_df, probability_col).reset_index(drop=True)
         actual_positions = np.flatnonzero(ordered["is_actual"].to_numpy(dtype=bool))
         if len(actual_positions) != 1:
             continue
@@ -392,7 +393,7 @@ def compute_variable_ticket_recovery_metrics(
         payout = float(payout_values.iloc[0])
         if payout <= 0.0:
             continue
-        ordered = race_df.sort_values(probability_col, ascending=False).reset_index(drop=True)
+        ordered = sort_trifecta_candidates(race_df, probability_col).reset_index(drop=True)
         actual_positions = np.flatnonzero(ordered["is_actual"].to_numpy(dtype=bool))
         if len(actual_positions) != 1:
             continue
@@ -568,7 +569,7 @@ def compute_payout_band_metrics(
         payout = float(payout_values.iloc[0])
         if payout <= 0.0:
             continue
-        ordered = race_df.sort_values(probability_col, ascending=False).reset_index(drop=True)
+        ordered = sort_trifecta_candidates(race_df, probability_col).reset_index(drop=True)
         actual_positions = np.flatnonzero(ordered["is_actual"].to_numpy(dtype=bool))
         if len(actual_positions) != 1:
             continue
@@ -660,7 +661,7 @@ def compute_top12_confidence_metrics(
     by_label: dict[str, list[dict[str, float]]] = {}
 
     for _, scored_race in frame.groupby("race_id", sort=False):
-        ordered = scored_race.sort_values(probability_col, ascending=False).reset_index(drop=True)
+        ordered = sort_trifecta_candidates(scored_race, probability_col).reset_index(drop=True)
         actual_positions = np.flatnonzero(ordered["is_actual"].to_numpy(dtype=bool))
         if len(actual_positions) != 1:
             continue
@@ -723,7 +724,7 @@ def compute_top3_confidence_metrics(
     by_label: dict[str, list[dict[str, float]]] = {}
 
     for _, scored_race in frame.groupby("race_id", sort=False):
-        ordered = scored_race.sort_values(probability_col, ascending=False).reset_index(drop=True)
+        ordered = sort_trifecta_candidates(scored_race, probability_col).reset_index(drop=True)
         actual_positions = np.flatnonzero(ordered["is_actual"].to_numpy(dtype=bool))
         if len(actual_positions) != 1:
             continue
@@ -794,7 +795,7 @@ def compute_top3_confidence_score_band_metrics(
     by_band: dict[str, list[dict[str, float]]] = {band: [] for band, _, _ in TOP3_CONFIDENCE_SCORE_BANDS}
 
     for _, scored_race in frame.groupby("race_id", sort=False):
-        ordered = scored_race.sort_values(probability_col, ascending=False).reset_index(drop=True)
+        ordered = sort_trifecta_candidates(scored_race, probability_col).reset_index(drop=True)
         actual_positions = np.flatnonzero(ordered["is_actual"].to_numpy(dtype=bool))
         if len(actual_positions) != 1:
             continue
@@ -842,7 +843,7 @@ def compute_boat_top1_confidence_metrics(
     by_label: dict[str, list[dict[str, float]]] = {}
 
     for _, scored_race in frame.groupby("race_id", sort=False):
-        ordered = scored_race.sort_values(probability_col, ascending=False).reset_index(drop=True)
+        ordered = sort_trifecta_candidates(scored_race, probability_col).reset_index(drop=True)
         actual_positions = np.flatnonzero(ordered["is_actual"].to_numpy(dtype=bool))
         if len(actual_positions) != 1:
             continue
@@ -941,7 +942,7 @@ def compute_top3_x_boat_top1_confidence_metrics(
     }
 
     for _, scored_race in frame.groupby("race_id", sort=False):
-        ordered = scored_race.sort_values(probability_col, ascending=False).reset_index(drop=True)
+        ordered = sort_trifecta_candidates(scored_race, probability_col).reset_index(drop=True)
         actual_positions = np.flatnonzero(ordered["is_actual"].to_numpy(dtype=bool))
         if len(actual_positions) != 1:
             continue
@@ -1018,7 +1019,7 @@ def compute_top3_x_boat_top1_score_band_metrics(
     }
 
     for _, scored_race in frame.groupby("race_id", sort=False):
-        ordered = scored_race.sort_values(probability_col, ascending=False).reset_index(drop=True)
+        ordered = sort_trifecta_candidates(scored_race, probability_col).reset_index(drop=True)
         actual_positions = np.flatnonzero(ordered["is_actual"].to_numpy(dtype=bool))
         if len(actual_positions) != 1:
             continue
@@ -1078,7 +1079,7 @@ def compute_top3_hit_probability_metrics(
 
     records: list[dict[str, float]] = []
     for _, race_df in trifecta_df.groupby("race_id", sort=False):
-        ordered = race_df.sort_values(probability_col, ascending=False).reset_index(drop=True)
+        ordered = sort_trifecta_candidates(race_df, probability_col).reset_index(drop=True)
         actual_positions = np.flatnonzero(ordered["is_actual"].to_numpy(dtype=bool))
         if len(actual_positions) != 1:
             continue
@@ -1255,8 +1256,8 @@ def compute_trifecta_rerank_metrics(
     mean_rank_improvement = 0.0
 
     for _, race_df in trifecta_df.groupby("race_id", sort=False):
-        reranked = race_df.sort_values(probability_col, ascending=False).reset_index(drop=True)
-        baseline = race_df.sort_values(baseline_col, ascending=False).reset_index(drop=True)
+        reranked = sort_trifecta_candidates(race_df, probability_col).reset_index(drop=True)
+        baseline = sort_trifecta_candidates(race_df, baseline_col).reset_index(drop=True)
         rerank_actual = np.flatnonzero(reranked["is_actual"].to_numpy(dtype=bool))
         baseline_actual = np.flatnonzero(baseline["is_actual"].to_numpy(dtype=bool))
         if len(rerank_actual) != 1 or len(baseline_actual) != 1:

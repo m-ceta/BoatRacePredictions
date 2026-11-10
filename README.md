@@ -45,6 +45,30 @@ boatrace-webui-today
 
 ## 学習パイプライン
 
+### Top3的中確率の評価
+
+アンサンブルの `valid_calibrated` / `test_calibrated` は、当日予測と同じ確率補正表を適用した後の
+120候補を使って、的中率・回収率・Top3的中確率を評価します。
+Top3モデルの入力特徴量は学習・当日予測と共通の処理で生成します。同率候補は買い目の数値順で並べ、
+UI・正解ラベル・評価の順位を統一します。`valid_raw` / `test_raw` は未校正の比較用であり、
+補正後確率で学習したTop3モデルの確率評価は行いません。
+各variant単体は本番アンサンブル用の確率補正表・Top3モデルを流用せず、従来どおり単体比較します。
+
+修正前の結果がある環境では、以下で順位モデル・STモデルなどの完了済み学習を再利用できます。
+
+```bash
+boatrace-train --config configs/train.yaml --resume --skip-variant-evaluation
+```
+
+同率時の扱いをそろえるため、旧版のTop3的中確率モデルだけは再作成し、古い最終評価も再計算します。
+`evaluation_version: 2` / `probability_source: adjusted_probability` が更新済み評価の目印です。
+`train_full_resume` はtrainステップの完了markerがあるとtrain自体をスキップするため、
+評価更新だけが目的の場合は上記コマンドを直接実行してください。
+設定・データが変わっていれば通常のチェックポイント判定に従い再学習されます。
+
+なお、Top3モデルの学習レポートは学習データへの当てはまりです。
+処理経路の一致だけで未知期間への性能が保証されるわけではありません。
+
 ### ST予測の比較実験
 
 `models.st_prediction.enabled: true` の場合、`boatrace-train`（`train_full` を含む）の最後に、

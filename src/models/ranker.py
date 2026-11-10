@@ -76,11 +76,17 @@ from src.in_course_probability import (
 from src.top3_hit_probability import (
     TOP3_HIT_PROBABILITY_BANDS,
     TOP3_HIT_PROBABILITY_FEATURES,
+    TOP3_HIT_PROBABILITY_VERSION,
     attach_top3_hit_probability_columns,
+    build_top3_hit_probability_training_frame,
+    _predict_positive_probability,
     fit_top3_hit_probability_model,
     summarize_top3_hit_probability_bands,
 )
 from src.top12_confidence import apply_top12_probability_adjustment_table, fit_top12_probability_adjustment_table
+
+
+TRIFECTA_EVALUATION_VERSION = 2
 
 
 TOP3_CONFIDENCE_SCORE_BANDS: tuple[tuple[str, float, float | None], ...] = (
@@ -1818,11 +1824,67 @@ def _fast_matrix_metrics(prob_matrix: np.ndarray, actual_indices: np.ndarray) ->
     }
 
 
+def _prepare_live_evaluation_probabilities(
+    prob_matrix: np.ndarray,
+    actual_indices: np.ndarray,
+    race_ids: list[str],
+    upset_scores: np.ndarray,
+    adjustment_table: dict[str, Any] | None,
+    top3_model: Any | None,
+    chunk_size: int = 128,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Use the live correction/feature builders, without a full 120*N DataFrame."""
+    adjusted = np.empty_like(prob_matrix)
+    summaries = []
+    combinations = ["-".join(str(int(x) + 1) for x in row) for row in TRIFECTA_FAST_PERMUTATIONS]
+    width = prob_matrix.shape[1]
+    for start in range(0, len(prob_matrix), chunk_size):
+        end = min(start + chunk_size, len(prob_matrix))
+        count = end - start
+        frame = pd.DataFrame({
+            "race_id": np.repeat(race_ids[start:end], width),
+            "trifecta": np.tile(combinations, count),
+            "probability": prob_matrix[start:end].reshape(-1),
+            "is_actual": (np.arange(width)[None, :] == actual_indices[start:end, None]).reshape(-1),
+            "race_upset_score": np.repeat(upset_scores[start:end], width),
+            "_matrix_position": np.arange(count * width),
+        })
+        # Match build_trifecta_prediction_frame's order, including ties, before
+        # the shared correction assigns method='first' rank bands.
+        frame = frame.sort_values(["race_id", "probability"], ascending=[True, False]).reset_index(drop=True)
+        frame = apply_top12_probability_adjustment_table(
+            frame, adjustment_table, probability_col="probability", output_col="adjusted_probability",
+        )
+        flat = np.empty(count * width, dtype=float)
+        flat[frame["_matrix_position"].to_numpy(dtype=int)] = frame["adjusted_probability"].to_numpy(dtype=float)
+        adjusted[start:end] = flat.reshape(count, width)
+        if top3_model is not None:
+            features, target = build_top3_hit_probability_training_frame(frame, probability_col="adjusted_probability")
+            model = top3_model.get("model") if isinstance(top3_model, dict) else top3_model.model
+            names = (top3_model.get("feature_names") if isinstance(top3_model, dict) else top3_model.feature_names) or list(TOP3_HIT_PROBABILITY_FEATURES)
+            if not features.empty and model is not None:
+                features["top3_hit_probability"] = _predict_positive_probability(
+                    model, features.reindex(columns=names, fill_value=0.0).to_numpy(dtype=float)
+                )
+                features["top3_hit"] = target.to_numpy()
+                summaries.append(features)
+    metrics = summarize_top3_hit_probability_bands(pd.concat(summaries, ignore_index=True)) if summaries else {}
+    if metrics:
+        metrics["probability_source"] = "adjusted_probability" if adjustment_table is not None else "probability"
+        metrics["feature_generation"] = "shared_live_training"
+        metrics["bands_definition"] = {
+            key: {"lower": float(lower), "upper": float(upper) if upper is not None else None}
+            for key, lower, upper in TOP3_HIT_PROBABILITY_BANDS
+        }
+    return adjusted, metrics
+
+
 def _evaluate_fast_v1_trifecta_metrics_from_ranked(
     ranked: pd.DataFrame,
     calibrator: IsotonicRegression | None,
     weights: dict[str, Any],
     top3_hit_probability_model: Any | None = None,
+    probability_adjustment_table: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     if ranked.empty or not {"race_id", "lane", "finish_position", "win_probability_like"}.issubset(ranked.columns):
         return None
@@ -1833,6 +1895,7 @@ def _evaluate_fast_v1_trifecta_metrics_from_ranked(
     entry_course_subset_labels: list[str] = []
     race_ids: list[str] = []
     trifecta_payouts: list[float] = []
+    upset_contexts: list[tuple[dict, float, float]] = []
     for race_id, race_df in ranked.groupby("race_id", sort=False):
         if len(race_df) != 6:
             continue
@@ -1852,7 +1915,14 @@ def _evaluate_fast_v1_trifecta_metrics_from_ranked(
         actual_index = TRIFECTA_FAST_PERMUTATION_INDEX.get(actual_tuple, -1)
         lane_prob_rows.append(lane_probs)
         actual_indices.append(int(actual_index))
-        scenario_labels.append(_phase3_scenario_label(_phase3_scenario_context(race_df.set_index("lane"))))
+        lane_frame = race_df.set_index("lane")
+        scenario = _phase3_scenario_context(lane_frame)
+        scenario_labels.append(_phase3_scenario_label(scenario))
+        upset_contexts.append((
+            scenario,
+            _row_numeric(lane_frame.loc[1], "venue_course_prev_win_rate", "venue_lane_prev_win_rate") if 1 in lane_frame.index else 0.0,
+            _row_numeric(lane_frame.loc[1], "venue_course_prev_top2_rate", "venue_lane_prev_top2_rate") if 1 in lane_frame.index else 0.0,
+        ))
         entry_course_subset_labels.append(_entry_course_subset_label(race_df))
         race_ids.append(str(race_id))
         if "trifecta_payout" in race_df.columns:
@@ -1892,6 +1962,16 @@ def _evaluate_fast_v1_trifecta_metrics_from_ranked(
         )
 
     actual_array = np.asarray(actual_indices, dtype=int)
+    live_top3_metrics = None
+    if probability_adjustment_table is not None or top3_hit_probability_model is not None:
+        upset_scores = np.asarray([
+            _race_upset_values(scenario, lane1_win, lane1_top2, np.sort(probs)[::-1])[0]
+            for (scenario, lane1_win, lane1_top2), probs in zip(upset_contexts, prob_matrix, strict=True)
+        ])
+        prob_matrix, live_top3_metrics = _prepare_live_evaluation_probabilities(
+            prob_matrix, actual_array, race_ids, upset_scores,
+            probability_adjustment_table, top3_hit_probability_model,
+        )
     scenario_array = np.asarray(scenario_labels, dtype=object)
     metrics = _fast_matrix_metrics(prob_matrix, actual_array)
     if not metrics:
@@ -1938,15 +2018,8 @@ def _evaluate_fast_v1_trifecta_metrics_from_ranked(
     )
     if top3_x_boat_top1_score_band_metrics:
         metrics["top3_x_boat_top1_score_band_metrics"] = top3_x_boat_top1_score_band_metrics
-    if top3_hit_probability_model is not None:
-        top3_hit_probability_metrics = _fast_top3_hit_probability_metrics(
-            prob_matrix,
-            actual_array,
-            top3_hit_probability_model,
-            lane_prob_matrix=lane_probs_matrix,
-        )
-        if top3_hit_probability_metrics:
-            metrics["top3_hit_probability_metrics"] = top3_hit_probability_metrics
+    if live_top3_metrics:
+        metrics["top3_hit_probability_metrics"] = live_top3_metrics
     payout_band_metrics = _fast_payout_band_metrics(
         prob_matrix,
         actual_array,
@@ -2006,6 +2079,8 @@ def _evaluate_fast_v1_trifecta_metrics_from_ranked(
         grouped_metrics[scenario_label] = scenario_result
     metrics["scenario_metrics_grouped"] = grouped_metrics
     metrics["evaluation_mode"] = "fast_numpy_v1"
+    metrics["evaluation_version"] = TRIFECTA_EVALUATION_VERSION
+    metrics["probability_source"] = "adjusted_probability" if probability_adjustment_table is not None else "probability"
     metrics["fast_eval_races"] = float(len(race_ids))
     return metrics
 
@@ -3875,6 +3950,9 @@ def train_ranker_from_splits(
         "completed": {},
         "metrics": {},
     }
+    if resume:
+        for stage in invalidate_legacy_probability_evaluation_stages(checkpoint):
+            progress(f"invalidating outdated probability evaluation checkpoint: {stage}")
     save_train_checkpoint(checkpoint_path, checkpoint)
     artifacts["features_path"].parent.mkdir(parents=True, exist_ok=True)
     artifacts["features_path"].write_text(json.dumps(feature_columns, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -4371,7 +4449,7 @@ def train_ranker_from_splits(
 
     top3_hit_probability_model: Any | None = None
     top3_hit_probability_metrics: dict[str, Any] = {"status": "skipped"}
-    if resume and train_stage_completed(
+    if resume and checkpoint.get("top3_hit_probability_feature_version") == TOP3_HIT_PROBABILITY_VERSION and train_stage_completed(
         checkpoint,
         "top3_hit_probability_model",
         [artifacts["top3_hit_probability_model_path"]],
@@ -4407,6 +4485,7 @@ def train_ranker_from_splits(
         artifacts["top3_hit_probability_model_path"].parent.mkdir(parents=True, exist_ok=True)
         joblib.dump(top3_hit_probability_model, artifacts["top3_hit_probability_model_path"])
         top3_hit_probability_metrics = top3_payload.training_metrics
+        checkpoint["top3_hit_probability_feature_version"] = TOP3_HIT_PROBABILITY_VERSION
         mark_train_stage_completed(
             checkpoint_path,
             checkpoint,
@@ -4489,6 +4568,7 @@ def train_ranker_from_splits(
         resume
         and train_stage_completed(checkpoint, "trifecta_v1_model_metrics")
         and "trifecta_v1_model_metrics" in checkpoint_metrics
+        and checkpoint.get("trifecta_evaluation_version") == TRIFECTA_EVALUATION_VERSION
     ):
         progress("skipping trifecta v1 model metrics: train checkpoint completed")
         trifecta_v1_model_metrics = checkpoint_metrics.get("trifecta_v1_model_metrics", {})
@@ -4511,8 +4591,10 @@ def train_ranker_from_splits(
             progress_callback=progress,
             skip_individual_models=skip_variant_evaluation,
             top3_hit_probability_model=top3_hit_probability_model,
+            probability_adjustment_table=probability_adjustment_table,
         )
         trifecta_v1_metrics = trifecta_v1_model_metrics["ensemble"]
+        checkpoint["trifecta_evaluation_version"] = TRIFECTA_EVALUATION_VERSION
         mark_train_stage_completed(
             checkpoint_path,
             checkpoint,
@@ -6802,6 +6884,30 @@ def build_trifecta_prediction_frame(
     return trifecta.sort_values(["race_id", "probability"], ascending=[True, False]).reset_index(drop=True)
 
 
+def _race_upset_values(
+    scenario: dict, lane1_win: float, lane1_top2: float, ordered_probs: np.ndarray,
+) -> tuple[float, float]:
+    """Race-level values shared by live candidate generation and evaluation."""
+    scores = _phase3_scenario_scores(scenario)
+    top = float(ordered_probs[0]) if len(ordered_probs) else 0.0
+    second = float(ordered_probs[1]) if len(ordered_probs) > 1 else 0.0
+    flatness = _clip01(
+        0.55 * _normalized_entropy(ordered_probs[:10])
+        + 0.25 * (1.0 - top) + 0.20 * (1.0 - max(top - second, 0.0))
+    )
+    attack = max(float(scenario.get(key, 0.0)) for key in (
+        "attack_pressure", "outer_sweep_risk", "s7_chain_pressure",
+    ))
+    scenario_upset = max(scores.get(key, 0.0) for key in ("S3", "S4", "S5", "S6", "S7"))
+    upset = _clip01(
+        0.24 * _clip01(1.0 - float(scenario.get("escape_strength", 0.0)))
+        + 0.22 * float(scenario.get("inner_collapse_risk", 0.0))
+        + 0.18 * attack + 0.16 * scenario_upset
+        + 0.10 * _clip01(1.0 - max(lane1_win, 0.6 * lane1_top2)) + 0.10 * flatness
+    )
+    return upset, flatness
+
+
 def attach_race_upset_and_darkhorse_scores(
     trifecta_df: pd.DataFrame,
     race_df: pd.DataFrame,
@@ -6816,40 +6922,15 @@ def attach_race_upset_and_darkhorse_scores(
         race_df,
         scenario_model_bundle,
     )
-    scenario_scores = _phase3_scenario_scores(scenario)
     probabilities = pd.to_numeric(frame["probability"], errors="coerce").fillna(0.0)
     ordered_probs = probabilities.sort_values(ascending=False).to_numpy(dtype=float)
     top_prob = float(ordered_probs[0]) if len(ordered_probs) else 0.0
-    second_prob = float(ordered_probs[1]) if len(ordered_probs) > 1 else 0.0
-    top10_mass = float(ordered_probs[:10].sum()) if len(ordered_probs) else 0.0
-    top10_entropy = _normalized_entropy(ordered_probs[:10])
 
     lane_frame = race_df.set_index("lane")
     lane1_win = _row_numeric(lane_frame.loc[1], "venue_course_prev_win_rate", "venue_lane_prev_win_rate") if 1 in lane_frame.index else 0.0
     lane1_top2 = _row_numeric(lane_frame.loc[1], "venue_course_prev_top2_rate", "venue_lane_prev_top2_rate") if 1 in lane_frame.index else 0.0
-    weak_escape = _clip01(1.0 - float(scenario.get("escape_strength", 0.0)))
-    collapse = float(scenario.get("inner_collapse_risk", 0.0))
-    attack = max(
-        float(scenario.get("attack_pressure", 0.0)),
-        float(scenario.get("outer_sweep_risk", 0.0)),
-        float(scenario.get("s7_chain_pressure", 0.0)),
-    )
-    scenario_upset = max(
-        scenario_scores.get("S3", 0.0),
-        scenario_scores.get("S4", 0.0),
-        scenario_scores.get("S5", 0.0),
-        scenario_scores.get("S6", 0.0),
-        scenario_scores.get("S7", 0.0),
-    )
-    probability_flatness = _clip01(0.55 * top10_entropy + 0.25 * (1.0 - top_prob) + 0.20 * (1.0 - max(top_prob - second_prob, 0.0)))
-    lane1_venue_weakness = _clip01(1.0 - max(lane1_win, 0.6 * lane1_top2))
-    race_upset_score = _clip01(
-        0.24 * weak_escape
-        + 0.22 * collapse
-        + 0.18 * attack
-        + 0.16 * scenario_upset
-        + 0.10 * lane1_venue_weakness
-        + 0.10 * probability_flatness
+    race_upset_score, probability_flatness = _race_upset_values(
+        scenario, lane1_win, lane1_top2, ordered_probs,
     )
 
     frame["race_upset_score"] = race_upset_score
@@ -7305,6 +7386,21 @@ def load_train_checkpoint(path: Path, signature: str) -> dict[str, Any]:
     checkpoint.setdefault("completed", {})
     checkpoint.setdefault("metrics", {})
     return checkpoint
+
+
+def invalidate_legacy_probability_evaluation_stages(checkpoint: dict[str, Any]) -> list[str]:
+    stages = []
+    if checkpoint.get("top3_hit_probability_feature_version") != TOP3_HIT_PROBABILITY_VERSION:
+        stages.append("top3_hit_probability_model")
+    if checkpoint.get("trifecta_evaluation_version") != TRIFECTA_EVALUATION_VERSION:
+        stages.extend(("trifecta_v1_metrics", "trifecta_v1_model_metrics"))
+    invalidated = []
+    for stage in stages:
+        if stage in checkpoint.get("completed", {}) or stage in checkpoint.get("metrics", {}):
+            checkpoint.setdefault("completed", {}).pop(stage, None)
+            checkpoint.setdefault("metrics", {}).pop(stage, None)
+            invalidated.append(stage)
+    return invalidated
 
 
 def save_train_checkpoint(path: Path, checkpoint: dict[str, Any]) -> None:
@@ -8328,6 +8424,7 @@ def evaluate_trifecta_v1_metrics(
     flow_classes: list[str] | None = None,
     staged_models: dict[str, lgb.Booster] | None = None,
     top3_hit_probability_model: Any | None = None,
+    probability_adjustment_table: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "valid_raw": evaluate_trifecta(
@@ -8342,7 +8439,7 @@ def evaluate_trifecta_v1_metrics(
             flow_classes=flow_classes,
             staged_models=staged_models,
             use_v2=False,
-            top3_hit_probability_model=top3_hit_probability_model,
+            top3_hit_probability_model=None,
         ),
         "valid_calibrated": evaluate_trifecta(
             models,
@@ -8357,6 +8454,7 @@ def evaluate_trifecta_v1_metrics(
             staged_models=staged_models,
             use_v2=False,
             top3_hit_probability_model=top3_hit_probability_model,
+            probability_adjustment_table=probability_adjustment_table,
         ),
         "test_raw": evaluate_trifecta(
             models,
@@ -8370,7 +8468,7 @@ def evaluate_trifecta_v1_metrics(
             flow_classes=flow_classes,
             staged_models=staged_models,
             use_v2=False,
-            top3_hit_probability_model=top3_hit_probability_model,
+            top3_hit_probability_model=None,
         ),
         "test_calibrated": evaluate_trifecta(
             models,
@@ -8385,6 +8483,7 @@ def evaluate_trifecta_v1_metrics(
             staged_models=staged_models,
             use_v2=False,
             top3_hit_probability_model=top3_hit_probability_model,
+            probability_adjustment_table=probability_adjustment_table,
         ),
     }
 
@@ -8406,6 +8505,7 @@ def evaluate_trifecta_v1_model_metrics(
     progress_callback: Callable[[str], None] | None = None,
     skip_individual_models: bool = False,
     top3_hit_probability_model: Any | None = None,
+    probability_adjustment_table: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     settings = get_ensemble_settings(config)
     metrics: dict[str, Any] = {
@@ -8422,6 +8522,7 @@ def evaluate_trifecta_v1_model_metrics(
             flow_classes=flow_classes,
             staged_models=staged_models,
             top3_hit_probability_model=top3_hit_probability_model,
+            probability_adjustment_table=probability_adjustment_table,
         )
     }
     if skip_individual_models:
@@ -9386,6 +9487,7 @@ def evaluate_trifecta(
     use_v2: bool = False,
     rerank_top_n: int | None = None,
     top3_hit_probability_model: Any | None = None,
+    probability_adjustment_table: dict[str, Any] | None = None,
 ) -> dict[str, float | dict[str, float]]:
     if df.empty:
         return {}
@@ -9408,6 +9510,7 @@ def evaluate_trifecta(
             calibrator,
             weights,
             top3_hit_probability_model=top3_hit_probability_model,
+            probability_adjustment_table=probability_adjustment_table,
         )
         if fast_metrics is not None:
             return fast_metrics
@@ -9422,6 +9525,12 @@ def evaluate_trifecta(
     )
     probability_col = "probability_v2" if use_v2 else "probability_v1"
     trifecta["probability"] = trifecta[probability_col]
+    if probability_adjustment_table is not None:
+        trifecta = apply_top12_probability_adjustment_table(
+            trifecta, probability_adjustment_table,
+            probability_col="probability", output_col="adjusted_probability",
+        )
+        trifecta["probability"] = trifecta["adjusted_probability"]
     if top3_hit_probability_model is not None:
         trifecta = attach_top3_hit_probability_columns(
             trifecta,
@@ -9429,6 +9538,7 @@ def evaluate_trifecta(
             probability_col="probability",
         )
     if odds_df is not None and {"odds", "expected_value"}.issubset(trifecta.columns):
+        trifecta = attach_expected_value_columns(trifecta, probability_col="probability", odds_col="odds")
         expected_value = pd.to_numeric(trifecta["expected_value"], errors="coerce").fillna(0.0)
         odds = pd.to_numeric(trifecta["odds"], errors="coerce").fillna(0.0)
         trifecta["buy_decision"] = np.where(
@@ -9501,6 +9611,8 @@ def evaluate_trifecta(
         scenario_result["is_small_sample_group"] = float(scenario_label == "__small_sample__")
         grouped_metrics[scenario_label] = scenario_result
     metrics["scenario_metrics_grouped"] = grouped_metrics
+    metrics["evaluation_version"] = TRIFECTA_EVALUATION_VERSION
+    metrics["probability_source"] = "adjusted_probability" if probability_adjustment_table is not None else "probability"
     return metrics
 
 
