@@ -29,10 +29,10 @@ DEFAULT_SETTINGS = {
     "enabled": False,
     "oof_folds": 3,
     "evaluation_fraction": 0.20,
-    "max_train_races": 30000,
-    "max_eval_races": 3000,
+    "max_train_races": 0,
+    "max_eval_races": 0,
     "iterations": 80,
-    "ranker_iterations": 80,
+    "ranker_iterations": 0,
     "num_threads": 2,
     "min_training_rows": 120,
     "random_seed": 42,
@@ -245,6 +245,12 @@ def run_st_prediction_experiment(
     from src.models.ranker import train_lightgbm
 
     settings = {**DEFAULT_SETTINGS, **config.get("models", {}).get("st_prediction", {})}
+    if int(settings["ranker_iterations"]) == 0:
+        settings["ranker_iterations"] = int(config.get("model", {}).get("iterations", 120))
+    if int(settings["ranker_iterations"]) < 1 or int(settings["iterations"]) < 1:
+        raise ValueError("ST and ranker iteration counts must be positive (ranker=0 inherits model.iterations)")
+    if int(settings["max_train_races"]) < 0 or int(settings["max_eval_races"]) < 0:
+        raise ValueError("ST race limits must be nonnegative; 0 means unlimited")
     if int(settings["oof_folds"]) < 1 or not 0 < float(settings["evaluation_fraction"]) < 1:
         raise ValueError("ST prediction requires oof_folds >= 1 and 0 < evaluation_fraction < 1")
     if int(settings["num_threads"]) < 1 or int(settings["min_training_rows"]) < 1:
@@ -279,6 +285,10 @@ def run_st_prediction_experiment(
     if not any("prev" in c for c in columns):
         return {"status": "missing_st_history"}
     progress(f"ST experiment chronological split: cutoff={cutoff.date()}, train_races={train.race_id.nunique()}, eval_races={valid.race_id.nunique()}")
+    progress(
+        f"ST experiment race limits: train={settings['max_train_races'] or 'all'}, "
+        f"eval={settings['max_eval_races'] or 'all'}, ranker_iterations={settings['ranker_iterations']}"
+    )
     st_columns = [*columns, "race_date", "_actual_st"]
     if "finish_status" in train:
         st_columns.append("finish_status")

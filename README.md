@@ -78,7 +78,11 @@ boatrace-train --config configs/train.yaml --resume --skip-variant-evaluation
 - 比較実験は時系列分割です。train期間の先頭80%を候補学習期間とし、それ以後の日付のvalidレースだけを評価します。
 - 順位学習用の予測STは日付単位の時系列OOFで作成します。最初の期間は履歴学習用とし、比較する両順位モデルから共通で除外します。
 - 同一レース群・同一設定のLightGBMで、既存proxyのみ／予測ST特徴7項目追加を比較します。既存proxyは残します。
-- 初期値は学習候補最大30,000レース、評価最大3,000レース、OOF 3分割、各モデル80反復、CPU 2スレッドです。
+- 初期値は `max_train_races: 0` / `max_eval_races: 0`（件数上限なし）、OOF 3分割、STモデル80反復、CPU 2スレッドです。
+- 比較用順位モデルは `ranker_iterations: 0` により本番の `model.iterations` に追従します。正の値を指定すれば固定できます。
+- 「全件」は時系列分割後の対象期間内の全件です。評価期間のレースやOOFの初期学習期間を順位学習へ戻して増やすことはありません。
+- 本番規模の検証は `bash sh/train_full.sh`（Windowsは `bat/train_full.bat`）で自動実行します。必要メモリ・時間は小規模検証より増えます。
+- ST設定の変更も既存の学習チェックポイント署名に含まれるため、旧設定の結果は再利用されません。設定変更後のresumeでも、既存の仕様上、他の学習ステージから再実行される場合があります。
 - 進入コースや着順が不明・重複するレースは除外し、ST正解の欠損・F/Lなども除外します。実使用件数をレポートへ記録します。
 
 結果は `artifacts/metrics.json` の `st_prediction_experiment` と、

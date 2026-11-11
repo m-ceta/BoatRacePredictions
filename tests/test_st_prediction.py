@@ -83,7 +83,7 @@ def test_incomplete_tied_or_accident_races_are_excluded():
     assert _complete_races(frame).race_id.unique().tolist() == ["003_train"]
 
 
-def run_experiment(tmp_path, valid_shift=0.0, skip_evaluation=False):
+def run_experiment(tmp_path, valid_shift=0.0, skip_evaluation=False, settings_override=None):
     train = race_frame(days=32)
     valid = race_frame(days=32, suffix="valid")
     raw_train = train.pop("_actual_st").to_numpy()
@@ -96,6 +96,7 @@ def run_experiment(tmp_path, valid_shift=0.0, skip_evaluation=False):
             "max_train_races": 20, "max_eval_races": 4,
         }},
     }
+    config["models"]["st_prediction"].update(settings_override or {})
     features = ["lane", "course", "start_timing", "racer_prev_avg_st"]
     artifact = tmp_path / f"experiment_{valid_shift}_{skip_evaluation}.joblib"
     messages = []
@@ -146,3 +147,17 @@ def test_empty_validation_is_reported_without_training(tmp_path):
         tmp_path / "unused.joblib", lambda _: None,
     )
     assert report["status"] == "insufficient_data"
+
+
+def test_full_scale_uses_all_eligible_races_and_production_iterations(tmp_path):
+    report, _, _, messages = run_experiment(tmp_path, settings_override={
+        "max_train_races": 0, "max_eval_races": 0, "ranker_iterations": 0,
+    })
+    assert report["st_training_races"] == 25
+    assert report["paired_rank_training_races"] == 18
+    assert report["evaluation_races"] == 7
+    assert report["baseline"]["race_count"] == 7
+    assert report["with_predicted_st"]["race_count"] == 7
+    assert report["settings"]["ranker_iterations"] == 2
+    assert DEFAULT_SETTINGS["max_train_races"] == DEFAULT_SETTINGS["max_eval_races"] == 0
+    assert any("train=all, eval=all" in message for message in messages)

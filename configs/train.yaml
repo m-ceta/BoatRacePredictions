@@ -29,10 +29,10 @@ models:
     enabled: true
     oof_folds: 3
     evaluation_fraction: 0.20
-    max_train_races: 30000
-    max_eval_races: 3000
+    max_train_races: 0
+    max_eval_races: 0
     iterations: 80
-    ranker_iterations: 80
+    ranker_iterations: 0  # Follow model.iterations.
     num_threads: 2
     min_training_rows: 120
     random_seed: 42
