@@ -22,6 +22,11 @@ values = ui.render_st_adjustments("test", config_path="unused", venue="15", race
 st.json(list(values) if values is not None else [])
 ''').run()
     assert not app.exception
+    explanation = app.info[0].value
+    assert "通常ST（標準値）とは" in explanation
+    assert "同じレース場での過去の平均ST" in explanation
+    assert "全場の過去平均ST" in explanation
+    assert "当日の実測値でも" in explanation
     assert [control.value for control in app.number_input] == [.16] * 6
     captions = [caption.value for caption in app.caption]
     assert "展示ST：0.15秒" in captions

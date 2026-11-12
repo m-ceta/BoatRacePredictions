@@ -21,6 +21,16 @@ def load_exhibition_st(venue, race_no, race_date):
 def render_st_adjustments(key: str, *, config_path=None, venue=None, race_no=None, race_date=None, courses=None) -> tuple[float | None, ...] | None:
     with st.expander("スタートの早い・遅いを仮定して予測する", expanded=False):
         st.caption("各艇の予測に使うSTを直接入力してください。小さい値ほど早いスタートです。初期値は通常STです。")
+        st.info(
+            "**通常ST（標準値）とは**\n\n"
+            "この画面では、入力を変更しないときに予測へ使う標準STを「通常ST」と表示しています。\n\n"
+            "・通常は、その選手の同じレース場での過去の平均STを優先し、"
+            "データがない場合は、その選手の全場の過去平均STを使います。\n\n"
+            "・STはスタートの基準時刻から何秒後にスタートしたかを表します。"
+            "0.16秒より0.13秒のほうが0.03秒速い仮定です。\n\n"
+            "・通常STは当日の実測値でも、別途検証しているST予測モデルの推定値でもありません。"
+            "展示STは当日のスタート展示の結果で、通常STとは別の参考値です。"
+        )
         reference = {}
         exhibition = {}
         if venue is not None and race_date is not None and race_no is not None:
