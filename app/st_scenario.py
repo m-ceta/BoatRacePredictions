@@ -15,7 +15,7 @@ def load_st_reference(config_path, venue, race_no, race_date, courses):
 def load_exhibition_st(venue, race_no, race_date):
     from src.live import fetch_boatrace_exhibition_st, normalize_venue_code
 
-    return fetch_boatrace_exhibition_st(race_date, normalize_venue_code(venue), race_no)
+    return fetch_boatrace_exhibition_st(race_date, normalize_venue_code(venue), race_no, raise_on_error=True)
 
 
 def render_st_adjustments(key: str, *, config_path=None, venue=None, race_no=None, race_date=None, courses=None) -> tuple[float | None, ...] | None:
@@ -33,11 +33,18 @@ def render_st_adjustments(key: str, *, config_path=None, venue=None, race_no=Non
         )
         reference = {}
         exhibition = {}
+        if st.button("ST参考値を再取得", key=f"{key}_refresh_st"):
+            load_st_reference.clear()
+            load_exhibition_st.clear()
         if venue is not None and race_date is not None and race_no is not None:
             try:
                 exhibition = load_exhibition_st(venue, race_no, race_date)
-            except Exception:
+            except Exception as exc:
                 exhibition = {}
+                st.warning(f"展示STを取得できませんでした：{exc}。アクセス拒否や通信エラーの場合は時間を置いて再取得してください。")
+            else:
+                if not exhibition:
+                    st.caption("展示STは未発表、またはページから読み取れませんでした。公開後に再取得してください。")
         if config_path is not None:
             try:
                 with st.spinner("通常STの参考値を確認しています..."):
@@ -50,7 +57,7 @@ def render_st_adjustments(key: str, *, config_path=None, venue=None, race_no=Non
         if st.button("すべて通常に戻す", key=f"{key}_reset_st"):
             for lane, widget_key in enumerate(keys, 1):
                 normal = reference.get(lane)
-                st.session_state[widget_key] = float(normal) if pd.notna(normal) else 0.0
+                st.session_state[widget_key] = float(normal) if pd.notna(normal) and 0 <= float(normal) <= 1 else None
         columns = st.columns(3)
         values = []
         for lane, widget_key in enumerate(keys, 1):
@@ -62,13 +69,15 @@ def render_st_adjustments(key: str, *, config_path=None, venue=None, race_no=Non
                 available = pd.notna(normal) and 0 <= float(normal) <= 1
                 entered = st.number_input(
                     f"{lane}号艇の予測に使うST（秒）", min_value=0.0, max_value=1.0,
-                    value=float(normal) if available else 0.0, step=0.01,
-                    format="%.2f", key=widget_key, disabled=not available,
+                    value=float(normal) if available else None, step=0.01,
+                    format="%.2f", key=widget_key,
                 )
-                changed = available and entered != float(normal)
+                changed = entered is not None and (not available or entered != float(normal))
                 values.append(float(entered) if changed else None)
-                if changed:
+                if changed and available:
                     st.caption(f"通常STとの差：{entered - float(normal):+.2f}秒")
+                if not available:
+                    st.caption("通常STが不明でも直接入力できます。空欄なら通常予測のままです。")
         st.caption("通常STは過去成績から作る予測用の参考値で、当日の実測STではありません（取得結果は最大5分キャッシュ）。")
         st.caption("展示STは参考表示のみで、自動では入力に反映しません。Fは展示フライング、Lは展示での出遅れを示します。展示STの取得結果は最大1分キャッシュします。")
         if any(value is not None for value in values):

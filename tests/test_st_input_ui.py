@@ -36,6 +36,29 @@ st.json(list(values) if values is not None else [])
     assert not app.exception
     assert app.number_input[0].value == .13
     assert app.json[0].value == '[0.13, null, null, null, null, null]'
-    app.button[0].click().run()
+    next(button for button in app.button if button.label == "すべて通常に戻す").click().run()
     assert not app.exception
     assert [control.value for control in app.number_input] == [.16] * 6
+
+
+def test_missing_sixth_boat_st_is_editable(tmp_path, monkeypatch):
+    from streamlit.testing.v1 import AppTest
+    import pandas as pd
+    import app.st_scenario as ui
+
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(ui, "load_st_reference", lambda *args: pd.DataFrame({
+        "lane": range(1, 7), "start_timing": [.16] * 5 + [float("nan")],
+    }))
+    app = AppTest.from_string('''
+import streamlit as st
+from app.st_scenario import render_st_adjustments
+values = render_st_adjustments("missing", config_path="unused")
+st.json(list(values) if values is not None else [])
+''').run()
+    assert not app.exception
+    assert app.number_input[5].value is None
+    assert not app.number_input[5].disabled
+    app.number_input[5].set_value(.18).run()
+    assert not app.exception
+    assert app.json[0].value == '[null, null, null, null, null, 0.18]'

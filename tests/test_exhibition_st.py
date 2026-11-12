@@ -23,3 +23,12 @@ def test_fetch_exhibition_st_failure_is_nonfatal(monkeypatch):
         raise TimeoutError()
     monkeypatch.setattr(live, "fetch_text", fail)
     assert live.fetch_boatrace_exhibition_st(date(2026, 11, 12), "15", 1) == {}
+
+
+def test_st_time_can_be_outside_boat_image_without_mixing_boats():
+    html = '''<table>
+    <tr><td><div class="table1_boatImage1"><span class="table1_boatImage1Number">6</span></div></td>
+    <td class="table1_boatImage1Time">.18</td></tr>
+    <tr><td><div class="table1_boatImage1"><span class="table1_boatImage1Number">1</span></div></td>
+    <td class="table1_boatImage1Time">F.03</td></tr></table>'''
+    assert live.parse_start_exhibition_st_html(html) == {6: "0.18", 1: "F0.03"}

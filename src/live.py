@@ -985,13 +985,15 @@ def fetch_boatrace_trifecta_odds(target_date: date, venue_code: str, race_no: in
     return parse_trifecta_odds_html(html)
 
 
-def fetch_boatrace_exhibition_st(target_date: date, venue_code: str, race_no: int) -> dict[int, str]:
+def fetch_boatrace_exhibition_st(target_date: date, venue_code: str, race_no: int, *, raise_on_error: bool = False) -> dict[int, str]:
     """Return published exhibition ST by boat; F/L markers remain explicit."""
     hd = target_date.strftime("%Y%m%d")
     url = f"https://www.boatrace.jp/owpc/pc/race/beforeinfo?jcd={venue_code}&hd={hd}&rno={int(race_no):02d}"
     try:
         return parse_start_exhibition_st_html(fetch_text(url, referer="https://www.boatrace.jp/"))
     except Exception:
+        if raise_on_error:
+            raise
         return {}
 
 
@@ -1002,6 +1004,16 @@ def parse_start_exhibition_st_html(html: str) -> dict[int, str]:
     for block in soup.select(".table1_boatImage1"):
         lane = _extract_start_exhibition_boat_number(block)
         cell = block.select_one(".table1_boatImage1Time")
+        if cell is None:
+            # Some layouts place the time next to the boat image, not inside it.
+            for parent in block.parents:
+                if parent.name in {"body", "html"}:
+                    break
+                if len(parent.select(".table1_boatImage1")) != 1:
+                    break
+                cell = parent.select_one(".table1_boatImage1Time")
+                if cell is not None or parent.name == "tr":
+                    break
         if lane not in range(1, 7) or cell is None:
             continue
         text = unicodedata.normalize("NFKC", cell.get_text("", strip=True)).upper()
