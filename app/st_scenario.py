@@ -1,11 +1,27 @@
 """Shared hypothetical start-timing controls for the prediction UIs."""
 
 import streamlit as st
+import pandas as pd
 
 
-def render_st_adjustments(key: str) -> tuple[float, ...] | None:
+@st.cache_data(show_spinner=False, ttl=300)
+def load_st_reference(config_path, venue, race_no, race_date, courses):
+    from src.api import preview_today_st
+
+    return preview_today_st(venue, race_no, config_path, race_date, courses)
+
+
+def render_st_adjustments(key: str, *, config_path=None, venue=None, race_no=None, race_date=None, courses=None) -> tuple[float, ...] | None:
     with st.expander("スタートの早い・遅いを仮定して予測する", expanded=False):
         st.caption("0.00なら通常予測です。マイナスは早いスタート、プラスは遅いスタートを仮定します。")
+        reference = {}
+        if config_path is not None:
+            try:
+                with st.spinner("通常STの参考値を確認しています..."):
+                    preview = load_st_reference(config_path, venue, race_no, race_date, courses)
+                reference = preview.set_index("lane")["start_timing"].to_dict()
+            except Exception:
+                st.caption("参考STを取得できませんでした。学習データ・出走表の取得状態をご確認ください。補正入力は引き続き利用できます。")
         keys = [f"{key}_st_delta_{lane}" for lane in range(1, 7)]
         if st.button("すべて通常に戻す", key=f"{key}_reset_st"):
             for widget_key in keys:
@@ -14,10 +30,18 @@ def render_st_adjustments(key: str) -> tuple[float, ...] | None:
         values = []
         for lane, widget_key in enumerate(keys, 1):
             with columns[(lane - 1) % 3]:
+                normal = reference.get(lane)
+                st.caption(f"{lane}号艇の通常ST：{normal:.2f}秒" if pd.notna(normal) else f"{lane}号艇の通常ST：取得できません")
                 values.append(st.number_input(
                     f"{lane}号艇の補正（秒）", min_value=-0.10, max_value=0.10,
                     value=0.0, step=0.01, format="%+.2f", key=widget_key,
                 ))
+                if pd.notna(normal):
+                    changed = normal + values[-1]
+                    st.caption(f"変更後ST：{changed:.2f}秒")
+                    if not 0 <= changed <= 1:
+                        st.warning("変更後STが範囲外です。補正を小さくしてください。")
+        st.caption("通常STは過去成績から作る予測用の参考値で、当日の実測STではありません（取得結果は最大5分キャッシュ）。")
         if any(values):
             st.warning("仮定を置いた参考予測です。指定したSTが実現する確率や、厳密な条件付き的中確率ではありません。")
     return tuple(values) if any(values) else None

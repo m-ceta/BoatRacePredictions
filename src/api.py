@@ -258,6 +258,37 @@ def load_prediction_input(path: str | Path) -> pd.DataFrame:
     return pd.read_csv(input_path)
 
 
+def preview_today_st(
+    venue: str,
+    race_no: int,
+    config_path: str | Path = Path("configs/train.yaml"),
+    race_date: Any | None = None,
+    course_overrides: Any | None = None,
+) -> pd.DataFrame:
+    """Build the same pre-race ST inputs as live prediction, without scoring models."""
+    from src.live import (
+        normalize_target_date, normalize_venue_code, fetch_mbrace_program_text,
+        parse_entry_text, apply_course_overrides, load_live_history_frame, build_live_feature_frame,
+    )
+
+    target_date = normalize_target_date(race_date)
+    venue_code = normalize_venue_code(venue)
+    config = load_config(Path(config_path))
+    features = load_feature_columns(get_artifact_paths(config)["features_path"])
+    entries = pd.DataFrame([entry.to_dict() for entry in parse_entry_text(fetch_mbrace_program_text(target_date))])
+    if entries.empty:
+        raise ValueError("出走表が取得できないため、参考STを表示できません。")
+    entries = entries[
+        entries["race_id"].str.contains(f"_{venue_code}_") & entries["race_no"].eq(int(race_no))
+    ].copy()
+    if entries.empty:
+        raise ValueError("選択したレースの出走表がありません。")
+    entries = apply_course_overrides(entries, course_overrides)
+    history = load_live_history_frame(config, target_date)
+    frame = build_live_feature_frame(entries, history, features)
+    return frame[["lane", "course", "start_timing"]].sort_values("lane").reset_index(drop=True)
+
+
 def predict_today(
     venue: str,
     race_no: int,

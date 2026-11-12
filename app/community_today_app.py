@@ -771,7 +771,11 @@ def render_prediction_tab() -> None:
     )
     from app.st_scenario import render_st_adjustments, render_st_comparison
 
-    st_adjustments = render_st_adjustments(f"community_{selected}_{race_no}_{target_date}")
+    st_adjustments = render_st_adjustments(
+        f"community_{selected}_{race_no}_{target_date}", config_path=default_config_path(),
+        venue=selected, race_no=int(race_no), race_date=target_date,
+        courses=course_overrides if course_overrides_valid else None,
+    )
     submitted = st.button("予測する", disabled=not course_overrides_valid)
 
     if not submitted:

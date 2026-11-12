@@ -40,3 +40,30 @@ def test_negative_resulting_st_is_not_silently_clipped():
     source.loc[0, "start_timing"] = .02
     with pytest.raises(ValueError):
         apply_st_adjustments(source, [-.03, 0, 0, 0, 0, 0])
+
+
+def test_st_preview_uses_live_feature_builder_without_loading_models(monkeypatch):
+    from datetime import date
+    from types import SimpleNamespace
+    from pathlib import Path
+    from src import api, live
+
+    entries = frame().assign(race_no=1, race_id="20261112_15_01", race_date=date(2026, 11, 12))
+    monkeypatch.setattr(api, "load_config", lambda _: {})
+    monkeypatch.setattr(api, "get_artifact_paths", lambda _: {"features_path": Path("unused")})
+    monkeypatch.setattr(api, "load_feature_columns", lambda _: ["start_timing"])
+    monkeypatch.setattr(live, "fetch_mbrace_program_text", lambda _: "program")
+    monkeypatch.setattr(live, "parse_entry_text", lambda _: [SimpleNamespace(to_dict=lambda r=r: r) for r in entries.to_dict("records")])
+    monkeypatch.setattr(live, "load_live_history_frame", lambda *args: pd.DataFrame())
+    calls = []
+
+    def build(current, history, columns):
+        calls.append(current.copy())
+        return current.assign(start_timing=.17)
+
+    monkeypatch.setattr(live, "build_live_feature_frame", build)
+    monkeypatch.setattr(api, "load_bundle", lambda *args: pytest.fail("Preview must not load prediction models"))
+    preview = api.preview_today_st("15", 1, race_date=date(2026, 11, 12), course_overrides=(2, 1, 3, 4, 5, 6))
+    assert preview.lane.tolist() == [1, 2, 3, 4, 5, 6]
+    assert preview.start_timing.eq(.17).all()
+    assert calls[0].course.tolist() == [2, 1, 3, 4, 5, 6]
