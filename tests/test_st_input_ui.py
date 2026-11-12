@@ -13,15 +13,20 @@ def test_st_controls_default_to_reference_accept_absolute_input_and_reset(tmp_pa
     monkeypatch.setattr(ui, "load_st_reference", lambda *args: pd.DataFrame({
         "lane": range(1, 7), "start_timing": [.16] * 6,
     }))
+    monkeypatch.setattr(ui, "load_exhibition_st", lambda *args: {1: "0.15", 2: "F0.02"})
     app = AppTest.from_string('''
 import pandas as pd
 import streamlit as st
 import app.st_scenario as ui
-values = ui.render_st_adjustments("test", config_path="unused")
+values = ui.render_st_adjustments("test", config_path="unused", venue="15", race_no=1, race_date="2026-11-12")
 st.json(list(values) if values is not None else [])
 ''').run()
     assert not app.exception
     assert [control.value for control in app.number_input] == [.16] * 6
+    captions = [caption.value for caption in app.caption]
+    assert "展示ST：0.15秒" in captions
+    assert "展示ST：F0.02秒" in captions
+    assert "展示ST：未発表・取得できません" in captions
     app.number_input[0].set_value(.13).run()
     assert not app.exception
     assert app.number_input[0].value == .13

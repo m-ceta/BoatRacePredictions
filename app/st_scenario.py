@@ -11,10 +11,23 @@ def load_st_reference(config_path, venue, race_no, race_date, courses):
     return preview_today_st(venue, race_no, config_path, race_date, courses)
 
 
+@st.cache_data(show_spinner=False, ttl=60)
+def load_exhibition_st(venue, race_no, race_date):
+    from src.live import fetch_boatrace_exhibition_st, normalize_venue_code
+
+    return fetch_boatrace_exhibition_st(race_date, normalize_venue_code(venue), race_no)
+
+
 def render_st_adjustments(key: str, *, config_path=None, venue=None, race_no=None, race_date=None, courses=None) -> tuple[float | None, ...] | None:
     with st.expander("スタートの早い・遅いを仮定して予測する", expanded=False):
         st.caption("各艇の予測に使うSTを直接入力してください。小さい値ほど早いスタートです。初期値は通常STです。")
         reference = {}
+        exhibition = {}
+        if venue is not None and race_date is not None and race_no is not None:
+            try:
+                exhibition = load_exhibition_st(venue, race_no, race_date)
+            except Exception:
+                exhibition = {}
         if config_path is not None:
             try:
                 with st.spinner("通常STの参考値を確認しています..."):
@@ -34,6 +47,8 @@ def render_st_adjustments(key: str, *, config_path=None, venue=None, race_no=Non
             with columns[(lane - 1) % 3]:
                 normal = reference.get(lane)
                 st.caption(f"{lane}号艇の通常ST：{normal:.2f}秒" if pd.notna(normal) else f"{lane}号艇の通常ST：取得できません")
+                displayed_st = exhibition.get(lane)
+                st.caption(f"展示ST：{displayed_st}秒" if displayed_st is not None else "展示ST：未発表・取得できません")
                 available = pd.notna(normal) and 0 <= float(normal) <= 1
                 entered = st.number_input(
                     f"{lane}号艇の予測に使うST（秒）", min_value=0.0, max_value=1.0,
@@ -45,6 +60,7 @@ def render_st_adjustments(key: str, *, config_path=None, venue=None, race_no=Non
                 if changed:
                     st.caption(f"通常STとの差：{entered - float(normal):+.2f}秒")
         st.caption("通常STは過去成績から作る予測用の参考値で、当日の実測STではありません（取得結果は最大5分キャッシュ）。")
+        st.caption("展示STは参考表示のみで、自動では入力に反映しません。Fは展示フライング、Lは展示での出遅れを示します。展示STの取得結果は最大1分キャッシュします。")
         if any(value is not None for value in values):
             st.warning("仮定を置いた参考予測です。指定したSTが実現する確率や、厳密な条件付き的中確率ではありません。")
     return tuple(values) if any(value is not None for value in values) else None

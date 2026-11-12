@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import math
+import unicodedata
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -982,6 +983,39 @@ def fetch_boatrace_trifecta_odds(target_date: date, venue_code: str, race_no: in
     if title == "BOAT RACE オフィシャルウェブサイト" or "システムエラー" in title:
         return None
     return parse_trifecta_odds_html(html)
+
+
+def fetch_boatrace_exhibition_st(target_date: date, venue_code: str, race_no: int) -> dict[int, str]:
+    """Return published exhibition ST by boat; F/L markers remain explicit."""
+    hd = target_date.strftime("%Y%m%d")
+    url = f"https://www.boatrace.jp/owpc/pc/race/beforeinfo?jcd={venue_code}&hd={hd}&rno={int(race_no):02d}"
+    try:
+        return parse_start_exhibition_st_html(fetch_text(url, referer="https://www.boatrace.jp/"))
+    except Exception:
+        return {}
+
+
+def parse_start_exhibition_st_html(html: str) -> dict[int, str]:
+    soup = BeautifulSoup(html, "html.parser")
+    result: dict[int, str] = {}
+    duplicates: set[int] = set()
+    for block in soup.select(".table1_boatImage1"):
+        lane = _extract_start_exhibition_boat_number(block)
+        cell = block.select_one(".table1_boatImage1Time")
+        if lane not in range(1, 7) or cell is None:
+            continue
+        text = unicodedata.normalize("NFKC", cell.get_text("", strip=True)).upper()
+        text = re.sub(r"\s+", "", text)
+        match = re.fullmatch(r"([FL]?)(\d*\.\d{1,2}|\d+)", text)
+        if match is None:
+            continue
+        seconds = float(match.group(2))
+        if not 0 <= seconds <= 1:
+            continue
+        if lane in result:
+            duplicates.add(lane)
+        result[lane] = f"{match.group(1)}{seconds:.2f}"
+    return {lane: text for lane, text in result.items() if lane not in duplicates}
 
 
 def fetch_boatrace_exhibition_courses(
