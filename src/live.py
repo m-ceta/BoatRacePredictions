@@ -198,6 +198,7 @@ def predict_today_race(
     history_df: pd.DataFrame | None = None,
     course_overrides: Mapping[int, int] | Sequence[int] | str | None = None,
     st_adjustments: Sequence[float] | None = None,
+    st_overrides: Sequence[float | None] | None = None,
 ) -> TodayRacePrediction:
     target_date = normalize_target_date(race_date)
     venue_code = normalize_venue_code(venue)
@@ -229,8 +230,12 @@ def predict_today_race(
         bundle.feature_columns,
     )
     st_comparison = None
+    if st_adjustments is not None and st_overrides is not None:
+        raise ValueError("STの直接指定と補正指定は同時に使えません。")
     adjusted_frame = apply_st_adjustments(feature_frame, st_adjustments) if st_adjustments is not None else feature_frame
-    if st_adjustments is not None and any(float(x) != 0 for x in st_adjustments):
+    if st_overrides is not None:
+        adjusted_frame = apply_st_overrides(feature_frame, st_overrides)
+    if not adjusted_frame["start_timing"].equals(feature_frame["start_timing"]):
         baseline = predict_race_order(
             bundle.models, bundle.feature_columns, feature_frame, bundle.ensemble_weights,
         )
@@ -321,6 +326,26 @@ def predict_today_race(
         race_upset_label=race_upset_label,
         buy_candidates=buy_candidates,
     )
+
+
+def apply_st_overrides(frame: pd.DataFrame, overrides: Sequence[float | None]) -> pd.DataFrame:
+    """Replace selected boats' ST with absolute seconds; None keeps the live proxy."""
+    values = list(overrides)
+    if len(values) != 6:
+        raise ValueError("STは1～6号艇の6件を指定してください。")
+    result = frame.copy()
+    changed = False
+    for lane, value in enumerate(values, 1):
+        if value is None:
+            continue
+        value = float(value)
+        if not math.isfinite(value) or not 0 <= value <= 1:
+            raise ValueError("予測に使うSTは0～1秒の範囲で指定してください。")
+        mask = result["lane"].eq(lane)
+        if not result.loc[mask, "start_timing"].eq(value).all():
+            result.loc[mask, "start_timing"] = value
+            changed = True
+    return add_race_relative_features(drop_race_relative_features(result, preserve_missing_sources=True)) if changed else result
 
 
 def apply_st_adjustments(frame: pd.DataFrame, adjustments: Sequence[float]) -> pd.DataFrame:

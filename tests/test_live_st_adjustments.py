@@ -2,7 +2,29 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.live import apply_st_adjustments
+from src.live import apply_st_adjustments, apply_st_overrides
+
+
+def test_absolute_st_values_are_not_treated_as_deltas():
+    source = frame()
+    updated = apply_st_overrides(source, [None, None, .13, .19, None, None])
+    assert updated.loc[2, "start_timing"] == .13
+    assert updated.loc[3, "start_timing"] == .19
+    assert updated.loc[0, "start_timing"] == .16
+    assert updated.loc[2, "start_timing_race_rank_low"] == 1
+    assert source["start_timing"].eq(.16).all()
+
+
+def test_unchanged_absolute_values_and_zero_are_valid():
+    source = frame()
+    pd.testing.assert_frame_equal(source, apply_st_overrides(source, [.16] * 6))
+    assert apply_st_overrides(source, [0.0, None, None, None, None, None]).loc[0, "start_timing"] == 0.0
+
+
+@pytest.mark.parametrize("values", [[None] * 5, [np.nan] * 6, [-.01] * 6, [1.01] * 6])
+def test_absolute_st_rejects_invalid_values(values):
+    with pytest.raises(ValueError):
+        apply_st_overrides(frame(), values)
 
 
 def frame():

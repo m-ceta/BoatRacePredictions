@@ -201,7 +201,7 @@ def predict_today_cached(
     race_no: int,
     race_date: date,
     course_overrides: tuple[int, int, int, int, int, int],
-    st_adjustments: tuple[float, ...] | None = None,
+    st_overrides: tuple[float | None, ...] | None = None,
 ) -> Any:
     from src.api import predict_today
 
@@ -211,7 +211,7 @@ def predict_today_cached(
         config_path=config_path,
         race_date=race_date,
         course_overrides=course_overrides,
-        st_adjustments=st_adjustments,
+        st_overrides=st_overrides,
     )
 
 
@@ -794,7 +794,7 @@ def render_prediction_tab() -> None:
                 race_no=int(race_no),
                 race_date=current_jst_date(),
                 course_overrides=course_overrides,
-                st_adjustments=st_adjustments,
+                st_overrides=st_adjustments,
             )
     except Exception as exc:  # pragma: no cover
         log_exception_to_stderr(

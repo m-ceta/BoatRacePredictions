@@ -822,7 +822,7 @@ def render_prediction_tab() -> None:
                 race_no=int(race_no),
                 config_path=config_path,
                 course_overrides=course_overrides,
-                st_adjustments=st_adjustments,
+                st_overrides=st_adjustments,
             )
     except Exception as exc:  # pragma: no cover
         st.error(f"予測に失敗しました: {exc}")

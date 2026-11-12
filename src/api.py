@@ -296,6 +296,7 @@ def predict_today(
     race_date: Any | None = None,
     course_overrides: Any | None = None,
     st_adjustments: Any | None = None,
+    st_overrides: Any | None = None,
 ) -> "TodayRacePrediction":
     from src.live import predict_today_race
 
@@ -307,4 +308,5 @@ def predict_today(
         race_date=race_date,
         course_overrides=course_overrides,
         st_adjustments=st_adjustments,
+        st_overrides=st_overrides,
     )
