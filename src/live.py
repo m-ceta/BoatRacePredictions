@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import math
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -25,6 +26,7 @@ from src.features.builder import (
     add_decision_style_flag_columns,
     add_flow_probability_features,
     add_race_relative_features,
+    drop_race_relative_features,
 )
 from src.features.scenario import scenario_description, scenario_display_name
 from src.models.ranker import attach_darkhorse_odds_context, predict_race_order, predict_trifecta_probabilities
@@ -116,6 +118,7 @@ class TodayRacePrediction:
     trifecta: pd.DataFrame
     boatrace_title: str | None
     odds: pd.DataFrame | None = None
+    st_comparison: pd.DataFrame | None = None
     race_scenario_id: str = "S6_MIXED_OTHER"
     race_scenario_name: str = "混合・その他型"
     race_scenario_description: str = "勝ち筋や上位構成が一つの典型に寄り切らない決着型です。"
@@ -194,6 +197,7 @@ def predict_today_race(
     race_date: date | None = None,
     history_df: pd.DataFrame | None = None,
     course_overrides: Mapping[int, int] | Sequence[int] | str | None = None,
+    st_adjustments: Sequence[float] | None = None,
 ) -> TodayRacePrediction:
     target_date = normalize_target_date(race_date)
     venue_code = normalize_venue_code(venue)
@@ -224,12 +228,28 @@ def predict_today_race(
         history,
         bundle.feature_columns,
     )
+    st_comparison = None
+    adjusted_frame = apply_st_adjustments(feature_frame, st_adjustments) if st_adjustments is not None else feature_frame
+    if st_adjustments is not None and any(float(x) != 0 for x in st_adjustments):
+        baseline = predict_race_order(
+            bundle.models, bundle.feature_columns, feature_frame, bundle.ensemble_weights,
+        )
+        normal_st = feature_frame.set_index("lane")["start_timing"]
+        feature_frame = adjusted_frame
+        st_comparison = pd.DataFrame({
+            "艇番": feature_frame["lane"].to_numpy(),
+            "通常ST（秒）": feature_frame["lane"].map(normal_st).to_numpy(),
+            "変更後ST（秒）": feature_frame["start_timing"].to_numpy(),
+            "通常の予想順位": feature_frame["lane"].map(baseline.set_index("lane")["predicted_rank"]).to_numpy(),
+        })
     ranking = predict_race_order(
         models=bundle.models,
         feature_columns=bundle.feature_columns,
         future_df=feature_frame,
         ensemble_weights=bundle.ensemble_weights,
     )
+    if st_comparison is not None:
+        st_comparison["変更後の予想順位"] = st_comparison["艇番"].map(ranking.set_index("lane")["predicted_rank"])
     trifecta = predict_trifecta_probabilities(
         models=bundle.models,
         feature_columns=bundle.feature_columns,
@@ -288,6 +308,7 @@ def predict_today_race(
         race_no=int(race_no),
         race_date=target_date,
         ranking=ranking,
+        st_comparison=st_comparison,
         trifecta=trifecta,
         boatrace_title=boatrace_title,
         odds=odds_frame,
@@ -300,6 +321,21 @@ def predict_today_race(
         race_upset_label=race_upset_label,
         buy_candidates=buy_candidates,
     )
+
+
+def apply_st_adjustments(frame: pd.DataFrame, adjustments: Sequence[float]) -> pd.DataFrame:
+    """Apply hypothetical ST deltas without changing the historical ST inputs."""
+    values = [float(x) for x in adjustments]
+    if len(values) != 6 or any(not math.isfinite(x) or abs(x) > 0.10 for x in values):
+        raise ValueError("ST補正は1～6号艇について−0.10～＋0.10秒で指定してください。")
+    if not any(values):
+        return frame.copy()
+    result = frame.copy()
+    delta = pd.to_numeric(result["lane"], errors="coerce").map(dict(enumerate(values, 1)))
+    result["start_timing"] = pd.to_numeric(result["start_timing"], errors="coerce") + delta
+    if result["start_timing"].isna().any() or not result["start_timing"].between(0, 1).all():
+        raise ValueError("変更後のSTは0～1秒の範囲にしてください。通常STが欠損している場合は補正できません。")
+    return add_race_relative_features(drop_race_relative_features(result, preserve_missing_sources=True))
 
 
 def normalize_course_overrides(

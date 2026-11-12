@@ -201,6 +201,7 @@ def predict_today_cached(
     race_no: int,
     race_date: date,
     course_overrides: tuple[int, int, int, int, int, int],
+    st_adjustments: tuple[float, ...] | None = None,
 ) -> Any:
     from src.api import predict_today
 
@@ -210,6 +211,7 @@ def predict_today_cached(
         config_path=config_path,
         race_date=race_date,
         course_overrides=course_overrides,
+        st_adjustments=st_adjustments,
     )
 
 
@@ -767,6 +769,9 @@ def render_prediction_tab() -> None:
         f"{selected}_{int(race_no):02d}_{target_date.isoformat()}",
         exhibition_courses,
     )
+    from app.st_scenario import render_st_adjustments, render_st_comparison
+
+    st_adjustments = render_st_adjustments(f"community_{selected}_{race_no}_{target_date}")
     submitted = st.button("予測する", disabled=not course_overrides_valid)
 
     if not submitted:
@@ -785,6 +790,7 @@ def render_prediction_tab() -> None:
                 race_no=int(race_no),
                 race_date=current_jst_date(),
                 course_overrides=course_overrides,
+                st_adjustments=st_adjustments,
             )
     except Exception as exc:  # pragma: no cover
         log_exception_to_stderr(
@@ -800,6 +806,7 @@ def render_prediction_tab() -> None:
         return
 
     st.success("予測が完了しました。")
+    render_st_comparison(prediction)
     _render_model_accuracy_summary(default_config_path())
 
     metric_col1, metric_col2, metric_col3 = st.columns(3)

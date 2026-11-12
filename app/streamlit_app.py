@@ -802,6 +802,9 @@ def render_prediction_tab() -> None:
         f"{selected}_{int(race_no):02d}_{target_date.isoformat()}",
         exhibition_courses,
     )
+    from app.st_scenario import render_st_adjustments, render_st_comparison
+
+    st_adjustments = render_st_adjustments(f"local_{selected}_{race_no}_{target_date}")
     submitted = st.button("予測を実行", disabled=not course_overrides_valid)
 
     if not submitted:
@@ -815,12 +818,14 @@ def render_prediction_tab() -> None:
                 race_no=int(race_no),
                 config_path=config_path,
                 course_overrides=course_overrides,
+                st_adjustments=st_adjustments,
             )
     except Exception as exc:  # pragma: no cover
         st.error(f"予測に失敗しました: {exc}")
         return
 
     st.success("予測が完了しました。")
+    render_st_comparison(prediction)
     _render_model_accuracy_summary(config_path)
 
     metric_col1, metric_col2, metric_col3 = st.columns(3)
